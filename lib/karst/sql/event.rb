@@ -8,7 +8,7 @@ module Karst
       :sql,
       :cached,
       :duration_ms,
-      :started_at
+      :monotonic_started_at
     )
   end
 end

@@ -8,13 +8,15 @@ require_relative "karst/subscription"
 
 # Public entry point for Karst configuration and subscription ownership.
 module Karst
+  @ownership_mutex = Mutex.new
+
   class << self
     def configure
       yield config
     end
 
     def config
-      @config ||= Configuration.new
+      @ownership_mutex.synchronize { @config ||= Configuration.new }
     end
 
     def enabled?
@@ -22,7 +24,8 @@ module Karst
     end
 
     def buffer
-      @buffer ||= Buffer.new(capacity: config.buffer_size)
+      capacity = config.buffer_size
+      @ownership_mutex.synchronize { @buffer ||= Buffer.new(capacity: capacity) }
     end
 
     def subscribe!
@@ -40,7 +43,8 @@ module Karst
     private
 
     def subscription
-      @subscription ||= Subscription.new(receiver: buffer)
+      receiver = buffer
+      @ownership_mutex.synchronize { @subscription ||= Subscription.new(receiver: receiver) }
     end
   end
 end

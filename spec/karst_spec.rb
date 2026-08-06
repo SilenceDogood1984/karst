@@ -56,6 +56,18 @@ RSpec.describe Karst do
       expect(original.to_a).to eq([1, 2])
     end
 
+    it "constructs one buffer when first accessed concurrently" do
+      allow(Karst::Buffer).to receive(:new).and_wrap_original do |constructor, **arguments|
+        sleep(0.01)
+        constructor.call(**arguments)
+      end
+
+      buffers = 10.times.map { Thread.new { described_class.buffer } }.map(&:value)
+
+      expect(Karst::Buffer).to have_received(:new).once
+      expect(buffers.map(&:object_id).uniq.size).to eq(1)
+    end
+
     it "is the default subscription receiver and observes each notification once" do
       expect(described_class.send(:subscription).instance_variable_get(:@receiver)).to equal(described_class.buffer)
       described_class.subscribe!
@@ -85,6 +97,22 @@ RSpec.describe Karst do
       expect { described_class.subscribe! }.not_to(change { owned_subscription.instance_variable_get(:@handle) })
     end
 
+    it "installs one subscription when called concurrently" do
+      subscription = described_class.send(:subscription)
+      allow(ActiveSupport::Notifications)
+        .to receive(:monotonic_subscribe)
+        .and_wrap_original do |subscribe, *arguments, &callback|
+          sleep(0.01)
+          subscribe.call(*arguments, &callback)
+        end
+
+      10.times.map { Thread.new { subscription.subscribe! } }.each(&:value)
+
+      expect(ActiveSupport::Notifications).to have_received(:monotonic_subscribe).once
+    ensure
+      subscription&.unsubscribe!
+    end
+
     it "unsubscribes idempotently and can subscribe again" do
       expect { described_class.unsubscribe! }.not_to raise_error
       described_class.subscribe!
@@ -110,6 +138,10 @@ RSpec.describe Karst do
     require "active_support"
     require "active_support/notifications"
 
+    it "requires a receiver" do
+      expect { described_class.new }.to raise_error(ArgumentError, /receiver/)
+    end
+
     it "converts a notification once and stops after unsubscribe" do
       events = []
       subscription = described_class.new(receiver: events.method(:<<))
@@ -123,7 +155,7 @@ RSpec.describe Karst do
         sql: "SELECT 1",
         cached: true,
         duration_ms: be_a(Float),
-        started_at: be_a(Float)
+        monotonic_started_at: be_a(Float)
       )
       expect(events.first.duration_ms).to be >= 0.0
 
@@ -140,10 +172,13 @@ RSpec.describe Karst do
 
       subscription.send(:receive, "sql.active_record", 12.25, 12.375, "id", { sql: "SELECT 1", cached: nil })
 
-      expect(events.first).to have_attributes(duration_ms: 125.0, started_at: 12.25, cached: false)
+      expect(events.first).to have_attributes(duration_ms: 125.0, monotonic_started_at: 12.25, cached: false)
     end
 
-    it "contains errors raised by the receiver" do
+    it "reports and contains errors raised by the receiver" do
+      reporter = instance_double(ActiveSupport::ErrorReporter)
+      allow(ActiveSupport).to receive(:error_reporter).and_return(reporter)
+      expect(reporter).to receive(:report).with(instance_of(RuntimeError), handled: true, context: { source: "karst" })
       subscription = described_class.new(receiver: proc { raise "Karst receiver failure" })
       subscription.subscribe!
 
@@ -190,11 +225,12 @@ RSpec.describe Karst do
     it "contains malformed optional values and timing" do
       events = []
       subscription = described_class.new(receiver: events.method(:<<))
+      allow(ActiveSupport).to receive(:error_reporter).and_return(nil)
 
       expect do
         subscription.send(:receive, "sql.active_record", Object.new, 2.0, "id", { sql: "SELECT 1" })
         subscription.send(:receive, "sql.active_record", 1.0, 2.0, "id", { sql: "SELECT 1", name: Object.new })
-      end.not_to raise_error
+      end.not_to output.to_stderr
       expect(events.length).to eq(1)
       expect(events.first.name).to be_nil
     end
@@ -202,10 +238,10 @@ RSpec.describe Karst do
 
   describe Karst::Sql::Event do
     it "has only the documented immutable, value-based shape" do
-      attributes = { name: "Load", sql: "SELECT 1", cached: false, duration_ms: 1.0, started_at: 2.0 }
+      attributes = { name: "Load", sql: "SELECT 1", cached: false, duration_ms: 1.0, monotonic_started_at: 2.0 }
       event = described_class.new(**attributes)
 
-      expect(event.members).to eq(%i[name sql cached duration_ms started_at])
+      expect(event.members).to eq(%i[name sql cached duration_ms monotonic_started_at])
       expect(event).to eq(described_class.new(**attributes))
       expect(event).to be_frozen
       expect(event).not_to respond_to(:payload)
