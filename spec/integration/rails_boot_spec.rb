@@ -35,11 +35,11 @@ RSpec.describe "Rails integration harness" do
     expect(KarstTestApplication.owned_listener_count).to eq(1)
   end
 
-  it "can instrument a synthetic Active Record SQL notification" do
+  it "converts a synthetic SQL notification to the minimal immutable event shape" do
     events = []
-    subscriber = ActiveSupport::Notifications.subscribe("sql.active_record") do |event|
-      events << event
-    end
+    Karst.unsubscribe!
+    subscription = Karst::Subscription.new(receiver: events.method(:<<))
+    subscription.subscribe!
 
     ActiveSupport::Notifications.instrument(
       "sql.active_record",
@@ -47,9 +47,23 @@ RSpec.describe "Rails integration harness" do
       name: "Karst integration probe"
     )
 
-    expect(events.one? { |event| event.payload[:sql] == "SELECT 1" }).to be(true)
+    expect(events).to contain_exactly(
+      an_instance_of(Karst::Sql::Event).and(
+        have_attributes(
+          name: "Karst integration probe",
+          sql: "SELECT 1",
+          cached: false,
+          duration_ms: be_a(Float),
+          started_at: be_a(Float)
+        )
+      )
+    )
+    expect(events.first.members).to eq(%i[name sql cached duration_ms started_at])
+    expect(events.first).to be_frozen
+    expect(events.first.name).to be_frozen
+    expect(events.first.sql).to be_frozen
   ensure
-    ActiveSupport::Notifications.unsubscribe(subscriber) if subscriber
+    subscription&.unsubscribe!
   end
 
   it "remains unsubscribed when application initializer configuration disables Karst" do

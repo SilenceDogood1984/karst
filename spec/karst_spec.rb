@@ -61,48 +61,107 @@ RSpec.describe Karst do
     require "active_support"
     require "active_support/notifications"
 
-    it "receives five monotonic notification values once and stops after unsubscribe" do
-      calls = []
-      subscription = described_class.new(callback: proc { |*arguments| calls << arguments })
+    it "converts a notification once and stops after unsubscribe" do
+      events = []
+      subscription = described_class.new(receiver: events.method(:<<))
       subscription.subscribe!
       subscription.subscribe!
 
-      ActiveSupport::Notifications.instrument("sql.active_record", arbitrary: Object.new)
-      expect(calls.length).to eq(1)
-      name, started, finished, transaction_id, payload = calls.first
-      expect(name).to eq("sql.active_record")
-      expect(started).to be_a(Numeric)
-      expect(finished).to be >= started
-      expect(transaction_id).to be_a(String)
-      expect(payload).to include(:arbitrary)
+      ActiveSupport::Notifications.instrument("sql.active_record", name: "Widget Load", sql: "SELECT 1", cached: 1)
+      expect(events.length).to eq(1)
+      expect(events.first).to have_attributes(
+        name: "Widget Load",
+        sql: "SELECT 1",
+        cached: true,
+        duration_ms: be_a(Float),
+        started_at: be_a(Float)
+      )
+      expect(events.first.duration_ms).to be >= 0.0
 
       subscription.unsubscribe!
-      ActiveSupport::Notifications.instrument("sql.active_record", arbitrary: Object.new)
-      expect(calls.length).to eq(1)
+      ActiveSupport::Notifications.instrument("sql.active_record", sql: "SELECT 2")
+      expect(events.length).to eq(1)
     ensure
       subscription&.unsubscribe!
     end
 
-    it "contains errors raised by Karst-owned callback work" do
-      subscription = described_class.new(callback: proc { raise "Karst callback failure" })
+    it "calculates controlled monotonic timing and coerces cached to Boolean" do
+      events = []
+      subscription = described_class.new(receiver: events.method(:<<))
+
+      subscription.send(:receive, "sql.active_record", 12.25, 12.375, "id", { sql: "SELECT 1", cached: nil })
+
+      expect(events.first).to have_attributes(duration_ms: 125.0, started_at: 12.25, cached: false)
+    end
+
+    it "contains errors raised by the receiver" do
+      subscription = described_class.new(receiver: proc { raise "Karst receiver failure" })
       subscription.subscribe!
 
-      expect { ActiveSupport::Notifications.instrument("sql.active_record") }.not_to raise_error
+      expect { ActiveSupport::Notifications.instrument("sql.active_record", sql: "SELECT 1") }.not_to raise_error
     ensure
       subscription&.unsubscribe!
     end
 
-    it "does not retain arbitrary payload objects" do
-      subscription = described_class.new
+    it "owns its strings and does not retain arbitrary payload objects" do
+      events = []
+      subscription = described_class.new(receiver: events.method(:<<))
+      name = +"Widget Load"
+      sql = +"SELECT * FROM widgets"
       payload_object = Object.new
+      connection = Object.new
       subscription.subscribe!
 
-      ActiveSupport::Notifications.instrument("sql.active_record", arbitrary: payload_object)
+      payload = { name: name, sql: sql, arbitrary: payload_object, connection: connection }
+      ActiveSupport::Notifications.instrument("sql.active_record", payload)
+      name.replace("changed")
+      sql.replace("changed")
 
-      expect(subscription.instance_variables.map { |name| subscription.instance_variable_get(name) })
-        .not_to include(payload_object)
+      expect(events.first).to have_attributes(name: "Widget Load", sql: "SELECT * FROM widgets")
+      expect(events.first.name).to be_frozen
+      expect(events.first.sql).to be_frozen
+      retained_values = events.first.members.map { |member| events.first.public_send(member) }
+      expect(retained_values).not_to include(payload, payload_object, connection)
     ensure
       subscription&.unsubscribe!
+    end
+
+    it "silently drops missing, nil, and non-string SQL" do
+      events = []
+      subscription = described_class.new(receiver: events.method(:<<))
+
+      expect do
+        subscription.send(:receive, "sql.active_record", 1.0, 2.0, "id", {})
+        subscription.send(:receive, "sql.active_record", 1.0, 2.0, "id", { sql: nil })
+        subscription.send(:receive, "sql.active_record", 1.0, 2.0, "id", { sql: Object.new })
+      end.not_to raise_error
+      expect(events).to be_empty
+    end
+
+    it "contains malformed optional values and timing" do
+      events = []
+      subscription = described_class.new(receiver: events.method(:<<))
+
+      expect do
+        subscription.send(:receive, "sql.active_record", Object.new, 2.0, "id", { sql: "SELECT 1" })
+        subscription.send(:receive, "sql.active_record", 1.0, 2.0, "id", { sql: "SELECT 1", name: Object.new })
+      end.not_to raise_error
+      expect(events.length).to eq(1)
+      expect(events.first.name).to be_nil
+    end
+  end
+
+  describe Karst::Sql::Event do
+    it "has only the documented immutable, value-based shape" do
+      attributes = { name: "Load", sql: "SELECT 1", cached: false, duration_ms: 1.0, started_at: 2.0 }
+      event = described_class.new(**attributes)
+
+      expect(event.members).to eq(%i[name sql cached duration_ms started_at])
+      expect(event).to eq(described_class.new(**attributes))
+      expect(event).to be_frozen
+      expect(event).not_to respond_to(:payload)
+      expect(described_class.superclass).to eq(Data)
+      expect(Karst.const_defined?(:Event, false)).to be(false)
     end
   end
 

@@ -7,7 +7,7 @@ Gem::Specification.new do |spec|
   spec.version = Karst::VERSION
   spec.authors = ["Karst contributors"]
   spec.summary = "Runtime evidence for Rails applications"
-  spec.description = "Karst is a runtime evidence engine for Rails. Runtime capture is not implemented yet."
+  spec.description = "Karst is a runtime evidence engine for Rails with minimal in-process SQL event capture."
   spec.homepage = "https://github.com/SilenceDogood1984/karst"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.2"
