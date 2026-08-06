@@ -6,7 +6,7 @@ module Karst
     attr_accessor :enabled
 
     def initialize
-      @enabled = defined?(Rails) ? Rails.env.development? || Rails.env.test? : false
+      @enabled = Rails.respond_to?(:env) ? Rails.env.development? || Rails.env.test? : false
     end
   end
 end

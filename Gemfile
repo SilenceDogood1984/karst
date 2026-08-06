@@ -4,7 +4,7 @@ source "https://rubygems.org"
 
 gemspec
 
-gem "railties", "~> 7.1"
+gem "railties", "~> 7.0.0"
 gem "rake", "~> 13.2"
 gem "rspec", "~> 3.13"
 gem "rubocop", "~> 1.75"

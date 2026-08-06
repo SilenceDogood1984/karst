@@ -39,4 +39,5 @@ module Karst
   end
 end
 
-require_relative "karst/railtie" if defined?(Rails::Railtie)
+railties_available = defined?(Rails::Railtie) || Gem::Specification.find_all_by_name("railties").any?
+require_relative "karst/railtie" if railties_available

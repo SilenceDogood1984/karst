@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "rails/railtie"
+
 module Karst
   # Installs Karst after application initializers have configured it.
   class Railtie < Rails::Railtie

@@ -61,18 +61,33 @@ RSpec.describe Karst do
     require "active_support"
     require "active_support/notifications"
 
-    it "receives notifications once and stops receiving them after unsubscribe" do
-      calls = 0
-      subscription = described_class.new(callback: proc { calls += 1 })
+    it "receives five monotonic notification values once and stops after unsubscribe" do
+      calls = []
+      subscription = described_class.new(callback: proc { |*arguments| calls << arguments })
       subscription.subscribe!
       subscription.subscribe!
 
       ActiveSupport::Notifications.instrument("sql.active_record", arbitrary: Object.new)
-      expect(calls).to eq(1)
+      expect(calls.length).to eq(1)
+      name, started, finished, transaction_id, payload = calls.first
+      expect(name).to eq("sql.active_record")
+      expect(started).to be_a(Numeric)
+      expect(finished).to be >= started
+      expect(transaction_id).to be_a(String)
+      expect(payload).to include(:arbitrary)
 
       subscription.unsubscribe!
       ActiveSupport::Notifications.instrument("sql.active_record", arbitrary: Object.new)
-      expect(calls).to eq(1)
+      expect(calls.length).to eq(1)
+    ensure
+      subscription&.unsubscribe!
+    end
+
+    it "contains errors raised by Karst-owned callback work" do
+      subscription = described_class.new(callback: proc { raise "Karst callback failure" })
+      subscription.subscribe!
+
+      expect { ActiveSupport::Notifications.instrument("sql.active_record") }.not_to raise_error
     ensure
       subscription&.unsubscribe!
     end
@@ -91,8 +106,8 @@ RSpec.describe Karst do
     end
   end
 
-  it "can be required without Rails being loaded" do
-    script = 'require "karst"; abort if defined?(Rails)'
+  it "can be required outside an application without loading Active Record" do
+    script = 'require "karst"; abort if defined?(ActiveRecord)'
     _output, status = Open3.capture2e(RbConfig.ruby, "-I#{File.expand_path('../lib', __dir__)}", "-e", script)
 
     expect(status).to be_success
