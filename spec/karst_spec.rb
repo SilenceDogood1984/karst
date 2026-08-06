@@ -138,6 +138,10 @@ RSpec.describe Karst do
     require "active_support"
     require "active_support/notifications"
 
+    it "requires a receiver" do
+      expect { described_class.new }.to raise_error(ArgumentError, /receiver/)
+    end
+
     it "converts a notification once and stops after unsubscribe" do
       events = []
       subscription = described_class.new(receiver: events.method(:<<))
@@ -221,11 +225,12 @@ RSpec.describe Karst do
     it "contains malformed optional values and timing" do
       events = []
       subscription = described_class.new(receiver: events.method(:<<))
+      allow(ActiveSupport).to receive(:error_reporter).and_return(nil)
 
       expect do
         subscription.send(:receive, "sql.active_record", Object.new, 2.0, "id", { sql: "SELECT 1" })
         subscription.send(:receive, "sql.active_record", 1.0, 2.0, "id", { sql: "SELECT 1", name: Object.new })
-      end.to output(/Karst capture failed: can't convert Object into Float/).to_stderr
+      end.not_to output.to_stderr
       expect(events.length).to eq(1)
       expect(events.first.name).to be_nil
     end
