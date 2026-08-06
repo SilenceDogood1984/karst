@@ -22,7 +22,21 @@ Static analysis can describe possible behavior. Runtime evidence describes behav
 
 ## Current capabilities
 
-Karst is being bootstrapped. It does not capture or analyze runtime behavior yet.
+Karst owns an idempotent Active Support subscription to `sql.active_record`. Its callback is deliberately inert: Karst does not yet capture, retain, or analyze notification payloads.
+
+## Configuration
+
+Configure Karst in a Rails initializer:
+
+```ruby
+Karst.configure do |config|
+  config.enabled = true
+end
+```
+
+Karst is enabled by default in Rails development and test environments and disabled in other Rails environments. It defaults to disabled outside Rails.
+
+When enabled, Karst subscribes automatically after the Rails application initializes. `Karst.subscribe!` and `Karst.unsubscribe!` provide idempotent manual control, primarily for tests. `Karst.subscribed?` reports whether Karst currently owns a subscription.
 
 ## Roadmap
 
@@ -30,7 +44,7 @@ Development will proceed from small evidence-capture primitives to traceable ana
 
 ## Installation
 
-Coming soon. Karst is not yet published for use in Rails applications.
+Add Karst to your bundle and require `karst`. Active Support is its only runtime dependency; requiring Karst does not load Rails or Active Record.
 
 ## Contributing
 
