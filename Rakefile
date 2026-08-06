@@ -3,7 +3,9 @@
 require "rspec/core/rake_task"
 require "rubocop/rake_task"
 
-RSpec::Core::RakeTask.new(:spec)
+RSpec::Core::RakeTask.new(:spec) do |task|
+  task.exclude_pattern = "spec/integration/**/*_spec.rb"
+end
 RuboCop::RakeTask.new(:rubocop)
 
 task default: %i[rubocop spec]

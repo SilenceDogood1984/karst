@@ -20,6 +20,55 @@ RSpec.describe Karst do
       expect(described_class.config).to equal(original)
       expect(described_class.enabled?).to be(true)
     end
+
+    it "defaults buffer size to 2,000 and validates configured values" do
+      configuration = Karst::Configuration.new
+
+      expect(configuration.buffer_size).to eq(2_000)
+      configuration.buffer_size = 12
+      expect(configuration.buffer_size).to eq(12)
+      [0, -1, 1.5, "12"].each do |value|
+        expect { configuration.buffer_size = value }.to raise_error(ArgumentError)
+      end
+    end
+  end
+
+  describe "process-level buffer" do
+    before do
+      described_class.unsubscribe!
+      described_class.instance_variable_set(:@config, Karst::Configuration.new)
+      described_class.remove_instance_variable(:@buffer) if described_class.instance_variable_defined?(:@buffer)
+      if described_class.instance_variable_defined?(:@subscription)
+        described_class.remove_instance_variable(:@subscription)
+      end
+      described_class.config.enabled = true
+    end
+
+    after { described_class.unsubscribe! }
+
+    it "is one instance whose capacity is fixed from configuration at first use" do
+      described_class.config.buffer_size = 2
+      original = described_class.buffer
+      described_class.config.buffer_size = 5
+
+      expect(described_class.buffer).to equal(original)
+      3.times { |event| original.call(event) }
+      expect(original.to_a).to eq([1, 2])
+    end
+
+    it "is the default subscription receiver and observes each notification once" do
+      expect(described_class.send(:subscription).instance_variable_get(:@receiver)).to equal(described_class.buffer)
+      described_class.subscribe!
+      described_class.subscribe!
+
+      ActiveSupport::Notifications.instrument("sql.active_record", name: "Probe", sql: "SELECT 1")
+
+      expect(described_class.buffer.size).to eq(1)
+      expect(described_class.buffer.to_a.last).to be_a(Karst::Sql::Event)
+      described_class.unsubscribe!
+      ActiveSupport::Notifications.instrument("sql.active_record", sql: "SELECT 2")
+      expect(described_class.buffer.size).to eq(1)
+    end
   end
 
   describe "subscription lifecycle" do
