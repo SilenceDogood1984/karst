@@ -17,4 +17,6 @@ Gem::Specification.new do |spec|
   spec.metadata["source_code_uri"] = "https://github.com/SilenceDogood1984/karst"
   spec.metadata["changelog_uri"] = "https://github.com/SilenceDogood1984/karst/blob/main/CHANGELOG.md"
   spec.metadata["rubygems_mfa_required"] = "true"
+
+  spec.add_dependency "activesupport", ">= 7.1", "< 9"
 end
