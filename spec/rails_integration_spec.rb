@@ -39,33 +39,5 @@ RSpec.describe "Rails integration" do
 
     expect(status).to be_success, output
   end
-
-  it "constructs the minimal SQL event shape under the installed Rails version" do
-    script = <<~RUBY
-      require "karst"
-      require "active_support"
-      require "active_support/notifications"
-      events = []
-      subscription = Karst::Subscription.new(receiver: events.method(:<<))
-      subscription.subscribe!
-      ActiveSupport::Notifications.instrument(
-        "sql.active_record", name: "Synthetic Load", sql: "SELECT 1", cached: false
-      )
-      subscription.unsubscribe!
-      event = events.fetch(0)
-      abort unless events.one?
-      abort unless event.instance_of?(Karst::Sql::Event)
-      abort unless event.members == %i[name sql cached duration_ms started_at]
-      abort unless event.name == "Synthetic Load" && event.sql == "SELECT 1"
-      abort unless event.frozen? && event.name.frozen? && event.sql.frozen?
-      abort unless event.cached == false
-      abort unless event.duration_ms.is_a?(Float) && event.duration_ms >= 0.0
-      abort unless event.started_at.is_a?(Float)
-    RUBY
-
-    output, status = Open3.capture2e(RbConfig.ruby, "-I#{File.expand_path('../lib', __dir__)}", "-e", script)
-
-    expect(status).to be_success, output
-  end
 end
 # rubocop:enable Metrics/BlockLength, Metrics/MethodLength

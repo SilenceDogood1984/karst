@@ -29,3 +29,17 @@ Draft pull requests are welcome for early design feedback. Please discuss broad 
 ## Tests
 
 Every behavior change requires tests at the narrowest useful level. Bug fixes should include a regression test. Tests must be deterministic and must not depend on network services. Run `bin/test` before submitting a pull request; CI runs RSpec and RuboCop.
+
+### Rails compatibility
+
+Karst's compatibility harness currently covers Rails 7.0 and 7.1 on Ruby 3.2, and Rails 7.2 and 8.0 on Ruby 3.3. These are contributor test targets rather than an end-user compatibility guarantee.
+
+The repository uses version-specific Gemfiles under `gemfiles/`. This keeps each dependency set explicit and lets Bundler and CI use their standard `BUNDLE_GEMFILE` behavior without an additional dependency-management tool. Matrix lockfiles are intentionally not committed: compatibility CI resolves the current dependency set allowed by each Rails line, so it detects dependency-resolution regressions instead of only testing a previously locked snapshot. To run one target locally:
+
+```sh
+BUNDLE_GEMFILE=gemfiles/rails_7_2.gemfile bundle install
+BUNDLE_GEMFILE=gemfiles/rails_7_2.gemfile EXPECTED_RAILS_VERSION=7.2 \
+  bundle exec rspec spec/integration
+```
+
+Run every compatibility target with `bin/test-rails`. To add a Rails version, add a version-specific Gemfile, add it to `bin/test-rails`, and add the matching Rails/Ruby entry to the `rails-integration` matrix in `.github/workflows/ci.yml`. Choose a Ruby version on which that Rails release installs and runs, and keep linting out of the compatibility matrix.
