@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+for version in 7_0 7_1 7_2 8_0; do
+  export BUNDLE_GEMFILE="$PWD/gemfiles/rails_${version}.gemfile"
+  export EXPECTED_RAILS_VERSION="${version/_/.}"
+  bundle install
+  bundle exec rspec spec/integration
+done
