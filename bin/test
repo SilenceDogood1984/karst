@@ -1,0 +1,7 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+ROOT = File.expand_path("..", __dir__)
+Dir.chdir(ROOT) do
+  abort "test suite failed" unless system({ "RUBYOPT" => "-W:deprecated" }, "bundle", "exec", "rake")
+end

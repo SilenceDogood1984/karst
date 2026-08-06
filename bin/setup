@@ -1,0 +1,10 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "fileutils"
+
+ROOT = File.expand_path("..", __dir__)
+Dir.chdir(ROOT) do
+  system("gem", "install", "bundler", "--no-document") unless system("bundle", "--version", out: File::NULL)
+  abort "bundle install failed" unless system("bundle", "install")
+end
