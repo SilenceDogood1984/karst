@@ -1,0 +1,16 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+ROOT = File.expand_path("..", __dir__)
+RAILS_VERSIONS = %w[7.0 7.1 7.2 8.0].freeze
+
+Dir.chdir(ROOT) do
+  RAILS_VERSIONS.each do |version|
+    environment = { "BUNDLE_GEMFILE" => File.join(ROOT, "gemfiles", "rails_#{version}.gemfile") }
+    abort "bundle install failed for Rails #{version}" unless system(environment, "bundle", "install", "--quiet")
+    abort "integration suite failed for Rails #{version}" unless system(
+      environment,
+      "bundle", "exec", "rspec", "spec/rails_integration_spec.rb"
+    )
+  end
+end

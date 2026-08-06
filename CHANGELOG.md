@@ -11,3 +11,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Initial project documentation, contributor tooling, and continuous integration.
 - Configuration and an idempotent, deliberately inert `sql.active_record` subscription lifecycle.
 - Automatic subscription after Rails initialization when Karst is enabled.
+- Immutable, minimal SQL events constructed internally from valid `sql.active_record` notifications.

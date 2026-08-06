@@ -22,7 +22,7 @@ Static analysis can describe possible behavior. Runtime evidence describes behav
 
 ## Current capabilities
 
-Karst owns an idempotent Active Support subscription to `sql.active_record`. Its callback is deliberately inert: Karst does not yet capture, retain, or analyze notification payloads.
+Karst owns an idempotent Active Support subscription to `sql.active_record`. Karst currently converts valid notifications into immutable SQL event objects internally. The event shape is early and may expand before 1.0, but buffering, normalization, and analysis are not implemented, and there is not yet a public way to inspect events.
 
 ## Configuration
 
