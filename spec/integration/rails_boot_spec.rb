@@ -51,12 +51,12 @@ RSpec.describe "Rails integration harness" do
           sql: "SELECT 1",
           cached: false,
           duration_ms: be_a(Float),
-          started_at: be_a(Float)
+          monotonic_started_at: be_a(Float)
         )
       )
     )
     event = Karst.buffer.to_a.last
-    expect(event.members).to eq(%i[name sql cached duration_ms started_at])
+    expect(event.members).to eq(%i[name sql cached duration_ms monotonic_started_at])
     expect(event).to be_frozen
     expect(event.name).to be_frozen
     expect(event.sql).to be_frozen
