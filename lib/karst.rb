@@ -2,6 +2,7 @@
 
 require_relative "karst/version"
 require_relative "karst/configuration"
+require_relative "karst/buffer"
 require_relative "karst/sql/event"
 require_relative "karst/subscription"
 
@@ -20,6 +21,10 @@ module Karst
       config.enabled
     end
 
+    def buffer
+      @buffer ||= Buffer.new(capacity: config.buffer_size)
+    end
+
     def subscribe!
       subscription.subscribe! if enabled?
     end
@@ -35,7 +40,7 @@ module Karst
     private
 
     def subscription
-      @subscription ||= Subscription.new
+      @subscription ||= Subscription.new(receiver: buffer)
     end
   end
 end
