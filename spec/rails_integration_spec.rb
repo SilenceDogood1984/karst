@@ -8,9 +8,9 @@ require "rbconfig"
 RSpec.describe "Rails integration" do
   def run_application(initializer_value)
     script = <<~RUBY
+      require "rails"
       require "karst"
       abort unless Karst.const_defined?(:Railtie, false)
-      require "rails"
       class TestApplication < Rails::Application
         config.eager_load = false
         config.logger = Logger.new(File::NULL)
@@ -28,7 +28,7 @@ RSpec.describe "Rails integration" do
     Open3.capture2e(RbConfig.ruby, "-I#{File.expand_path('../lib', __dir__)}", "-e", script)
   end
 
-  it "loads Karst before application boot and subscribes once after initializer configuration" do
+  it "loads Karst after Rails is available and subscribes once after initializer configuration" do
     output, status = run_application(true)
 
     expect(status).to be_success, output

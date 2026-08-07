@@ -7,7 +7,7 @@ module Karst
     attr_reader :buffer_size
 
     def initialize
-      @enabled = Rails.respond_to?(:env) ? Rails.env.development? || Rails.env.test? : false
+      @enabled = defined?(Rails) && Rails.respond_to?(:env) ? Rails.env.development? || Rails.env.test? : false
       @buffer_size = 2_000
     end
 
