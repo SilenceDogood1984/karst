@@ -4,7 +4,7 @@ require "spec_helper"
 require "karst"
 
 # rubocop:disable Metrics/BlockLength
-RSpec.describe Karst::Buffer do
+RSpec.describe Karst.const_get(:Buffer, false) do
   it "stores arbitrary objects newest last" do
     event = Object.new
     buffer = described_class.new(capacity: 3)

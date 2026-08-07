@@ -11,6 +11,9 @@ require_relative "karst/subscription"
 module Karst
   @ownership_mutex = Mutex.new
 
+  private_constant :Configuration, :Buffer, :Subscription
+  Sql.private_constant :Canonicalizer
+
   class << self
     def configure
       yield config
@@ -25,8 +28,10 @@ module Karst
     end
 
     def buffer
-      capacity = config.buffer_size
-      @ownership_mutex.synchronize { @buffer ||= Buffer.new(capacity: capacity) }
+      configuration = config
+      @ownership_mutex.synchronize do
+        @buffer ||= Buffer.new(capacity: configuration.send(:consume_buffer_size!))
+      end
     end
 
     def subscribe!

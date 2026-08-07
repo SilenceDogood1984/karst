@@ -5,7 +5,7 @@ require "karst"
 
 # The examples deliberately keep the three reviewable corpora beside their execution logic.
 # rubocop:disable Metrics/BlockLength
-RSpec.describe Karst::Sql::Canonicalizer do
+RSpec.describe Karst::Sql.const_get(:Canonicalizer, false) do
   subject(:canonicalize) { described_class.method(:call) }
 
   corpus = YAML.safe_load_file(File.expand_path("../fixtures/sql_canonicalization.yml", __dir__))

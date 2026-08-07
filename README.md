@@ -30,12 +30,6 @@ Karst.buffer.to_a
 
 The buffer is bounded, transient, in-process evidence retention, not analysis. Its default capacity is 2,000 events; when full, it discards the oldest events first. Restarting the process clears the evidence, and multiple application processes each have a separate buffer. Karst does not persist, fingerprint, or analyze these events.
 
-## Experimental SQL canonicalization
-
-Karst includes an experimental internal canonicalizer, available independently as `Karst::Sql::Canonicalizer.call(sql)`. It replaces confidently recognized string, numeric, and boolean literals, normalizes insignificant whitespace, and removes ordinary comments. Numeric `LIMIT` and `OFFSET` values are replaced deliberately, while `IN`-list cardinality is preserved.
-
-Canonicalization is not yet connected to event capture: every `Karst::Sql::Event` continues to contain its original raw SQL. A canonical form is not a fingerprint and is not a claim that two statements are semantically equivalent. The implementation intentionally preserves distinctions—including keyword case, quoted identifiers, casts, optimizer hints, and unfamiliar syntax—when normalizing them could erase evidence. PostgreSQL dollar-quoted strings and adapter-specific literal forms outside the documented cases are currently left intact.
-
 ## Configuration
 
 Configure Karst in a Rails initializer:
@@ -51,7 +45,7 @@ Karst is enabled by default in Rails development and test environments and disab
 
 When enabled, Karst subscribes automatically after the Rails application initializes. `Karst.subscribe!` and `Karst.unsubscribe!` provide idempotent manual control, primarily for tests. `Karst.subscribed?` reports whether Karst currently owns a subscription.
 
-`buffer_size` must be a positive Integer and defaults to 2,000. It is read when `Karst.buffer` is first created; changing configuration afterward does not resize or replace that process-level buffer.
+`buffer_size` must be a positive Integer and defaults to 2,000. Configure it before `Karst.buffer` is first created; changing it afterward raises `ArgumentError` rather than resizing or replacing the process-level buffer.
 
 ## Roadmap
 
