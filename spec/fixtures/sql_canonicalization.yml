@@ -130,12 +130,36 @@
 - reason: optimizer hint is conservatively retained
   input: SELECT /*+ INDEX(users idx_users) */ * FROM users WHERE id = 1
   expected: SELECT /*+ INDEX(users idx_users) */ * FROM users WHERE id = ?
-- reason: unterminated string is preserved rather than guessed at
+- reason: unterminated string is redacted and scanning stops safely
   input: "SELECT * FROM users WHERE name = 'unfinished"
-  expected: "SELECT * FROM users WHERE name = 'unfinished"
-- reason: unterminated block comment is preserved
+  expected: "SELECT * FROM users WHERE name = ?"
+- reason: unterminated block comment is discarded
   input: SELECT 1 /* unfinished 999
-  expected: SELECT ? /* unfinished 999
-- reason: dollar-quoted PostgreSQL string is intentionally preserved
+  expected: SELECT ?
+- reason: tagged PostgreSQL dollar-quoted string is redacted as one literal
   input: SELECT $tag$literal 123$tag$
-  expected: SELECT $tag$literal 123$tag$
+  expected: SELECT ?
+- reason: untagged PostgreSQL dollar-quoted string is redacted as one literal
+  input: SELECT $$O'Brien$$
+  expected: SELECT ?
+- reason: PostgreSQL dollar-quoted procedural body is redacted as one literal
+  input: DO $$ BEGIN PERFORM 1; END $$
+  expected: DO ?
+- reason: Unicode identifier ending in a digit remains intact
+  input: SELECT é5 FROM t WHERE x = 1
+  expected: SELECT é5 FROM t WHERE x = ?
+- reason: Unicode identifier containing a digit remains intact
+  input: SELECT naïve1 FROM t WHERE x = 2
+  expected: SELECT naïve1 FROM t WHERE x = ?
+- reason: nested block comments are discarded through the outer terminator
+  input: SELECT /* outer /* inner */ still outer */ 1
+  expected: SELECT ?
+- reason: executable comment literals are redacted while structure is retained
+  input: /*!40101 SET NAMES 'utf8mb4' */ SELECT 1
+  expected: /*!? SET NAMES ? */ SELECT ?
+- reason: optimizer hint literals are redacted while structure is retained
+  input: SELECT /*+ SET_VAR(max_heap_table_size='16M') */ * FROM t WHERE id = 1
+  expected: SELECT /*+ SET_VAR(max_heap_table_size=?) */ * FROM t WHERE id = ?
+- reason: first numeric token is independent of the final character
+  input: 5)
+  expected: ?)

@@ -31,40 +31,48 @@ module Karst
               index = skip_line_comment(sql, index + 2)
               space_pending = true
             elsif sql[index, 2] == "/*"
-              ending = sql.index("*/", index + 2)
-              unless ending
-                append(output, sql[index..], space_pending)
-                break
-              end
+              ending = block_comment_end(sql, index)
+              break unless ending
 
-              comment = sql[index..(ending + 1)]
+              comment = sql[index...ending]
               if semantic_comment?(comment)
-                append(output, comment, space_pending)
+                prefix = comment[0, 3]
+                original_body = comment[3...-2]
+                leading_space = " " if original_body.match?(/\A\s/)
+                trailing_space = " " if original_body.match?(/\s\z/)
+                body = scan(original_body).strip
+                append(output, "#{prefix}#{leading_space}#{body}#{trailing_space}*/", space_pending)
                 space_pending = false
               else
                 space_pending = true
               end
-              index = ending + 2
+              index = ending
             elsif character == "'"
               ending = quoted_end(sql, index, "'", backslash_escape: true)
               unless ending
-                append(output, sql[index..], space_pending)
+                append(output, "?", space_pending)
                 break
               end
 
               append(output, "?", space_pending)
+              break if sql[index...ending].include?("\\")
+
               space_pending = false
               index = ending
             elsif ['"', "`"].include?(character)
               ending = quoted_end(sql, index, character, backslash_escape: character == "`")
-              unless ending
-                append(output, sql[index..], space_pending)
-                break
-              end
+              break unless ending
 
               append(output, sql[index...ending], space_pending)
               space_pending = false
               index = ending
+            elsif (delimiter = dollar_quote_delimiter(sql, index))
+              ending = sql.index(delimiter, index + delimiter.length)
+              append(output, "?", space_pending)
+              break unless ending
+
+              space_pending = false
+              index = ending + delimiter.length
             elsif boolean_at?(sql, index)
               length = sql[index, 4].casecmp?("true") ? 4 : 5
               append(output, "?", space_pending)
@@ -105,6 +113,31 @@ module Karst
         end
 
         # rubocop:disable Metrics/MethodLength
+        def block_comment_end(sql, start)
+          depth = 1
+          index = start + 2
+          while index < sql.length
+            if sql[index, 2] == "/*"
+              depth += 1
+              index += 2
+            elsif sql[index, 2] == "*/"
+              depth -= 1
+              return index + 2 if depth.zero?
+
+              index += 2
+            else
+              index += 1
+            end
+          end
+          nil
+        end
+        # rubocop:enable Metrics/MethodLength
+
+        def dollar_quote_delimiter(sql, index)
+          /\A\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/.match(sql[index..])&.[](0)
+        end
+
+        # rubocop:disable Metrics/MethodLength
         def quoted_end(sql, start, quote, backslash_escape: false)
           index = start + 1
           while index < sql.length
@@ -130,14 +163,14 @@ module Karst
                  end
           return false unless word
 
-          token_boundary?(sql[index - 1]) && token_boundary?(sql[index + word.length])
+          token_boundary?(previous_character(sql, index)) && token_boundary?(sql[index + word.length])
         end
 
         def numeric_length(sql, index)
           match = /\A[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?/.match(sql[index..])
           return unless match
           return if sign_is_binary?(sql, index, match[0])
-          return unless token_boundary?(sql[index - 1]) && token_boundary?(sql[index + match[0].length])
+          return unless token_boundary?(previous_character(sql, index)) && token_boundary?(sql[index + match[0].length])
 
           match[0].length
         end
@@ -161,7 +194,11 @@ module Karst
         end
 
         def token_boundary?(character)
-          character.nil? || !character.match?(/[A-Za-z0-9_$]/)
+          character.nil? || !character.match?(/[[:alnum:]_$]/)
+        end
+
+        def previous_character(sql, index)
+          index.zero? ? nil : sql[index - 1]
         end
       end
     end
