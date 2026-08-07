@@ -18,4 +18,3 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Changed
 
 - Marked configuration, buffer, subscription, and the experimental SQL canonicalizer as private implementation constants.
-- Reject changes to `buffer_size` after the process-level buffer has been initialized.

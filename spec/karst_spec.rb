@@ -53,9 +53,7 @@ RSpec.describe Karst do
     it "is one instance whose capacity is fixed from configuration at first use" do
       described_class.config.buffer_size = 2
       original = described_class.buffer
-      expect do
-        described_class.config.buffer_size = 5
-      end.to raise_error(ArgumentError, "buffer_size must be configured before buffer initialization")
+      described_class.config.buffer_size = 5
 
       expect(described_class.buffer).to equal(original)
       3.times { |event| original.call(event) }

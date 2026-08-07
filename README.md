@@ -45,7 +45,7 @@ Karst is enabled by default in Rails development and test environments and disab
 
 When enabled, Karst subscribes automatically after the Rails application initializes. `Karst.subscribe!` and `Karst.unsubscribe!` provide idempotent manual control, primarily for tests. `Karst.subscribed?` reports whether Karst currently owns a subscription.
 
-`buffer_size` must be a positive Integer and defaults to 2,000. Configure it before `Karst.buffer` is first created; changing it afterward raises `ArgumentError` rather than resizing or replacing the process-level buffer.
+`buffer_size` must be a positive Integer and defaults to 2,000. It is read when `Karst.buffer` is first created; changing configuration afterward does not resize or replace that process-level buffer.
 
 ## Roadmap
 

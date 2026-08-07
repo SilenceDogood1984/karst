@@ -28,10 +28,8 @@ module Karst
     end
 
     def buffer
-      configuration = config
-      @ownership_mutex.synchronize do
-        @buffer ||= Buffer.new(capacity: configuration.send(:consume_buffer_size!))
-      end
+      capacity = config.buffer_size
+      @ownership_mutex.synchronize { @buffer ||= Buffer.new(capacity: capacity) }
     end
 
     def subscribe!
