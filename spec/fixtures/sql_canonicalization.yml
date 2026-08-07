@@ -1,0 +1,141 @@
+- reason: basic SELECT and integer literal
+  input: SELECT * FROM users WHERE id = 123
+  expected: SELECT * FROM users WHERE id = ?
+- reason: INSERT values
+  input: INSERT INTO users (name, age) VALUES ('Chad', 42)
+  expected: INSERT INTO users (name, age) VALUES (?, ?)
+- reason: UPDATE values
+  input: UPDATE users SET name = 'Alice', active = TRUE WHERE id = 7
+  expected: UPDATE users SET name = ?, active = ? WHERE id = ?
+- reason: DELETE predicate
+  input: DELETE FROM users WHERE id = 9
+  expected: DELETE FROM users WHERE id = ?
+- reason: negative integer
+  input: SELECT * FROM entries WHERE score = -123
+  expected: SELECT * FROM entries WHERE score = ?
+- reason: decimal
+  input: SELECT * FROM products WHERE price = 12.50
+  expected: SELECT * FROM products WHERE price = ?
+- reason: leading-dot decimal
+  input: SELECT * FROM products WHERE ratio = .5
+  expected: SELECT * FROM products WHERE ratio = ?
+- reason: scientific notation
+  input: SELECT * FROM readings WHERE ratio = 1.2e5
+  expected: SELECT * FROM readings WHERE ratio = ?
+- reason: signed scientific notation
+  input: SELECT * FROM readings WHERE ratio = -1E-3
+  expected: SELECT * FROM readings WHERE ratio = ?
+- reason: ordinary string
+  input: SELECT * FROM users WHERE name = 'Chad'
+  expected: SELECT * FROM users WHERE name = ?
+- reason: SQL doubled-quote escape
+  input: SELECT * FROM authors WHERE name = 'O''Reilly'
+  expected: SELECT * FROM authors WHERE name = ?
+- reason: MySQL backslash escape
+  input: "SELECT * FROM authors WHERE name = 'O\\'Reilly'"
+  expected: SELECT * FROM authors WHERE name = ?
+- reason: NULL remains structural
+  input: SELECT * FROM users WHERE deleted_at IS NULL
+  expected: SELECT * FROM users WHERE deleted_at IS NULL
+- reason: TRUE literal
+  input: SELECT * FROM users WHERE active = TRUE
+  expected: SELECT * FROM users WHERE active = ?
+- reason: lowercase false literal
+  input: SELECT * FROM users WHERE active = false
+  expected: SELECT * FROM users WHERE active = ?
+- reason: boolean-looking identifier is preserved
+  input: SELECT true_value, falsehood FROM flags
+  expected: SELECT true_value, falsehood FROM flags
+- reason: IN-list cardinality
+  input: SELECT * FROM users WHERE id IN (1, 2, 3)
+  expected: SELECT * FROM users WHERE id IN (?, ?, ?)
+- reason: LIMIT and OFFSET values
+  input: SELECT * FROM users LIMIT 20 OFFSET 40
+  expected: SELECT * FROM users LIMIT ? OFFSET ?
+- reason: PostgreSQL placeholders
+  input: SELECT * FROM users WHERE id = $1 AND account_id = $2
+  expected: SELECT * FROM users WHERE id = $1 AND account_id = $2
+- reason: PostgreSQL cast remains structural
+  input: SELECT '26f'::uuid
+  expected: SELECT ?::uuid
+- reason: double-quoted identifiers
+  input: SELECT "users"."id" FROM "users" WHERE "users"."id" = 2
+  expected: SELECT "users"."id" FROM "users" WHERE "users"."id" = ?
+- reason: escaped double quote in identifier
+  input: SELECT "odd""name" FROM "records"
+  expected: SELECT "odd""name" FROM "records"
+- reason: MySQL backtick identifiers and LIMIT
+  input: SELECT `users`.`id` FROM `users` LIMIT 10
+  expected: SELECT `users`.`id` FROM `users` LIMIT ?
+- reason: line comment is removed
+  input: "SELECT * FROM users -- instrumentation id=123\nWHERE id = 4"
+  expected: SELECT * FROM users WHERE id = ?
+- reason: block comment is removed
+  input: SELECT /* request metadata 123 */ * FROM users
+  expected: SELECT * FROM users
+- reason: block comment removal separates a literal from a keyword
+  input: SELECT 1/* comment */FROM users
+  expected: SELECT ? FROM users
+- reason: block comment removal does not merge identifiers
+  input: SELECT foo/* comment */bar
+  expected: SELECT foo bar
+- reason: line comment removal separates identifiers across lines
+  input: "SELECT foo-- comment\nbar"
+  expected: SELECT foo bar
+- reason: comment markers inside strings do not begin comments
+  input: SELECT '--not a comment', '/* neither */'
+  expected: SELECT ?, ?
+- reason: multiline and excessive whitespace
+  input: "  SELECT   *\n  FROM\tusers\n WHERE id = 1  "
+  expected: SELECT * FROM users WHERE id = ?
+- reason: identifier containing numbers
+  input: SELECT column2 FROM table2024 WHERE version1 = 3
+  expected: SELECT column2 FROM table2024 WHERE version1 = ?
+- reason: operator adjacent to numeric value
+  input: SELECT * FROM users WHERE id>=10 AND score<>-2
+  expected: SELECT * FROM users WHERE id>=? AND score<>?
+- reason: binary subtraction remains an operator
+  input: SELECT total-1 FROM invoices
+  expected: SELECT total-? FROM invoices
+- reason: adjacent numeric subtraction preserves the binary operator
+  input: SELECT 1-2
+  expected: SELECT ?-?
+- reason: adjacent numeric addition preserves the binary operator
+  input: SELECT 1+2
+  expected: SELECT ?+?
+- reason: adjacent identifier subtraction preserves the binary operator
+  input: SELECT foo-1
+  expected: SELECT foo-?
+- reason: spaced numeric subtraction preserves the binary operator
+  input: SELECT 1 - 2
+  expected: SELECT ? - ?
+- reason: spaced numeric addition preserves the binary operator
+  input: SELECT 1 + 2
+  expected: SELECT ? + ?
+- reason: standalone unary negative literal is replaced as a unit
+  input: SELECT -2
+  expected: SELECT ?
+- reason: spaced identifier subtraction preserves the binary operator
+  input: SELECT foo - 2
+  expected: SELECT foo - ?
+- reason: parenthesized literals
+  input: SELECT (1), ('value'), (FALSE)
+  expected: SELECT (?), (?), (?)
+- reason: SQLite generated quoting and values
+  input: INSERT INTO "widgets" ("name", "size") VALUES ('small', 8)
+  expected: INSERT INTO "widgets" ("name", "size") VALUES (?, ?)
+- reason: existing question-mark placeholder
+  input: SELECT * FROM widgets WHERE id = ?
+  expected: SELECT * FROM widgets WHERE id = ?
+- reason: optimizer hint is conservatively retained
+  input: SELECT /*+ INDEX(users idx_users) */ * FROM users WHERE id = 1
+  expected: SELECT /*+ INDEX(users idx_users) */ * FROM users WHERE id = ?
+- reason: unterminated string is preserved rather than guessed at
+  input: "SELECT * FROM users WHERE name = 'unfinished"
+  expected: "SELECT * FROM users WHERE name = 'unfinished"
+- reason: unterminated block comment is preserved
+  input: SELECT 1 /* unfinished 999
+  expected: SELECT ? /* unfinished 999
+- reason: dollar-quoted PostgreSQL string is intentionally preserved
+  input: SELECT $tag$literal 123$tag$
+  expected: SELECT $tag$literal 123$tag$
