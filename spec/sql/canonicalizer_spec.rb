@@ -36,6 +36,36 @@ RSpec.describe Karst::Sql::Canonicalizer do
     expect { canonicalize.call(:select) }.to raise_error(ArgumentError, "sql must be a String")
   end
 
+  it "classifies tokens at index zero independently of trailing characters" do
+    {
+      "5" => "?",
+      "5)" => "?)",
+      "5 FROM t" => "? FROM t",
+      "true" => "?"
+    }.each do |input, expected|
+      expect(canonicalize.call(input)).to eq(expected)
+    end
+  end
+
+  it "does not expose recognizable values from malformed or dialect-ambiguous regions" do
+    adversarial_inputs = {
+      "SELECT * FROM t WHERE pw = 'hunter2" => ["SELECT * FROM t WHERE pw = ?", "hunter2"],
+      "UPDATE t SET token = 'abc123" => ["UPDATE t SET token = ?", "abc123"],
+      "SELECT `col FROM t WHERE pw = 'secret'" => %w[SELECT secret],
+      "SELECT \"col FROM t WHERE token = 'secret-token'" => %w[SELECT secret-token],
+      "SELECT /* comment token='secret-token'" => %w[SELECT secret-token],
+      "SELECT * FROM t WHERE path = 'C:\\' AND secret = 'hunter2'" => ["SELECT * FROM t WHERE path = ?", "hunter2"],
+      "UPDATE files SET dir = 'C:\\' WHERE token = 'abc123'" => ["UPDATE files SET dir = ?", "abc123"],
+      "SELECT $tag$secret-token" => ["SELECT ?", "secret-token"]
+    }
+
+    adversarial_inputs.each do |input, (expected, secret)|
+      result = canonicalize.call(input)
+      expect(result).to eq(expected)
+      expect(result).not_to include(secret)
+    end
+  end
+
   equivalence_pairs = [
     ["SELECT * FROM users WHERE id = 1", "SELECT * FROM users WHERE id = 999"],
     ["SELECT * FROM users WHERE email = 'a@example.com'", "SELECT * FROM users WHERE email = 'b@example.com'"],
