@@ -285,16 +285,16 @@ RSpec.describe Karst do
   end
 
   it "can be required without Rails and defaults to disabled" do
-    script = <<~'RUBY'
+    script = <<~RUBY
       require "karst"
-      puts "enabled=#{Karst.enabled?.inspect}"
-      puts "rails=#{defined?(Rails).inspect}"
-      puts "active_record=#{defined?(ActiveRecord).inspect}"
+
+      abort "Karst should be disabled outside Rails" if Karst.enabled?
+      abort "Karst should not load Rails" if defined?(Rails)
+      abort "Karst should not load ActiveRecord" if defined?(ActiveRecord)
     RUBY
     output, status = Open3.capture2e(RbConfig.ruby, "-I#{File.expand_path('../lib', __dir__)}", "-e", script)
 
-    expect(status).to be_success
-    expect(output).to eq("enabled=false\nrails=nil\nactive_record=nil\n")
+    expect(status).to be_success, output
   end
 
   it "uses the same version as the gemspec" do
