@@ -73,6 +73,15 @@
 - reason: block comment is removed
   input: SELECT /* request metadata 123 */ * FROM users
   expected: SELECT * FROM users
+- reason: block comment removal separates a literal from a keyword
+  input: SELECT 1/* comment */FROM users
+  expected: SELECT ? FROM users
+- reason: block comment removal does not merge identifiers
+  input: SELECT foo/* comment */bar
+  expected: SELECT foo bar
+- reason: line comment removal separates identifiers across lines
+  input: "SELECT foo-- comment\nbar"
+  expected: SELECT foo bar
 - reason: comment markers inside strings do not begin comments
   input: SELECT '--not a comment', '/* neither */'
   expected: SELECT ?, ?
@@ -88,6 +97,27 @@
 - reason: binary subtraction remains an operator
   input: SELECT total-1 FROM invoices
   expected: SELECT total-? FROM invoices
+- reason: adjacent numeric subtraction preserves the binary operator
+  input: SELECT 1-2
+  expected: SELECT ?-?
+- reason: adjacent numeric addition preserves the binary operator
+  input: SELECT 1+2
+  expected: SELECT ?+?
+- reason: adjacent identifier subtraction preserves the binary operator
+  input: SELECT foo-1
+  expected: SELECT foo-?
+- reason: spaced numeric subtraction preserves the binary operator
+  input: SELECT 1 - 2
+  expected: SELECT ? - ?
+- reason: spaced numeric addition preserves the binary operator
+  input: SELECT 1 + 2
+  expected: SELECT ? + ?
+- reason: standalone unary negative literal is replaced as a unit
+  input: SELECT -2
+  expected: SELECT ?
+- reason: spaced identifier subtraction preserves the binary operator
+  input: SELECT foo - 2
+  expected: SELECT foo - ?
 - reason: parenthesized literals
   input: SELECT (1), ('value'), (FALSE)
   expected: SELECT (?), (?), (?)

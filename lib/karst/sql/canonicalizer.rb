@@ -147,7 +147,17 @@ module Karst
 
           previous = index - 1
           previous -= 1 while previous >= 0 && whitespace?(sql[previous])
+          return false if preceding_word(sql, previous).casecmp?("SELECT")
+
           previous >= 0 && !"(,=<>+-*/%".include?(sql[previous])
+        end
+
+        def preceding_word(sql, ending)
+          return "" if ending.negative?
+
+          start = ending
+          start -= 1 while start >= 0 && sql[start].match?(/[A-Za-z]/)
+          sql[(start + 1)..ending]
         end
 
         def token_boundary?(character)
