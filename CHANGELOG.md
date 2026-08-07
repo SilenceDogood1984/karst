@@ -13,3 +13,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Automatic subscription after Rails initialization when Karst is enabled.
 - Immutable, minimal SQL events constructed internally from valid `sql.active_record` notifications.
 - Bounded, thread-safe, process-local retention of recent events through `Karst.buffer`.
+- Experimental, conservative SQL canonicalization independent of event capture, preserving structural casts and list cardinality while normalizing supported literals, whitespace, and ordinary comments.

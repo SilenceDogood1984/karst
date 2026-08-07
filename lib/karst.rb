@@ -4,6 +4,7 @@ require_relative "karst/version"
 require_relative "karst/configuration"
 require_relative "karst/buffer"
 require_relative "karst/sql/event"
+require_relative "karst/sql/canonicalizer"
 require_relative "karst/subscription"
 
 # Public entry point for Karst configuration and subscription ownership.
