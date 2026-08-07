@@ -62,6 +62,31 @@ RSpec.describe "Rails integration harness" do
     expect(event.sql).to be_frozen
   end
 
+  it "captures an immutable SQL event from a real Active Record query" do
+    ActiveRecord::Schema.define do
+      create_table :karst_integration_widgets, force: true do |table|
+        table.string :name
+      end
+    end
+    widget_model = Class.new(ActiveRecord::Base) do
+      self.table_name = "karst_integration_widgets"
+    end
+    widget_model.create!(name: "first")
+    Karst.buffer.clear
+
+    widget_model.where(name: "first").to_a
+
+    event = Karst.buffer.to_a.find do |candidate|
+      candidate.sql.include?("SELECT") && candidate.sql.include?("karst_integration_widgets")
+    end
+    expect(event).to be_a(Karst::Sql::Event)
+    expect(event.sql).to include("karst_integration_widgets")
+    expect(event.duration_ms).to be >= 0
+    expect(event.sql).to be_frozen
+    expect(event.name).to be_nil.or be_frozen
+    expect(event).to be_frozen
+  end
+
   it "remains unsubscribed when application initializer configuration disables Karst" do
     harness = File.expand_path("../support/test_application", __dir__)
     script = <<~RUBY
