@@ -11,6 +11,9 @@ require_relative "karst/subscription"
 module Karst
   @ownership_mutex = Mutex.new
 
+  private_constant :Configuration, :Buffer, :Subscription
+  Sql.private_constant :Canonicalizer
+
   class << self
     def configure
       yield config

@@ -7,6 +7,10 @@ require "rbconfig"
 require "karst"
 
 RSpec.describe Karst do
+  configuration_class = Karst.const_get(:Configuration, false)
+  buffer_class = Karst.const_get(:Buffer, false)
+  subscription_class = Karst.const_get(:Subscription, false)
+
   describe "configuration" do
     it "is disabled by default outside Rails" do
       expect(described_class.enabled?).to be(false)
@@ -22,7 +26,7 @@ RSpec.describe Karst do
     end
 
     it "defaults buffer size to 2,000 and validates configured values" do
-      configuration = Karst::Configuration.new
+      configuration = configuration_class.new
 
       expect(configuration.buffer_size).to eq(2_000)
       configuration.buffer_size = 12
@@ -36,7 +40,7 @@ RSpec.describe Karst do
   describe "process-level buffer" do
     before do
       described_class.unsubscribe!
-      described_class.instance_variable_set(:@config, Karst::Configuration.new)
+      described_class.instance_variable_set(:@config, configuration_class.new)
       described_class.remove_instance_variable(:@buffer) if described_class.instance_variable_defined?(:@buffer)
       if described_class.instance_variable_defined?(:@subscription)
         described_class.remove_instance_variable(:@subscription)
@@ -57,14 +61,14 @@ RSpec.describe Karst do
     end
 
     it "constructs one buffer when first accessed concurrently" do
-      allow(Karst::Buffer).to receive(:new).and_wrap_original do |constructor, **arguments|
+      allow(buffer_class).to receive(:new).and_wrap_original do |constructor, **arguments|
         sleep(0.01)
         constructor.call(**arguments)
       end
 
       buffers = 10.times.map { Thread.new { described_class.buffer } }.map(&:value)
 
-      expect(Karst::Buffer).to have_received(:new).once
+      expect(buffer_class).to have_received(:new).once
       expect(buffers.map(&:object_id).uniq.size).to eq(1)
     end
 
@@ -168,7 +172,7 @@ RSpec.describe Karst do
     end
   end
 
-  describe Karst::Subscription do
+  describe subscription_class do
     require "active_support"
     require "active_support/notifications"
 
@@ -281,6 +285,20 @@ RSpec.describe Karst do
       expect(event).not_to respond_to(:payload)
       expect(described_class.superclass).to eq(Data)
       expect(Karst.const_defined?(:Event, false)).to be(false)
+    end
+  end
+
+  describe "public constant visibility" do
+    it "keeps supported constants public" do
+      expect(Karst::Sql::Event).to be_a(Class)
+      expect(Karst::VERSION).to be_a(String)
+    end
+
+    it "prevents external lookup of implementation constants" do
+      expect { Karst::Configuration }.to raise_error(NameError, /private constant/)
+      expect { Karst::Buffer }.to raise_error(NameError, /private constant/)
+      expect { Karst::Subscription }.to raise_error(NameError, /private constant/)
+      expect { Karst::Sql::Canonicalizer }.to raise_error(NameError, /private constant/)
     end
   end
 
