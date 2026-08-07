@@ -1,5 +1,8 @@
 # frozen_string_literal: true
 
+require "active_support"
+require "active_support/notifications"
+
 module Karst
   # Owns the lifecycle of Karst's Active Support notification callback.
   class Subscription
@@ -16,8 +19,6 @@ module Karst
       @mutex.synchronize do
         return if @handle
 
-        require "active_support"
-        require "active_support/notifications"
         @handle = ActiveSupport::Notifications.monotonic_subscribe(EVENT_NAME, &@notification_callback)
       end
     end

@@ -34,11 +34,13 @@ module Karst
     end
 
     def unsubscribe!
-      subscription.unsubscribe!
+      existing_subscription = @ownership_mutex.synchronize { @subscription }
+      existing_subscription&.unsubscribe!
     end
 
     def subscribed?
-      subscription.subscribed?
+      existing_subscription = @ownership_mutex.synchronize { @subscription }
+      existing_subscription ? existing_subscription.subscribed? : false
     end
 
     private
@@ -50,5 +52,4 @@ module Karst
   end
 end
 
-railties_available = defined?(Rails::Railtie) || Gem::Specification.find_all_by_name("railties").any?
-require_relative "karst/railtie" if railties_available
+require_relative "karst/railtie" if defined?(Rails::Railtie)

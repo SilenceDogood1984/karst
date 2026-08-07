@@ -132,6 +132,40 @@ RSpec.describe Karst do
 
       expect(described_class).not_to be_subscribed
     end
+
+    context "before runtime state has been constructed" do
+      before do
+        described_class.unsubscribe!
+        if described_class.instance_variable_defined?(:@subscription)
+          described_class.remove_instance_variable(:@subscription)
+        end
+        described_class.remove_instance_variable(:@buffer) if described_class.instance_variable_defined?(:@buffer)
+      end
+
+      it "reports that it is unsubscribed without constructing runtime state" do
+        expect(described_class.subscribed?).to be(false)
+        expect(described_class.instance_variable_defined?(:@subscription)).to be(false)
+        expect(described_class.instance_variable_defined?(:@buffer)).to be(false)
+      end
+
+      it "unsubscribes without constructing runtime state" do
+        expect(described_class.unsubscribe!).to be_nil
+        expect(described_class.instance_variable_defined?(:@subscription)).to be(false)
+        expect(described_class.instance_variable_defined?(:@buffer)).to be(false)
+        expect(described_class.subscribed?).to be(false)
+      end
+
+      it "handles concurrent observations and unsubscriptions without constructing runtime state" do
+        threads = 10.times.map do |index|
+          Thread.new { index.even? ? described_class.subscribed? : described_class.unsubscribe! }
+        end
+
+        expect { threads.each(&:value) }.not_to raise_error
+        expect(described_class.instance_variable_defined?(:@subscription)).to be(false)
+        expect(described_class.instance_variable_defined?(:@buffer)).to be(false)
+        expect(described_class.subscribed?).to be(false)
+      end
+    end
   end
 
   describe Karst::Subscription do
@@ -250,11 +284,17 @@ RSpec.describe Karst do
     end
   end
 
-  it "can be required outside an application without loading Active Record" do
-    script = 'require "karst"; abort if defined?(ActiveRecord)'
-    _output, status = Open3.capture2e(RbConfig.ruby, "-I#{File.expand_path('../lib', __dir__)}", "-e", script)
+  it "can be required without Rails and defaults to disabled" do
+    script = <<~'RUBY'
+      require "karst"
+      puts "enabled=#{Karst.enabled?.inspect}"
+      puts "rails=#{defined?(Rails).inspect}"
+      puts "active_record=#{defined?(ActiveRecord).inspect}"
+    RUBY
+    output, status = Open3.capture2e(RbConfig.ruby, "-I#{File.expand_path('../lib', __dir__)}", "-e", script)
 
     expect(status).to be_success
+    expect(output).to eq("enabled=false\nrails=nil\nactive_record=nil\n")
   end
 
   it "uses the same version as the gemspec" do
