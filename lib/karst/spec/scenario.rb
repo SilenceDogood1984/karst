@@ -16,6 +16,12 @@ module Karst
     # legitimately produces one Scenario per such request: Karst never
     # collapses an example down to "its last request," and never labels any
     # request as authentication setup versus the subject under test.
+    #
+    # `principal_before`/`principal_after` are both kept, not collapsed to
+    # whichever was active when the request began: a signup or checkout
+    # scenario that establishes a session is exactly the case where the
+    # identity a request produces matters as much as the identity it started
+    # with, and either side alone would discard real evidence.
     Scenario = Data.define(
       :example_id,
       :file_path,
@@ -30,7 +36,8 @@ module Karst
       :observed_path,
       :observed_status,
       :observed_redirect,
-      :principal,
+      :principal_before,
+      :principal_after,
       :principal_changed,
       :sequence
     ) do

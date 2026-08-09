@@ -13,7 +13,7 @@ RSpec.describe Karst::Spec::Scenario do
       description_parts: description_parts, full_description: full_description, example_outcome: example_outcome,
       controller: "XController", action: "show", http_method: "GET", route_pattern: "/x(.:format)",
       observed_path: "/x", observed_status: 200, observed_redirect: nil,
-      principal: nil, principal_changed: false, sequence: 0
+      principal_before: nil, principal_after: nil, principal_changed: false, sequence: 0
     )
   end
 

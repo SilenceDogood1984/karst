@@ -138,7 +138,8 @@ RSpec.describe Karst::Spec::Catalog do
       expect(scenario.observed_path).to eq("/x/1")
       expect(scenario.observed_status).to eq(200)
       expect(scenario.observed_redirect).to be_nil
-      expect(scenario.principal).to eq(principal)
+      expect(scenario.principal_before).to eq(principal)
+      expect(scenario.principal_after).to eq(principal)
       expect(scenario.principal_changed).to be(false)
       expect(scenario.example_outcome).to eq(:passed)
       expect(scenario).to be_passed
@@ -152,13 +153,14 @@ RSpec.describe Karst::Spec::Catalog do
       catalog = catalog_for([recorded])
       scenario = catalog.scenarios_for(controller: "PublicController", action: "index").first
 
-      expect(scenario.principal).to be_nil
+      expect(scenario.principal_before).to be_nil
+      expect(scenario.principal_after).to be_nil
       expect(scenario.principal_changed).to be(false)
     end
   end
 
   describe "a principal-changing request" do
-    it "carries the principal active before the request, plus principal_changed, without a setup/subject label" do
+    it "carries the principal active both before and after the request, without a setup/subject label" do
       principal = Karst::Spec::Principal.new(type: "User", id: 3, scope: "default")
       recorded = example(
         file_path: "spec/a_spec.rb", line_number: 1, description: "signs up and lands on the dashboard",
@@ -168,7 +170,12 @@ RSpec.describe Karst::Spec::Catalog do
       catalog = catalog_for([recorded])
       scenario = catalog.scenarios_for(controller: "SignupsController", action: "create").first
 
-      expect(scenario.principal).to be_nil
+      # The identity this request PRODUCED must survive even though nothing
+      # was active beforehand -- collapsing to principal_before alone would
+      # silently discard it here, which is exactly the case that matters for
+      # "this scenario creates/becomes this principal."
+      expect(scenario.principal_before).to be_nil
+      expect(scenario.principal_after).to eq(principal)
       expect(scenario.principal_changed).to be(true)
       expect(scenario.observed_status).to eq(302)
       expect(scenario.observed_redirect).to eq("/dashboard")

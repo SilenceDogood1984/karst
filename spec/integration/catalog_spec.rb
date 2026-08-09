@@ -92,7 +92,8 @@ RSpec.describe "Observer to Catalog contract" do
       admin = catalog.scenarios_for(controller: "ScenarioAdminController", action: "show")
       abort "expected 3 admin scenarios, got \#{admin.size}" unless admin.size == 3
       abort "unexpected admin statuses: \#{admin.map(&:observed_status)}" unless admin.map(&:observed_status) == [302, 302, 200]
-      abort "unexpected admin principals: \#{admin.map { |s| s.principal&.id }}" unless admin.map { |s| s.principal&.id } == [nil, 1, 2]
+      abort "unexpected admin principal_before: \#{admin.map { |s| s.principal_before&.id }}" unless admin.map { |s| s.principal_before&.id } == [nil, 1, 2]
+      abort "unexpected admin principal_after: \#{admin.map { |s| s.principal_after&.id }}" unless admin.map { |s| s.principal_after&.id } == [nil, 1, 2]
       abort "unexpected outcomes: \#{admin.map(&:example_outcome)}" unless admin.all? { |s| s.example_outcome == :passed }
       abort "unexpected admin names: \#{admin.map(&:name)}" unless admin.map(&:name) == [
         "denies admin access when signed out",

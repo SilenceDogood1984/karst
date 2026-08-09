@@ -105,9 +105,9 @@ module Karst
         # be indexed and shown: a browser-facing (HTML) response, a resolved
         # controller/action, an HTTP method, and its position within the
         # example. Everything else observed about the request (route pattern,
-        # path, status, redirect target, principal) is retained as-is,
-        # including nil, since a nil there is itself real evidence (e.g. the
-        # request never reached `process_action`).
+        # path, status, redirect target, principal before/after) is retained
+        # as-is, including nil, since a nil there is itself real evidence
+        # (e.g. the request never reached `process_action`).
         def scenario_from_request(request, example)
           return nil unless request.is_a?(Hash) && request["format"] == "html" && valid_request?(request)
 
@@ -125,7 +125,7 @@ module Karst
           value.is_a?(String) && !value.empty?
         end
 
-        # rubocop:disable Metrics/AbcSize
+        # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
         def build_scenario(request, example)
           Scenario.new(
             example_id: example["example_id"], file_path: example["file_path"], line_number: example["line_number"],
@@ -134,11 +134,12 @@ module Karst
             controller: request["controller"], action: request["action"], http_method: request["method"],
             route_pattern: request["route_pattern"], observed_path: request["path"],
             observed_status: request["status"], observed_redirect: request["redirect_location"],
-            principal: principal_from(request["principal_before"]),
+            principal_before: principal_from(request["principal_before"]),
+            principal_after: principal_from(request["principal_after"]),
             principal_changed: request["principal_changed"] == true, sequence: request["sequence"]
           ).freeze
         end
-        # rubocop:enable Metrics/AbcSize
+        # rubocop:enable Metrics/AbcSize, Metrics/MethodLength
 
         def outcome_for(raw)
           OUTCOMES.include?(raw) ? raw.to_sym : :unknown
