@@ -48,6 +48,44 @@ A `Window`'s counts and durations apply only to that Window. Fingerprints are a 
 
 In Rails development, Karst serves a read-only scenario panel at `GET /karst` through a small Rack middleware — no engine, route, or controller. The panel reads `tmp/karst/scenarios.json` through `Karst::Spec::Catalog` and shows the statuses, redirects, principal types, outcomes, and spec provenance observed for a controller/action. It distinguishes a missing or invalid artifact from a ready catalog with no matching scenarios. Runtime SQL Window counts remain available as secondary evidence.
 
+## Identity adapters
+
+Karst does not assume that application identity is a `User`, Active Record, or
+Warden object. Applications may independently configure a lazy candidate source
+and the hooks used by a controlled integration session:
+
+```ruby
+Karst.configure do |config|
+  config.principals = -> { Account.active }
+  config.assume_identity = lambda do |session, account|
+    session.post "/karst_test_login", params: { account_id: account.id }
+  end
+  config.clear_identity = ->(session) { session.delete "/karst_test_logout" }
+  # Optional and only evaluated when a descriptor is requested:
+  config.principal_label = ->(account) { "QA account #{account.id}" }
+end
+
+Karst::Identity.with(integration_session, account) do
+  integration_session.get "/private"
+end # clear_identity always runs, including when the block raises
+```
+
+`config.principals` is called only by `Karst::Identity.principals`; Karst does
+not enumerate, sample, or materialize its result. Both identity hooks must be
+configured together. This lets an application use a test-only endpoint or any
+other session-local mechanism without giving Karst passwords, emails, tokens,
+or authentication secrets.
+
+`Karst::Identity.describe(principal)` returns an immutable descriptor containing
+only model/class name, `id`, and a display label. The default label is the safe
+`"Account #44"` form and never calls `to_s` or reads arbitrary attributes.
+
+When Warden has already been loaded, Karst can alternatively use the public
+`set_user` and `logout` APIs on an existing Rack `env["warden"]` proxy. Warden is
+not required or eagerly loaded. A bare `ActionDispatch::Integration::Session`
+does not expose an initialized Warden proxy generically; configure the explicit
+hooks above for that case rather than relying on app-specific Warden internals.
+
 The normal development workflow needs no manual controller/action entry: open any page in your Rails app, and Karst adds a small "Karst" badge fixed near a screen corner, already scoped to the controller/action that rendered the page (derived from a real `process_action.action_controller` notification, never guessed from the URL). Click it to jump straight to that route's observed scenarios — `/author/projects` links directly into `Author::ProjectsController#index`, with the count of observed scenarios shown on the badge itself when the catalog is ready. The badge only appears on genuine, rewritable HTML page responses — never on JSON, redirects, Turbo Stream responses, file downloads, or `/karst` itself — and it degrades to a plain, unstyled link under a host Content-Security-Policy that forbids inline styles; Karst never rewrites the host's own CSP header to work around this. On a Rack 2 stack (Rails 6.1 and, on Rack 2, Rails 7.0) the response body Karst would need to rewrite isn't safely bufferable, so the badge is unavailable there; `/karst` itself is unaffected. See [Compatibility](#compatibility) below.
 
 You can still reach the panel directly with query parameters, as a fallback: `/karst?controller=Author::ProjectsController&action=index`.
