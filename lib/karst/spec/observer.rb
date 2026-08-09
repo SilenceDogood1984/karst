@@ -10,6 +10,8 @@ require_relative "reporter"
 
 module Karst
   module Spec
+    class InvalidMetadataError < StandardError; end
+
     # Turns real RSpec execution into Karst's route/scenario catalog.
     #
     # Karst never parses spec source, route-helper arguments, or FactoryBot
@@ -71,10 +73,11 @@ module Karst
         # run the example, then convert whatever was tracked into an
         # immutable ExampleObservation and hand it to the Reporter.
         def wrap_example(example)
+          karst_explicit, karst_name = karst_metadata(example)
           start_example!
           yield
         ensure
-          finish_and_record!(example)
+          finish_and_record!(example, karst_explicit: karst_explicit, karst_name: karst_name)
         end
 
         private
@@ -208,7 +211,7 @@ module Karst
         end
 
         # rubocop:disable Metrics/MethodLength, Metrics/AbcSize
-        def finish_and_record!(example)
+        def finish_and_record!(example, karst_explicit:, karst_name:)
           state = finish_example!
           return unless state
           return if state.requests.empty?
@@ -221,6 +224,8 @@ module Karst
               spec_type: example.metadata[:type],
               description_parts: description_parts(example),
               full_description: example.full_description,
+              karst_explicit: karst_explicit,
+              karst_name: karst_name,
               outcome: outcome_for(example),
               requests: freeze_requests(state.requests)
             ).freeze
@@ -266,6 +271,26 @@ module Karst
           outer = example.example_group.parent_groups.reverse.map(&:description)
           (outer + [example.description]).freeze
         end
+
+        # rubocop:disable Metrics/MethodLength
+        def karst_metadata(example)
+          return [false, nil] unless example.metadata.key?(:karst)
+
+          value = example.metadata[:karst]
+          name = if value.is_a?(String)
+                   value
+                 elsif value.is_a?(Hash) && value.keys == [:name]
+                   value[:name]
+                 end
+
+          unless name.is_a?(String) && !name.strip.empty?
+            raise InvalidMetadataError,
+                  "Invalid karst: metadata for #{example.id}; expected a non-empty String or { name: non_empty_string }"
+          end
+
+          [true, name]
+        end
+        # rubocop:enable Metrics/MethodLength
       end
       # rubocop:enable Metrics/ClassLength
     end

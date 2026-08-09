@@ -13,6 +13,8 @@ module Karst
       :spec_type,
       :description_parts,
       :full_description,
+      :karst_explicit,
+      :karst_name,
       :outcome,
       :requests
     ) do

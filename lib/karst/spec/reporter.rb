@@ -37,6 +37,7 @@ module Karst
 
       private
 
+      # rubocop:disable Metrics/MethodLength
       def serialize(example)
         {
           "example_id" => example.example_id,
@@ -45,10 +46,13 @@ module Karst
           "spec_type" => example.spec_type&.to_s,
           "description_parts" => example.description_parts,
           "full_description" => example.full_description,
+          "karst_explicit" => example.karst_explicit,
+          "karst_name" => example.karst_name,
           "outcome" => example.outcome.to_s,
           "requests" => example.requests.map { |request| serialize_request(request) }
         }
       end
+      # rubocop:enable Metrics/MethodLength
 
       # rubocop:disable Metrics/MethodLength
       def serialize_request(request)

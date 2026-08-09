@@ -21,11 +21,12 @@ RSpec.describe Karst::Spec::Reporter do
     )
   end
 
-  def example(file_path:, line_number:, description: "does a thing", requests: [request])
+  def example(file_path:, line_number:, description: "does a thing", requests: [request], karst: nil)
     Karst::Spec::ExampleObservation.new(
       example_id: "./#{file_path}[1:1]", file_path: file_path, line_number: line_number,
       spec_type: :request, description_parts: ["Group", description],
-      full_description: "Group #{description}", outcome: :passed, requests: requests
+      full_description: "Group #{description}", karst_explicit: !karst.nil?, karst_name: karst,
+      outcome: :passed, requests: requests
     )
   end
 
@@ -125,6 +126,23 @@ RSpec.describe Karst::Spec::Reporter do
         expect(request_json["principal_changed"]).to be(false)
         expect(request_json["format"]).to eq("html")
         expect(written.first["outcome"]).to eq("passed")
+        expect(written.first).to include("karst_explicit" => false, "karst_name" => nil)
+      end
+    end
+
+    it "serializes explicit Karst scenario metadata" do
+      reporter = described_class.new
+      reporter.record(
+        example(file_path: "spec/a_spec.rb", line_number: 1,
+                karst: "Author with no books")
+      )
+
+      Dir.mktmpdir do |dir|
+        path = File.join(dir, "scenarios.json")
+        reporter.write(path)
+        written = JSON.parse(File.read(path)).first
+
+        expect(written).to include("karst_explicit" => true, "karst_name" => "Author with no books")
       end
     end
 
