@@ -3,6 +3,9 @@
 ENV["RAILS_ENV"] ||= "test"
 
 require "logger"
+# Load only the Rails application and controller integration required by this
+# fixture. In particular, do not require rails/all or active_record/railtie:
+# this test exercises cookie-backed session identity and has no database.
 require "rails"
 require "action_controller/railtie"
 require "karst"
