@@ -33,7 +33,7 @@
   expected: SELECT * FROM authors WHERE name = ?
 - reason: MySQL backslash escape
   input: "SELECT * FROM authors WHERE name = 'O\\'Reilly'"
-  expected: SELECT * FROM authors WHERE name = ?
+  expected:
 - reason: NULL remains structural
   input: SELECT * FROM users WHERE deleted_at IS NULL
   expected: SELECT * FROM users WHERE deleted_at IS NULL
@@ -130,12 +130,12 @@
 - reason: optimizer hint is conservatively retained
   input: SELECT /*+ INDEX(users idx_users) */ * FROM users WHERE id = 1
   expected: SELECT /*+ INDEX(users idx_users) */ * FROM users WHERE id = ?
-- reason: unterminated string is redacted and scanning stops safely
+- reason: unterminated string declines canonicalization
   input: "SELECT * FROM users WHERE name = 'unfinished"
-  expected: "SELECT * FROM users WHERE name = ?"
-- reason: unterminated block comment is discarded
+  expected:
+- reason: unterminated block comment declines canonicalization
   input: SELECT 1 /* unfinished 999
-  expected: SELECT ?
+  expected:
 - reason: tagged PostgreSQL dollar-quoted string is redacted as one literal
   input: SELECT $tag$literal 123$tag$
   expected: SELECT ?

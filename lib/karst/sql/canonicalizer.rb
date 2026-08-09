@@ -10,7 +10,8 @@ module Karst
         def call(sql)
           raise ArgumentError, "sql must be a String" unless sql.is_a?(String)
 
-          scan(sql).strip.freeze
+          canonical = scan(sql)
+          canonical&.strip&.freeze
         end
 
         private
@@ -32,7 +33,7 @@ module Karst
               space_pending = true
             elsif sql[index, 2] == "/*"
               ending = block_comment_end(sql, index)
-              break unless ending
+              return unless ending
 
               comment = sql[index...ending]
               if semantic_comment?(comment)
@@ -40,7 +41,10 @@ module Karst
                 original_body = comment[3...-2]
                 leading_space = " " if original_body.match?(/\A\s/)
                 trailing_space = " " if original_body.match?(/\s\z/)
-                body = scan(original_body).strip
+                body = scan(original_body)
+                return unless body
+
+                body = body.strip
                 append(output, "#{prefix}#{leading_space}#{body}#{trailing_space}*/", space_pending)
                 space_pending = false
               else
@@ -49,28 +53,24 @@ module Karst
               index = ending
             elsif character == "'"
               ending = quoted_end(sql, index, "'", backslash_escape: true)
-              unless ending
-                append(output, "?", space_pending)
-                break
-              end
+              return unless ending
+              return if sql[index...ending].include?("\\")
 
               append(output, "?", space_pending)
-              break if sql[index...ending].include?("\\")
-
               space_pending = false
               index = ending
             elsif ['"', "`"].include?(character)
               ending = quoted_end(sql, index, character, backslash_escape: character == "`")
-              break unless ending
+              return unless ending
 
               append(output, sql[index...ending], space_pending)
               space_pending = false
               index = ending
             elsif (delimiter = dollar_quote_delimiter(sql, index))
               ending = sql.index(delimiter, index + delimiter.length)
-              append(output, "?", space_pending)
-              break unless ending
+              return unless ending
 
+              append(output, "?", space_pending)
               space_pending = false
               index = ending + delimiter.length
             elsif boolean_at?(sql, index)
@@ -82,6 +82,8 @@ module Karst
               append(output, "?", space_pending)
               space_pending = false
               index += length
+            elsif character == "\\"
+              return
             else
               append(output, character, space_pending)
               space_pending = false

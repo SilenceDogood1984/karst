@@ -47,23 +47,32 @@ RSpec.describe Karst::Sql.const_get(:Canonicalizer, false) do
     end
   end
 
-  it "does not expose recognizable values from malformed or dialect-ambiguous regions" do
-    adversarial_inputs = {
-      "SELECT * FROM t WHERE pw = 'hunter2" => ["SELECT * FROM t WHERE pw = ?", "hunter2"],
-      "UPDATE t SET token = 'abc123" => ["UPDATE t SET token = ?", "abc123"],
-      "SELECT `col FROM t WHERE pw = 'secret'" => %w[SELECT secret],
-      "SELECT \"col FROM t WHERE token = 'secret-token'" => %w[SELECT secret-token],
-      "SELECT /* comment token='secret-token'" => %w[SELECT secret-token],
-      "SELECT * FROM t WHERE path = 'C:\\' AND secret = 'hunter2'" => ["SELECT * FROM t WHERE path = ?", "hunter2"],
-      "UPDATE files SET dir = 'C:\\' WHERE token = 'abc123'" => ["UPDATE files SET dir = ?", "abc123"],
-      "SELECT $tag$secret-token" => ["SELECT ?", "secret-token"]
-    }
+  it "declines malformed or dialect-ambiguous input instead of returning a canonical prefix" do
+    adversarial_inputs = [
+      "SELECT * FROM t WHERE pw = 'hunter2",
+      "UPDATE t SET token = 'abc123",
+      "SELECT `col FROM t WHERE pw = 'secret'",
+      "SELECT \"col FROM t WHERE token = 'secret-token'",
+      "SELECT /* comment token='secret-token'",
+      "SELECT * FROM t WHERE path = 'C:\\' AND secret = 'hunter2'",
+      "UPDATE files SET dir = 'C:\\' WHERE token = 'abc123'",
+      "SELECT $tag$secret-token"
+    ]
 
-    adversarial_inputs.each do |input, (expected, secret)|
-      result = canonicalize.call(input)
-      expect(result).to eq(expected)
-      expect(result).not_to include(secret)
-    end
+    expect(adversarial_inputs.map { |input| canonicalize.call(input) }).to all(be_nil)
+  end
+
+  it "does not collapse structurally different statements after ambiguous backslash literals" do
+    statements = [
+      "SELECT * FROM users WHERE name LIKE 'foo\\_bar%' ORDER BY id ASC LIMIT 25",
+      "SELECT * FROM users WHERE name LIKE 'baz%qux%' ORDER BY created\\_at DESC LIMIT 10 OFFSET 50"
+    ]
+
+    expect(statements.map { |sql| canonicalize.call(sql) }).to eq([nil, nil])
+  end
+
+  it "propagates a decline from inside a semantic comment" do
+    expect(canonicalize.call("SELECT /*! name = 'ambiguous\\_value' */ 1")).to be_nil
   end
 
   equivalence_pairs = [
