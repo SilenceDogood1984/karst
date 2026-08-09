@@ -18,11 +18,11 @@ module Karst
       private_constant :CONTENT_SECURITY_POLICY
 
       HEADERS = {
-        "Content-Type" => "text/html; charset=utf-8",
-        "Cache-Control" => "no-store",
-        "X-Robots-Tag" => "noindex, nofollow",
-        "X-Frame-Options" => "DENY",
-        "Content-Security-Policy" => CONTENT_SECURITY_POLICY
+        "content-type" => "text/html; charset=utf-8",
+        "cache-control" => "no-store",
+        "x-robots-tag" => "noindex, nofollow",
+        "x-frame-options" => "DENY",
+        "content-security-policy" => CONTENT_SECURITY_POLICY
       }.freeze
       private_constant :HEADERS
 

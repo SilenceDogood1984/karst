@@ -209,6 +209,17 @@ RSpec.describe "Karst web middleware" do
       expect(status).to be_success, output
     end
 
+    it "emits one canonical lowercase cache policy for the Rack stack" do
+      output, status = run_script(rails_env: "development", script: <<~RUBY)
+        status, headers, = Karst::Web::Panel.render
+        abort "expected 200, got \#{status}" unless status == 200
+        abort "expected one Cache-Control field" unless headers.keys.grep(/cache-control/i) == ["cache-control"]
+        abort "expected no-store" unless headers["cache-control"] == "no-store"
+      RUBY
+
+      expect(status).to be_success, output
+    end
+
     it "escapes a runtime-derived hostile value instead of rendering it as markup" do
       output, status = run_script(rails_env: "development", script: <<~RUBY)
         #{request_harness}
