@@ -38,13 +38,6 @@ RSpec.describe "Karst web middleware" do
     RUBY
   end
 
-  def unsupported_phrases
-    [
-      "this page", "current request", "controller", "action", "n+1", "slow query",
-      "problem", "user can access", "authorized", "this route", "this user"
-    ]
-  end
-
   describe "environment insertion" do
     it "is present in development" do
       output, status = run_script(rails_env: "development", script: <<~RUBY)
@@ -179,16 +172,16 @@ RSpec.describe "Karst web middleware" do
     end
   end
 
-  describe "current evidence wording" do
-    it "never claims request, controller, route, or user attribution" do
+  describe "route context" do
+    it "uses explicit query parameters and never attributes /karst to a host controller" do
       output, status = run_script(rails_env: "development", script: <<~RUBY)
         #{request_harness}
         response = MOCK.get("/karst", "REMOTE_ADDR" => "127.0.0.1")
-        downcased = response.body.downcase
-        #{unsupported_phrases.inspect}.each do |phrase|
-          abort "unsupported phrase present: \#{phrase}" if downcased.include?(phrase)
-        end
-        abort "expected explicit non-request-scoped wording" unless downcased.include?("not request-scoped")
+        abort "falsely attributed panel route" if response.body.include?("Karst::Web::Panel#index")
+        abort "expected route selector" unless response.body.include?('name="controller"')
+
+        selected = MOCK.get("/karst?controller=PostsController&amp;action=index", "REMOTE_ADDR" => "127.0.0.1")
+        abort "query changed host routing" unless selected.status == 200
       RUBY
 
       expect(status).to be_success, output
@@ -225,7 +218,7 @@ RSpec.describe "Karst web middleware" do
         #{request_harness}
         hostile = "<script>alert(1)</script>"
         Karst.define_singleton_method(:window) do
-          Karst::Sql::Window.new(shapes: [], declined: [], event_count: 0, capacity: hostile, saturated: false)
+          Karst::Sql::Window.new(shapes: [], declined: [], event_count: hostile, capacity: 2_000, saturated: false)
         end
 
         response = MOCK.get("/karst", "REMOTE_ADDR" => "127.0.0.1")

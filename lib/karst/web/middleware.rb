@@ -2,6 +2,7 @@
 
 require_relative "locality"
 require_relative "panel"
+require "rack/utils"
 
 module Karst
   module Web
@@ -29,7 +30,7 @@ module Karst
       def call(env)
         return @app.call(env) unless owned?(env) && development? && @locality.local?(env["REMOTE_ADDR"])
 
-        Panel.render
+        Panel.render(params: Rack::Utils.parse_nested_query(env["QUERY_STRING"].to_s))
       end
 
       private

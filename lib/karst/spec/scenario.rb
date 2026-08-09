@@ -28,6 +28,8 @@ module Karst
       :line_number,
       :description_parts,
       :full_description,
+      :karst_explicit,
+      :karst_name,
       :example_outcome,
       :controller,
       :action,
@@ -46,11 +48,15 @@ module Karst
       # specific description last. Never invents a persona the spec itself
       # did not name.
       def name
-        description_parts.last || full_description
+        karst_name || description_parts.last || full_description
       end
 
       def passed?
         example_outcome == :passed
+      end
+
+      def explicit?
+        karst_explicit
       end
     end
   end
