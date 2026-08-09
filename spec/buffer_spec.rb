@@ -14,6 +14,12 @@ RSpec.describe Karst.const_get(:Buffer, false) do
     expect(buffer.to_a).to eq([event])
   end
 
+  it "exposes the capacity it was constructed with" do
+    buffer = described_class.new(capacity: 3)
+
+    expect(buffer.capacity).to eq(3)
+  end
+
   it "rejects invalid capacities" do
     [0, -1, 1.5, "3", nil].each do |capacity|
       expect { described_class.new(capacity: capacity) }.to raise_error(ArgumentError)

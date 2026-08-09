@@ -87,6 +87,37 @@ RSpec.describe "Rails integration harness" do
     expect(event).to be_frozen
   end
 
+  it "derives a Window with grouped shapes from real, repeated Active Record queries" do
+    ActiveRecord::Schema.define do
+      create_table :karst_integration_widgets, force: true do |table|
+        table.string :name
+      end
+    end
+    widget_model = Class.new(ActiveRecord::Base) do
+      self.table_name = "karst_integration_widgets"
+    end
+    widget_model.create!(name: "first")
+    widget_model.create!(name: "second")
+    Karst.buffer.clear
+
+    widget_model.where(name: "first").to_a
+    widget_model.where(name: "second").to_a
+    widget_model.where(name: "third").to_a
+
+    window = Karst.window
+
+    expect(window.event_count).to be > 0
+    expect(window.event_count).to eq(window.shapes.sum(&:count) + window.declined.size)
+    expect(window.shapes).not_to be_empty
+
+    widget_shape = window.shapes.find { |shape| shape.canonical_sql.include?("karst_integration_widgets") }
+    expect(widget_shape).not_to be_nil
+    expect(widget_shape.count).to be >= 2
+    expect(widget_shape.samples).not_to be_empty
+    expect(widget_shape.samples).to all(be_a(Karst::Sql::Event))
+    expect(widget_shape.samples).to all(be_frozen)
+  end
+
   it "remains unsubscribed when application initializer configuration disables Karst" do
     harness = File.expand_path("../support/test_application", __dir__)
     script = <<~RUBY

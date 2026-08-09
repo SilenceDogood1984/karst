@@ -15,6 +15,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Bounded, thread-safe, process-local retention of recent events through `Karst.buffer`.
 - Experimental, conservative SQL canonicalization independent of event capture, preserving structural casts and list cardinality while normalizing supported literals, whitespace, and ordinary comments.
 - Internal deterministic query-shape identity: a SHA-256-based fingerprint over canonicalized SQL, with declared `IN (?+)` placeholder-list arity equivalence, feeding an immutable `Karst::Sql::Shape` that aggregates count, cache hits, duration statistics, and up to three sample events (first, slowest, latest) per shape.
+- `Karst.window`, Karst's first public analysis API: one immutable `Karst::Sql::Window` snapshot per call, derived from exactly one `Karst.buffer.to_a` read and grouped into `shapes` (deterministically ordered by count, then duration, then fingerprint) and `declined` events, with `event_count`, `capacity`, and `saturated` reporting whether older events may already have been evicted from the retained window.
+- `Buffer#capacity`, exposing the fixed capacity of the retained buffer so `Karst.window` can report it.
 
 ### Changed
 
