@@ -120,6 +120,8 @@ GEM
     unicode-display_width (3.2.0)
       unicode-emoji (~> 4.1)
     unicode-emoji (4.2.0)
+    warden (1.2.9)
+      rack (>= 2.0.9)
     zeitwerk (2.8.3)
 
 PLATFORMS
@@ -132,6 +134,7 @@ DEPENDENCIES
   rake (~> 13.2)
   rspec (~> 3.13)
   rubocop (~> 1.75)
+  warden
 
 BUNDLED WITH
    2.4.19
