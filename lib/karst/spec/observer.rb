@@ -1,8 +1,9 @@
 # frozen_string_literal: true
 
+require "logger" # see Karst::Subscription for why this must precede active_support on Rails 6.1
 require "active_support"
 require "active_support/notifications"
-require "active_support/isolated_execution_state"
+require_relative "../execution_context"
 require_relative "principal"
 require_relative "request_observation"
 require_relative "example_observation"
@@ -83,16 +84,16 @@ module Karst
         private
 
         def current
-          ActiveSupport::IsolatedExecutionState[KEY]
+          Karst::ExecutionContext[KEY]
         end
 
         def start_example!
-          ActiveSupport::IsolatedExecutionState[KEY] = Current.new(requests: [], principal: nil)
+          Karst::ExecutionContext[KEY] = Current.new(requests: [], principal: nil)
         end
 
         def finish_example!
           state = current
-          ActiveSupport::IsolatedExecutionState.delete(KEY)
+          Karst::ExecutionContext.delete(KEY)
           state
         end
 

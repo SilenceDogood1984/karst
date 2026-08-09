@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative "../value"
+
 module Karst
   module Spec
     # One HTTP request observed during a single RSpec example.
@@ -18,7 +20,7 @@ module Karst
     # observer, informed by more context than one request can supply.
     #
     # Named `http_method`, not `method`, so it never shadows Object#method.
-    RequestObservation = Data.define(
+    RequestObservation = Value.define(
       :sequence,
       :http_method,
       :path,

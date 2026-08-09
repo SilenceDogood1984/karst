@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative "../value"
+
 module Karst
   module Spec
     # One RSpec example exercising one specific browser-facing controller/action
@@ -22,7 +24,7 @@ module Karst
     # scenario that establishes a session is exactly the case where the
     # identity a request produces matters as much as the identity it started
     # with, and either side alone would discard real evidence.
-    Scenario = Data.define(
+    Scenario = Value.define(
       :example_id,
       :file_path,
       :line_number,

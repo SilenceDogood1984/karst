@@ -1,9 +1,11 @@
 # frozen_string_literal: true
 
+require_relative "../value"
+
 module Karst
   module Sql
     # Minimal immutable evidence captured from a SQL notification.
-    Event = Data.define(
+    Event = Value.define(
       :name,
       :sql,
       :cached,

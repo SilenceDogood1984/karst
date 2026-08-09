@@ -1,11 +1,12 @@
 # frozen_string_literal: true
 
 require "digest"
+require_relative "../value"
 
 module Karst
   module Sql
     # Immutable aggregate identity for Events that share the same declared query shape.
-    Shape = Data.define(
+    Shape = Value.define(
       :fingerprint,
       :canonical_sql,
       :count,

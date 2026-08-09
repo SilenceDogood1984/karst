@@ -24,15 +24,22 @@ module ScenarioUsers
     ScenarioUser.new(2, "admin@example.com", "admin")
   ].freeze
 
-  def self.find(id) = ALL.find { |user| user.id.to_s == id.to_s }
-  def self.find_by_email(email) = ALL.find { |user| user.email == email }
+  def self.find(id)
+    ALL.find { |user| user.id.to_s == id.to_s }
+  end
+
+  def self.find_by_email(email)
+    ALL.find { |user| user.email == email }
+  end
 end
 
 Warden::Manager.serialize_into_session(&:id)
 Warden::Manager.serialize_from_session { |id| ScenarioUsers.find(id) }
 
 Warden::Strategies.add(:scenario_password) do
-  def valid? = params["email"] && params["password"]
+  def valid?
+    params["email"] && params["password"]
+  end
 
   def authenticate!
     user = ScenarioUsers.find_by_email(params["email"])

@@ -21,7 +21,9 @@ RSpec.describe "Observer to Catalog contract" do
         include Rack::Test::Methods
         include ScenarioApplication.routes.url_helpers
 
-        def app = ScenarioApplication
+        def app
+          ScenarioApplication
+        end
 
         it "denies admin access when signed out" do
           get admin_path

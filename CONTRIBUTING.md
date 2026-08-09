@@ -32,7 +32,7 @@ Every behavior change requires tests at the narrowest useful level. Bug fixes sh
 
 ### Rails compatibility
 
-Karst's compatibility harness currently covers Rails 7.0 and 7.1 on Ruby 3.2, and Rails 7.2 and 8.0 on Ruby 3.3. These are contributor test targets rather than an end-user compatibility guarantee.
+Karst's compatibility harness currently covers Rails 6.1 on Ruby 2.7, Rails 7.0 and 7.1 on Ruby 3.2, and Rails 7.2 and 8.0 on Ruby 3.3. The Rails 6.1 / Ruby 2.7 job is blocking, the same as every other row: Karst claims that floor because CI proves it, not the other way around. See [ARCHITECTURE.md](ARCHITECTURE.md#compatibility-policy) for how optional features (currently: the page-local badge) degrade on that floor instead of raising.
 
 The repository uses version-specific Gemfiles under `gemfiles/`. This keeps each dependency set explicit and lets Bundler and CI use their standard `BUNDLE_GEMFILE` behavior without an additional dependency-management tool. Matrix lockfiles are intentionally not committed: compatibility CI resolves the current dependency set allowed by each Rails line, so it detects dependency-resolution regressions instead of only testing a previously locked snapshot. To run one target locally:
 

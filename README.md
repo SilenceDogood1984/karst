@@ -48,7 +48,7 @@ A `Window`'s counts and durations apply only to that Window. Fingerprints are a 
 
 In Rails development, Karst serves a read-only scenario panel at `GET /karst` through a small Rack middleware — no engine, route, or controller. The panel reads `tmp/karst/scenarios.json` through `Karst::Spec::Catalog` and shows the statuses, redirects, principal types, outcomes, and spec provenance observed for a controller/action. It distinguishes a missing or invalid artifact from a ready catalog with no matching scenarios. Runtime SQL Window counts remain available as secondary evidence.
 
-The normal development workflow needs no manual controller/action entry: open any page in your Rails app, and Karst adds a small "Karst" badge fixed near a screen corner, already scoped to the controller/action that rendered the page (derived from a real `process_action.action_controller` notification, never guessed from the URL). Click it to jump straight to that route's observed scenarios — `/author/projects` links directly into `Author::ProjectsController#index`, with the count of observed scenarios shown on the badge itself when the catalog is ready. The badge only appears on genuine, rewritable HTML page responses — never on JSON, redirects, Turbo Stream responses, file downloads, or `/karst` itself — and it degrades to a plain, unstyled link under a host Content-Security-Policy that forbids inline styles; Karst never rewrites the host's own CSP header to work around this.
+The normal development workflow needs no manual controller/action entry: open any page in your Rails app, and Karst adds a small "Karst" badge fixed near a screen corner, already scoped to the controller/action that rendered the page (derived from a real `process_action.action_controller` notification, never guessed from the URL). Click it to jump straight to that route's observed scenarios — `/author/projects` links directly into `Author::ProjectsController#index`, with the count of observed scenarios shown on the badge itself when the catalog is ready. The badge only appears on genuine, rewritable HTML page responses — never on JSON, redirects, Turbo Stream responses, file downloads, or `/karst` itself — and it degrades to a plain, unstyled link under a host Content-Security-Policy that forbids inline styles; Karst never rewrites the host's own CSP header to work around this. On a Rack 2 stack (Rails 6.1 and, on Rack 2, Rails 7.0) the response body Karst would need to rewrite isn't safely bufferable, so the badge is unavailable there; `/karst` itself is unaffected. See [Compatibility](#compatibility) below.
 
 You can still reach the panel directly with query parameters, as a fallback: `/karst?controller=Author::ProjectsController&action=index`.
 
@@ -74,6 +74,12 @@ When enabled, Karst subscribes automatically after the Rails application initial
 ## Roadmap
 
 Development will proceed from small evidence-capture primitives to traceable analysis and, only where the evidence supports it, recommendations. Concrete capabilities will be documented as they are designed and shipped.
+
+## Compatibility
+
+Karst supports Ruby 2.7+ and Rails 6.1+; see [ARCHITECTURE.md](ARCHITECTURE.md#compatibility-policy) for exactly which combinations CI proves and how optional features degrade.
+
+Some development UI conveniences depend on Rack/Rails response behavior. When Karst cannot safely inject its page-local badge (Rack 2, in practice Rails 6.1 and Rails 7.0), `/karst` remains available directly, and every other capability — evidence capture, the scenario catalog, the spec observer — is unaffected.
 
 ## Installation
 

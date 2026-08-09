@@ -1,5 +1,13 @@
 # frozen_string_literal: true
 
+# On Rails 6.1, active_support/logger_thread_safe_level.rb references the
+# bare ::Logger constant before active_support/logger.rb gets around to
+# requiring "logger" itself -- a load-order bug in that Rails series, not a
+# version conflict (it reproduces with Ruby's own bundled logger release,
+# not just newer ones). A full Rails boot usually papers over it by sheer
+# luck of some other gem having required "logger" first; requiring it here
+# up front means `require "karst"` never depends on that luck.
+require "logger"
 require "active_support"
 require "active_support/notifications"
 

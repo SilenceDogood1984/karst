@@ -1,12 +1,14 @@
 # frozen_string_literal: true
 
+require_relative "../value"
+
 module Karst
   module Spec
     # One RSpec example's complete observed request history: every request it
     # issued, in order, plus enough of RSpec's own metadata (file/line,
     # nested description, stable example id, pass/fail outcome) to present
     # and re-locate the example without re-parsing spec source.
-    ExampleObservation = Data.define(
+    ExampleObservation = Value.define(
       :example_id,
       :file_path,
       :line_number,

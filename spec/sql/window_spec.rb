@@ -28,8 +28,8 @@ RSpec.describe Karst::Sql::Window do
   after { Karst.unsubscribe! }
 
   describe "shape" do
-    it "is an immutable Data with exactly the documented members" do
-      expect(described_class.superclass).to eq(Data)
+    it "is an immutable value object with exactly the documented members" do
+      expect(described_class.superclass).to eq(Struct)
       expect(described_class.members).to eq(%i[shapes declined event_count capacity saturated])
     end
   end
