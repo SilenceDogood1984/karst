@@ -5,11 +5,13 @@ require "karst"
 
 # rubocop:disable Metrics/BlockLength
 RSpec.describe Karst.const_get(:Buffer, false) do
-  it "stores arbitrary objects newest last" do
+  it "keeps ingestion private" do
     event = Object.new
     buffer = described_class.new(capacity: 3)
 
-    expect(buffer.call(event)).to equal(buffer)
+    expect(buffer).not_to respond_to(:call)
+    expect { buffer.call(event) }.to raise_error(NoMethodError, /private method [`']call/)
+    expect(buffer.send(:call, event)).to equal(buffer)
     expect(buffer.size).to eq(1)
     expect(buffer.to_a).to eq([event])
   end
@@ -29,7 +31,7 @@ RSpec.describe Karst.const_get(:Buffer, false) do
   it "repeatedly discards the oldest item at capacity" do
     buffer = described_class.new(capacity: 3)
 
-    (1..7).each { |event| buffer.call(event) }
+    (1..7).each { |event| buffer.send(:call, event) }
 
     expect(buffer.size).to eq(3)
     expect(buffer.to_a).to eq([5, 6, 7])
@@ -37,7 +39,7 @@ RSpec.describe Karst.const_get(:Buffer, false) do
 
   it "returns an independent snapshot" do
     buffer = described_class.new(capacity: 3)
-    buffer.call(:event)
+    buffer.send(:call, :event)
 
     buffer.to_a.clear
 
@@ -46,13 +48,16 @@ RSpec.describe Karst.const_get(:Buffer, false) do
 
   it "clears retained items and remains reusable at the same capacity" do
     buffer = described_class.new(capacity: 2)
-    buffer.call(1).call(2)
+    buffer.send(:call, 1)
+    buffer.send(:call, 2)
 
     expect(buffer.clear).to equal(buffer)
     expect(buffer.size).to eq(0)
     expect(buffer.to_a).to be_empty
 
-    buffer.call(3).call(4).call(5)
+    buffer.send(:call, 3)
+    buffer.send(:call, 4)
+    buffer.send(:call, 5)
     expect(buffer.to_a).to eq([4, 5])
   end
 
@@ -63,7 +68,7 @@ RSpec.describe Karst.const_get(:Buffer, false) do
     errors = Queue.new
     threads = submitted.each_slice(100).map do |events|
       Thread.new do
-        events.each { |event| buffer.call(event) }
+        events.each { |event| buffer.send(:call, event) }
       rescue StandardError => e
         errors << e
       end

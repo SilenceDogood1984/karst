@@ -15,7 +15,7 @@ RSpec.describe Karst::Sql::Window do
   end
 
   def push(event)
-    Karst.buffer.call(event)
+    Karst.buffer.send(:call, event)
   end
 
   def event(sql, duration_ms, cached: false, started_at: 0.0)

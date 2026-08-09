@@ -49,7 +49,7 @@ module Karst
         duration_ms: (Float(finish) - Float(start)) * 1000.0,
         monotonic_started_at: Float(start)
       )
-      @receiver.call(event)
+      @receiver.__send__(:call, event)
     rescue StandardError => e
       reporter = ActiveSupport.error_reporter if ActiveSupport.respond_to?(:error_reporter)
       reporter&.report(e, handled: true, context: { source: "karst" })

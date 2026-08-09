@@ -13,9 +13,6 @@ module Karst
       @mutex = Mutex.new
     end
 
-    # Ingestion path used by Subscription. Kept public: Subscription invokes it as a
-    # plain method call on its configured receiver, and making it private would require
-    # changing Subscription's call site, which this change intentionally leaves untouched.
     def call(event)
       @mutex.synchronize do
         @events << event
@@ -24,6 +21,8 @@ module Karst
 
       self
     end
+
+    private :call
 
     def to_a
       @mutex.synchronize { @events.dup }
