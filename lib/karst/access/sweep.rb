@@ -13,10 +13,10 @@ module Karst
     class Unavailable < Error; end
 
     Outcome = Value.define(:principal, :status, :redirect, :exception_class,
-                           :writes_observed, :write_count, :elapsed_ms)
-    Result = Value.define(:path, :http_method, :outcomes, :elapsed_ms, :aborted_reason) do
+                           :writes_observed, :write_count, :elapsed_ms, :database_rollback_attempted)
+    Result = Value.define(:path, :http_method, :outcomes, :elapsed_ms, :aborted_reason, :database_isolation) do
       def groups
-        outcomes.group_by { |item| [item.status, item.redirect, item.exception_class, item.writes_observed] }
+        outcomes.group_by { |item| [item.status, item.redirect, item.exception_class] }
       end
     end
 
@@ -45,7 +45,8 @@ module Karst
         started = monotonic
         outcomes = bounded_principals.map { |principal| probe(principal) }
         Result.new(path: @path, http_method: @http_method, outcomes: outcomes.freeze,
-                   elapsed_ms: elapsed(started), aborted_reason: nil)
+                   elapsed_ms: elapsed(started), aborted_reason: nil,
+                   database_isolation: :same_connection_rollback_attempted)
       end
 
       private
@@ -92,7 +93,7 @@ module Karst
         end
         Outcome.new(principal: Karst::Identity.describe(principal), status: status, redirect: redirect,
                     exception_class: exception_class, writes_observed: writes.positive?, write_count: writes,
-                    elapsed_ms: elapsed(started))
+                    elapsed_ms: elapsed(started), database_rollback_attempted: true)
       end
       # rubocop:enable Metrics/AbcSize, Metrics/MethodLength
 

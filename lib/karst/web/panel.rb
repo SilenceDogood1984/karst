@@ -108,7 +108,10 @@ module Karst
           write_count = result.outcomes.count(&:writes_observed)
           warning = write_count.positive? ? write_warning(write_count) : ""
           groups = result.groups.map { |_key, outcomes| outcome_group(outcomes) }.join
-          "<p>#{result.outcomes.size} principals tested · #{escape(result.elapsed_ms / 1000.0)}s</p>#{warning}#{groups}"
+          isolation = "<p><small>Database rollback was attempted on the Active Record base connection; " \
+                      "other connections and non-database effects are not isolated.</small></p>"
+          "<p>#{result.outcomes.size} principals tested · #{escape(result.elapsed_ms / 1000.0)}s</p>" \
+            "#{isolation}#{warning}#{groups}"
         end
         # rubocop:enable Metrics/AbcSize
 
@@ -116,7 +119,6 @@ module Karst
           "<p><strong>⚠ Database writes were observed during #{count} probes.</strong></p>"
         end
 
-        # rubocop:disable Metrics/AbcSize
         def outcome_group(outcomes)
           first = outcomes.first
           title = if first.exception_class
@@ -126,10 +128,14 @@ module Karst
                   else
                     status_title(first.status)
                   end
-          labels = outcomes.map { |item| "<li>#{escape(item.principal.display_label)}</li>" }.join
+          labels = outcomes.map { |item| outcome_principal(item) }.join
           "<article class=\"scenario\"><h3>#{title} — #{outcomes.size}</h3><ul>#{labels}</ul></article>"
         end
-        # rubocop:enable Metrics/AbcSize
+
+        def outcome_principal(item)
+          writes = item.writes_observed ? " — ⚠ #{escape(item.write_count)} database writes observed" : ""
+          "<li>#{escape(item.principal.display_label)}#{writes}</li>"
+        end
 
         def status_title(status)
           phrase = Rack::Utils::HTTP_STATUS_CODES[status]

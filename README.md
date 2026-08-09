@@ -102,7 +102,10 @@ rejected.
 Every principal receives a fresh `ActionDispatch::Integration::Session` and is
 assumed and cleared only through `Karst::Identity`. Each synchronous request is
 wrapped in `ActiveRecord::Base.transaction(requires_new: true)` and deliberately
-rolled back. This verifies rollback for writes made through the same Active
+rolled back. Results report `database_isolation` as
+`:same_connection_rollback_attempted` and each outcome records
+`database_rollback_attempted: true`; neither field is a containment guarantee.
+The fixture verifies rollback for writes made through the same Active
 Record connection in the in-process integration request; Karst does **not**
 claim isolation for additional databases/connections. SQL notifications are
 also inspected for `INSERT`, `UPDATE`, and `DELETE` evidence.
@@ -111,7 +114,11 @@ The rollback cannot isolate email, jobs, network requests, files, Redis, other
 processes, or third-party APIs. GET endpoints can still cause those effects.
 Use this experimental workflow only on development data and routes whose
 non-database behavior is understood; `/karst` remains development-only and
-local-only.
+local-only. The Analyze form is handled at Karst's Rack boundary rather than by
+a Rails controller, so it does not use Rails authenticity tokens; its execution
+boundary is the directly observed peer address plus the development environment.
+Nonlocal and non-development POST requests fall through to the host unchanged,
+and GET requests never start a sweep.
 
 When Warden has already been loaded, Karst can alternatively use the public
 `set_user` and `logout` APIs on an existing Rack `env["warden"]` proxy. Warden is

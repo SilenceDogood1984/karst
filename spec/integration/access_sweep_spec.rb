@@ -43,6 +43,7 @@ KarstTestApplication.routes.draw do
   get "/documents/:id/edit", to: "karst_access_fixture#document"
 end
 
+# rubocop:disable Metrics/BlockLength
 RSpec.describe "bounded access sweep Rails integration" do
   before do
     allow(Rails).to receive(:env).and_return(ActiveSupport::StringInquirer.new("development"))
@@ -74,3 +75,4 @@ RSpec.describe "bounded access sweep Rails integration" do
     expect(KarstAccessPrincipal.order(:id).pluck(:visits)).to eq([0, 0, 0, 0])
   end
 end
+# rubocop:enable Metrics/BlockLength

@@ -38,6 +38,31 @@ RSpec.describe "Karst web middleware" do
     RUBY
   end
 
+  def sweep_spy
+    <<~RUBY
+      Karst.config.principals = -> { [] }
+      $karst_sweep_calls = 0
+      Karst::Access::Sweep.define_singleton_method(:new) do |**_arguments|
+        $karst_sweep_calls += 1
+        result = Karst::Access::Result.new(
+          path: "/documents", http_method: "GET", outcomes: [].freeze, elapsed_ms: 0.0,
+          aborted_reason: nil, database_isolation: :same_connection_rollback_attempted
+        )
+        Struct.new(:result) { def call; result; end }.new(result)
+      end
+    RUBY
+  end
+
+  def analyze_request
+    <<~RUBY
+      MOCK.post(
+        "/karst", "REMOTE_ADDR" => remote_address,
+        "CONTENT_TYPE" => "application/x-www-form-urlencoded",
+        input: "operation=access_sweep&method=GET&path=%2Fdocuments"
+      )
+    RUBY
+  end
+
   describe "environment insertion" do
     it "is present in development" do
       output, status = run_script(rails_env: "development", script: <<~RUBY)
@@ -189,6 +214,60 @@ RSpec.describe "Karst web middleware" do
   end
 
   describe "security" do
+    it "only lets a local development POST trigger an access sweep" do
+      output, status = run_script(rails_env: "development", script: <<~RUBY)
+        #{request_harness}
+        #{sweep_spy}
+        remote_address = "127.0.0.1"
+        response = #{analyze_request}
+        abort "expected panel response" unless response.body.include?("0 principals tested")
+        abort "expected exactly one sweep" unless $karst_sweep_calls == 1
+      RUBY
+
+      expect(status).to be_success, output
+    end
+
+    it "falls through without triggering a sweep for a nonlocal POST" do
+      output, status = run_script(rails_env: "development", script: <<~RUBY)
+        #{request_harness}
+        #{sweep_spy}
+        remote_address = "192.168.1.10"
+        response = #{analyze_request}
+        abort "expected host fallthrough" unless response.body.start_with?(SENTINEL_BODY)
+        abort "nonlocal POST triggered a sweep" unless $karst_sweep_calls.zero?
+      RUBY
+
+      expect(status).to be_success, output
+    end
+
+    it "falls through without triggering a sweep for a production POST" do
+      output, status = run_script(rails_env: "production", script: <<~RUBY)
+        require "karst/web/middleware"
+        #{request_harness}
+        #{sweep_spy}
+        remote_address = "127.0.0.1"
+        response = #{analyze_request}
+        abort "expected host fallthrough" unless response.body.start_with?(SENTINEL_BODY)
+        abort "production POST triggered a sweep" unless $karst_sweep_calls.zero?
+      RUBY
+
+      expect(status).to be_success, output
+    end
+
+    it "never lets a GET request trigger a sweep" do
+      output, status = run_script(rails_env: "development", script: <<~RUBY)
+        #{request_harness}
+        #{sweep_spy}
+        response = MOCK.get(
+          "/karst?operation=access_sweep&method=GET&path=%2Fdocuments", "REMOTE_ADDR" => "127.0.0.1"
+        )
+        abort "expected panel response" unless response.body.include?("Karst")
+        abort "GET triggered a sweep" unless $karst_sweep_calls.zero?
+      RUBY
+
+      expect(status).to be_success, output
+    end
+
     it "returns the required response headers" do
       output, status = run_script(rails_env: "development", script: <<~RUBY)
         #{request_harness}

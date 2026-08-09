@@ -355,6 +355,8 @@ RSpec.describe Karst::Spec::Catalog do
 
   describe ".default_path" do
     it "defaults to tmp/karst/scenarios.json when Rails is not loaded" do
+      hide_const("Rails")
+
       expect(described_class.default_path).to eq(File.join("tmp", "karst", "scenarios.json"))
     end
 

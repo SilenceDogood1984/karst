@@ -66,6 +66,21 @@ RSpec.describe Karst::Access::Sweep do
     expect(result.outcomes[3].exception_class).to eq("RuntimeError")
     expect(result.outcomes).to all(be_frozen)
     expect(result.groups.size).to eq(4)
+    expect(result.database_isolation).to eq(:same_connection_rollback_attempted)
+    expect(result.outcomes).to all(have_attributes(database_rollback_attempted: true))
+  end
+
+  it "groups response behavior independently from database-write evidence" do
+    descriptor = Karst::Identity::PrincipalDescriptor.new(model_name: "User", id: 1, display_label: "User #1")
+    attributes = { principal: descriptor, status: 200, redirect: nil, exception_class: nil,
+                   write_count: 0, elapsed_ms: 1.0, database_rollback_attempted: true }
+    clean = Karst::Access::Outcome.new(**attributes, writes_observed: false)
+    writing = Karst::Access::Outcome.new(**attributes, writes_observed: true, write_count: 1)
+    result = Karst::Access::Result.new(path: "/documents", http_method: "GET", outcomes: [clean, writing],
+                                       elapsed_ms: 2.0, aborted_reason: nil,
+                                       database_isolation: :same_connection_rollback_attempted)
+
+    expect(result.groups.values).to eq([[clean, writing]])
   end
 
   it "limits relation-like sources before materializing them" do
