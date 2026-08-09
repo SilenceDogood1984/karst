@@ -7,10 +7,11 @@ require "karst/spec/scenario"
 
 # rubocop:disable Metrics/BlockLength
 RSpec.describe Karst::Spec::Scenario do
-  def scenario(description_parts:, full_description:, example_outcome: :passed)
+  def scenario(description_parts:, full_description:, example_outcome: :passed, karst_name: nil)
     described_class.new(
       example_id: "./spec/x_spec.rb[1:1]", file_path: "./spec/x_spec.rb", line_number: 3,
-      description_parts: description_parts, full_description: full_description, example_outcome: example_outcome,
+      description_parts: description_parts, full_description: full_description,
+      karst_explicit: !karst_name.nil?, karst_name: karst_name, example_outcome: example_outcome,
       controller: "XController", action: "show", http_method: "GET", route_pattern: "/x(.:format)",
       observed_path: "/x", observed_status: 200, observed_redirect: nil,
       principal_before: nil, principal_after: nil, principal_changed: false, sequence: 0
@@ -29,6 +30,14 @@ RSpec.describe Karst::Spec::Scenario do
       example = scenario(description_parts: [], full_description: "does a thing")
 
       expect(example.name).to eq("does a thing")
+    end
+
+    it "prefers an explicit Karst QA name" do
+      example = scenario(description_parts: ["implementation wording"], full_description: "implementation wording",
+                         karst_name: "Author with profile")
+
+      expect(example.name).to eq("Author with profile")
+      expect(example).to be_explicit
     end
   end
 

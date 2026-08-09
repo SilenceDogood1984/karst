@@ -30,11 +30,12 @@ RSpec.describe Karst::Spec::Catalog do
   # rubocop:enable Metrics/ParameterLists
 
   # rubocop:disable Metrics/ParameterLists
-  def example(file_path:, line_number:, description:, requests:, outcome: :passed, description_parts: nil)
+  def example(file_path:, line_number:, description:, requests:, outcome: :passed, description_parts: nil, karst: nil)
     Karst::Spec::ExampleObservation.new(
       example_id: "./#{file_path}[1:#{line_number}]", file_path: file_path, line_number: line_number,
       spec_type: :request, description_parts: description_parts || ["Group", description],
-      full_description: "Group #{description}", outcome: outcome, requests: requests
+      full_description: "Group #{description}", karst_explicit: !karst.nil?, karst_name: karst,
+      outcome: outcome, requests: requests
     )
   end
   # rubocop:enable Metrics/ParameterLists
@@ -194,6 +195,21 @@ RSpec.describe Karst::Spec::Catalog do
       scenarios = catalog.scenarios_for(controller: "XController", action: "index")
       expect(scenarios.map(&:name)).to eq(["denies a reader", "allows an author"])
       expect(scenarios.map(&:observed_status)).to eq([302, 200])
+    end
+  end
+
+  describe "explicit scenario metadata" do
+    it "uses its QA name and sorts before discovered scenarios" do
+      discovered = example(file_path: "spec/a_spec.rb", line_number: 1, description: "technical description",
+                           requests: [request(sequence: 0, controller: "XController", action: "index")])
+      explicit = example(file_path: "spec/z_spec.rb", line_number: 9, description: "implementation wording",
+                         karst: "Author with profile",
+                         requests: [request(sequence: 0, controller: "XController", action: "index")])
+
+      scenarios = catalog_for([discovered, explicit]).scenarios_for(controller: "XController", action: "index")
+
+      expect(scenarios.map(&:name)).to eq(["Author with profile", "technical description"])
+      expect(scenarios.map(&:explicit?)).to eq([true, false])
     end
   end
 

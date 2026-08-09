@@ -62,6 +62,8 @@ module Karst
           return [:invalid, EMPTY, "scenario artifact at #{path} is empty"] if raw.strip.empty?
 
           parse(raw, path)
+        rescue SystemCallError => e
+          [:invalid, EMPTY, "scenario artifact at #{path} could not be read: #{e.message}"]
         end
 
         def parse(raw, path)
@@ -77,16 +79,17 @@ module Karst
         # agree: passed examples before failed/pending ones, then file path,
         # line number, example id, and finally request sequence (the
         # tie-breaker that keeps multiple scenarios from the same example in
-        # their original request order). There is no `explicit` signal yet --
-        # Task B's `karst:` metadata will add one more leading key here
-        # without otherwise touching this method.
+        # their original request order). Explicitly labelled QA scenarios lead
+        # discovered scenarios while preserving those guarantees within each
+        # group.
         def build_scenarios(examples)
           scenarios = examples.flat_map { |example| scenarios_from_example(example) }
           scenarios.sort_by { |scenario| sort_key(scenario) }.freeze
         end
 
         def sort_key(scenario)
-          [scenario.passed? ? 0 : 1, scenario.file_path, scenario.line_number, scenario.example_id, scenario.sequence]
+          [scenario.explicit? ? 0 : 1, scenario.passed? ? 0 : 1, scenario.file_path, scenario.line_number,
+           scenario.example_id, scenario.sequence]
         end
 
         def scenarios_from_example(example)
@@ -130,6 +133,8 @@ module Karst
           Scenario.new(
             example_id: example["example_id"], file_path: example["file_path"], line_number: example["line_number"],
             description_parts: example["description_parts"].freeze, full_description: example["full_description"],
+            karst_explicit: example["karst_explicit"] == true,
+            karst_name: non_empty_string?(example["karst_name"]) ? example["karst_name"] : nil,
             example_outcome: outcome_for(example["outcome"]),
             controller: request["controller"], action: request["action"], http_method: request["method"],
             route_pattern: request["route_pattern"], observed_path: request["path"],

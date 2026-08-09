@@ -46,7 +46,9 @@ window = Karst.window
 
 A `Window`'s counts and durations apply only to that Window. Fingerprints are a derived identity for grouping observed SQL shapes within a process, not a proof of semantic equivalence, and may change across Karst versions.
 
-In Rails development, Karst also serves this same capture state and Window snapshot at `GET /karst` through a small Rack middleware — no engine, route, or controller. Access is limited to true loopback peers and, under WSL, the single host-side default gateway used by a Windows browser; forwarding headers and private address ranges are not trusted. Nonlocal requests fall through to the host application. The page is standalone, not attached to any other page in the host application: Karst's evidence today is process-local, not request-scoped, so the page makes no claim about any particular request, controller, action, route, or user.
+In Rails development, Karst serves a read-only scenario panel at `GET /karst` through a small Rack middleware — no engine, route, or controller. Select a capability with query parameters such as `/karst?controller=Author::ProjectsController&action=index`; the panel reads `tmp/karst/scenarios.json` through `Karst::Spec::Catalog` and shows the statuses, redirects, principal types, outcomes, and spec provenance observed for that controller/action. It distinguishes a missing or invalid artifact from a ready catalog with no matching scenarios. Runtime SQL Window counts remain available as secondary evidence.
+
+Access is limited to true loopback peers and, under WSL, the single host-side default gateway used by a Windows browser; forwarding headers and private address ranges are not trusted. Nonlocal requests and every path other than `/karst` fall through unchanged to the host application. The query parameters are the route context: the standalone panel request is never attributed to a host controller/action.
 
 ## Configuration
 
