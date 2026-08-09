@@ -7,7 +7,14 @@ RSpec.configure do |config|
   Kernel.srand config.seed
 
   config.after do
-    Karst.unsubscribe! if defined?(Karst)
-    Karst.config.enabled = false if defined?(Karst)
+    # Bundler's `gemspec` directive evaluates karst.gemspec (which requires
+    # lib/karst/version.rb) before any spec file loads, so `Karst` may exist
+    # as a bare VERSION-only module even in a run where no spec file has
+    # required the full library -- `defined?(Karst)` alone can't tell those
+    # apart.
+    next unless defined?(Karst) && Karst.respond_to?(:unsubscribe!)
+
+    Karst.unsubscribe!
+    Karst.config.enabled = false
   end
 end
