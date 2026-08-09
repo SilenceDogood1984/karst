@@ -32,7 +32,9 @@ RSpec.describe "Karst RSpec scenario observer" do
         include Rack::Test::Methods
         include ScenarioApplication.routes.url_helpers
 
-        def app = ScenarioApplication
+        def app
+          ScenarioApplication
+        end
 
         it "exercises an anonymous route reached by a literal path" do
           get "/things"

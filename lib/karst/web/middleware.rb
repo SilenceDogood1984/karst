@@ -3,9 +3,9 @@
 require_relative "locality"
 require_relative "panel"
 require_relative "badge"
+require_relative "../execution_context"
 require "rack/utils"
 require "active_support/notifications"
-require "active_support/isolated_execution_state"
 
 module Karst
   module Web
@@ -56,13 +56,13 @@ module Karst
       private
 
       def call_with_badge(env)
-        ActiveSupport::IsolatedExecutionState[CONTEXT_KEY] = nil
+        Karst::ExecutionContext[CONTEXT_KEY] = nil
         status, headers, body = @app.call(env)
-        context = ActiveSupport::IsolatedExecutionState[CONTEXT_KEY]
+        context = Karst::ExecutionContext[CONTEXT_KEY]
 
         Badge.apply(status: status, headers: headers, body: body, context: context) || [status, headers, body]
       ensure
-        ActiveSupport::IsolatedExecutionState.delete(CONTEXT_KEY)
+        Karst::ExecutionContext.delete(CONTEXT_KEY)
       end
 
       def owned?(env)
@@ -99,7 +99,7 @@ module Karst
         def capture_context(payload)
           return unless payload.respond_to?(:[])
 
-          ActiveSupport::IsolatedExecutionState[CONTEXT_KEY] = Badge::Context.new(
+          Karst::ExecutionContext[CONTEXT_KEY] = Badge::Context.new(
             controller: payload[:controller], action: payload[:action],
             http_method: payload[:method], path: strip_query(payload[:path])
           )

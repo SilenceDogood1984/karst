@@ -2,7 +2,7 @@ PATH
   remote: .
   specs:
     karst (0.0.0)
-      activesupport (>= 7.0, < 9)
+      activesupport (>= 6.1, < 9)
 
 GEM
   remote: https://rubygems.org/

@@ -40,6 +40,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - rails: "6.1"
+            ruby: "2.7"
+            gemfile: rails_6_1.gemfile
           - rails: "7.0"
             ruby: "3.2"
             gemfile: rails_7_0.gemfile

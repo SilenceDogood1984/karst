@@ -328,7 +328,7 @@ RSpec.describe Karst do
       expect(event).to eq(described_class.new(**attributes))
       expect(event).to be_frozen
       expect(event).not_to respond_to(:payload)
-      expect(described_class.superclass).to eq(Data)
+      expect(described_class.superclass).to eq(Struct)
       expect(Karst.const_defined?(:Event, false)).to be(false)
     end
   end

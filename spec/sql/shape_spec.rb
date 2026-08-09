@@ -9,7 +9,7 @@ RSpec.describe Karst::Sql::Shape do
     it "keeps Shape public and its grouping transformation private" do
       expect(Karst::Sql.const_defined?(:Shape, false)).to be(true)
       expect(described_class).to be_a(Class)
-      expect(described_class.superclass).to eq(Data)
+      expect(described_class.superclass).to eq(Struct)
       expect(described_class.members).to eq(
         %i[fingerprint canonical_sql count cached_count duration_ms_min duration_ms_max duration_ms_total samples]
       )
