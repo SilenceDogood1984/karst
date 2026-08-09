@@ -54,7 +54,6 @@ module Karst
       def serialize_request(request)
         {
           "sequence" => request.sequence,
-          "role" => request.role.to_s,
           "method" => request.http_method,
           "path" => request.path,
           "route_pattern" => request.route_pattern,
@@ -63,7 +62,9 @@ module Karst
           "format" => request.format,
           "status" => request.status,
           "redirect_location" => request.redirect_location,
-          "principal" => serialize_principal(request.principal)
+          "principal_before" => serialize_principal(request.principal_before),
+          "principal_after" => serialize_principal(request.principal_after),
+          "principal_changed" => request.principal_changed
         }
       end
       # rubocop:enable Metrics/MethodLength

@@ -11,11 +11,13 @@ require "karst/spec/reporter"
 
 # rubocop:disable Metrics/BlockLength
 RSpec.describe Karst::Spec::Reporter do
-  def request(sequence: 0, format: "html", role: :subject, principal: nil, status: 200)
+  def request(sequence: 0, format: "html", principal_before: nil, principal_after: nil, status: 200)
     Karst::Spec::RequestObservation.new(
       sequence: sequence, http_method: "GET", path: "/x", route_pattern: "/x(.:format)",
       controller: "XController", action: "show", format: format,
-      status: status, redirect_location: nil, role: role, principal: principal
+      status: status, redirect_location: nil,
+      principal_before: principal_before, principal_after: principal_after,
+      principal_changed: principal_before != principal_after
     )
   end
 
@@ -85,25 +87,30 @@ RSpec.describe Karst::Spec::Reporter do
       end
     end
 
-    it "serializes a principal as type/id/scope only" do
+    it "serializes principal_before/after as type/id/scope only, and principal_changed as a boolean" do
       reporter = described_class.new
-      principal = Karst::Spec::Principal.new(type: "User", id: 42, scope: :user)
+      before_principal = Karst::Spec::Principal.new(type: "User", id: 41, scope: :user)
+      after_principal = Karst::Spec::Principal.new(type: "User", id: 42, scope: :user)
       reporter.record(
-        example(file_path: "spec/a_spec.rb", line_number: 1, requests: [request(principal: principal)])
+        example(
+          file_path: "spec/a_spec.rb", line_number: 1,
+          requests: [request(principal_before: before_principal, principal_after: after_principal)]
+        )
       )
 
       Dir.mktmpdir do |dir|
         path = File.join(dir, "scenarios.json")
         reporter.write(path)
         written = JSON.parse(File.read(path))
+        request_json = written.first["requests"].first
 
-        expect(written.first["requests"].first["principal"]).to eq(
-          { "type" => "User", "id" => 42, "scope" => "user" }
-        )
+        expect(request_json["principal_before"]).to eq({ "type" => "User", "id" => 41, "scope" => "user" })
+        expect(request_json["principal_after"]).to eq({ "type" => "User", "id" => 42, "scope" => "user" })
+        expect(request_json["principal_changed"]).to be(true)
       end
     end
 
-    it "serializes a nil principal as null, and role/format/outcome as strings" do
+    it "serializes nil principals as null, and format/outcome as strings" do
       reporter = described_class.new
       reporter.record(example(file_path: "spec/a_spec.rb", line_number: 1))
 
@@ -113,8 +120,9 @@ RSpec.describe Karst::Spec::Reporter do
         written = JSON.parse(File.read(path))
         request_json = written.first["requests"].first
 
-        expect(request_json["principal"]).to be_nil
-        expect(request_json["role"]).to eq("subject")
+        expect(request_json["principal_before"]).to be_nil
+        expect(request_json["principal_after"]).to be_nil
+        expect(request_json["principal_changed"]).to be(false)
         expect(request_json["format"]).to eq("html")
         expect(written.first["outcome"]).to eq("passed")
       end

@@ -6,12 +6,14 @@ require "karst/spec/principal"
 require "karst/spec/request_observation"
 require "karst/spec/example_observation"
 
+# rubocop:disable Metrics/BlockLength
 RSpec.describe Karst::Spec::ExampleObservation do
-  def request(format:, role: :subject)
+  def request(format:)
     Karst::Spec::RequestObservation.new(
       sequence: 0, http_method: "GET", path: "/x", route_pattern: "/x(.:format)",
       controller: "XController", action: "show", format: format,
-      status: 200, redirect_location: nil, role: role, principal: nil
+      status: 200, redirect_location: nil,
+      principal_before: nil, principal_after: nil, principal_changed: false
     )
   end
 
@@ -37,3 +39,4 @@ RSpec.describe Karst::Spec::ExampleObservation do
     end
   end
 end
+# rubocop:enable Metrics/BlockLength

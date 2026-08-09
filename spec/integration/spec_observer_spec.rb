@@ -60,6 +60,16 @@ RSpec.describe "Karst RSpec scenario observer" do
           expect(last_response.status).to eq(200)
         end
 
+        it "signs up within the very request that is the subject of the scenario" do
+          post signup_path
+          expect(last_response.status).to eq(302)
+        end
+
+        it "redirects with a sensitive token in the query string" do
+          post password_resets_path
+          expect(last_response.status).to eq(302)
+        end
+
         it "issues only a JSON-format request" do
           get "/things.json"
           expect(last_response.status).to eq(200)
@@ -113,7 +123,9 @@ RSpec.describe "Karst RSpec scenario observer" do
         "exercises an anonymous route reached by a literal path",
         "exercises a route helper with a dynamic id segment",
         "signs in as setup before the real subject request",
-        "denies a non-admin, then allows after switching to an admin principal"
+        "denies a non-admin, then allows after switching to an admin principal",
+        "signs up within the very request that is the subject of the scenario",
+        "redirects with a sensitive token in the query string"
       ].each do |suffix|
         expect(find_example(@catalog, suffix)).not_to be_nil, "expected to find an example ending \"#{suffix}\""
       end
@@ -121,7 +133,7 @@ RSpec.describe "Karst RSpec scenario observer" do
   end
 
   describe "literal path, zero-config, anonymous" do
-    it "records the route pattern, controller/action, and a nil principal" do
+    it "records the route pattern, controller/action, and no principal transition" do
       example = find_example(@catalog, "exercises an anonymous route reached by a literal path")
       request = example.fetch("requests").first
 
@@ -133,8 +145,9 @@ RSpec.describe "Karst RSpec scenario observer" do
       expect(request["action"]).to eq("index")
       expect(request["format"]).to eq("html")
       expect(request["status"]).to eq(200)
-      expect(request["role"]).to eq("subject")
-      expect(request["principal"]).to be_nil
+      expect(request["principal_before"]).to be_nil
+      expect(request["principal_after"]).to be_nil
+      expect(request["principal_changed"]).to be(false)
     end
   end
 
@@ -150,20 +163,49 @@ RSpec.describe "Karst RSpec scenario observer" do
     end
   end
 
-  describe "authentication setup distinguished from the subject request" do
-    it "tags the sign-in request :authentication and the real page :subject, both with the same principal" do
+  describe "principal transition is raw evidence, not a semantic role" do
+    it "reports principal_before/after/changed for both requests, without labeling either as setup" do
       example = find_example(@catalog, "signs in as setup before the real subject request")
       sign_in_request, subject_request = example.fetch("requests")
 
+      expect(sign_in_request).not_to have_key("role")
       expect(sign_in_request["controller"]).to eq("ScenarioSessionsController")
-      expect(sign_in_request["role"]).to eq("authentication")
-      expect(sign_in_request["principal"]).to eq({ "type" => "ScenarioUser", "id" => 1, "scope" => "default" })
+      expect(sign_in_request["principal_before"]).to be_nil
+      expect(sign_in_request["principal_after"]).to eq({ "type" => "ScenarioUser", "id" => 1, "scope" => "default" })
+      expect(sign_in_request["principal_changed"]).to be(true)
 
       expect(subject_request["controller"]).to eq("ScenarioDashboardController")
       expect(subject_request["action"]).to eq("show")
-      expect(subject_request["role"]).to eq("subject")
       expect(subject_request["status"]).to eq(200)
-      expect(subject_request["principal"]).to eq({ "type" => "ScenarioUser", "id" => 1, "scope" => "default" })
+      expect(subject_request["principal_before"]).to eq({ "type" => "ScenarioUser", "id" => 1, "scope" => "default" })
+      expect(subject_request["principal_after"]).to eq({ "type" => "ScenarioUser", "id" => 1, "scope" => "default" })
+      expect(subject_request["principal_changed"]).to be(false)
+    end
+  end
+
+  describe "a subject request that itself establishes a principal" do
+    it "is recorded like any other request, not specially flagged as setup" do
+      example = find_example(@catalog, "signs up within the very request that is the subject of the scenario")
+      request = example.fetch("requests").first
+
+      expect(example.fetch("requests").size).to eq(1)
+      expect(request).not_to have_key("role")
+      expect(request["controller"]).to eq("ScenarioSignupsController")
+      expect(request["action"]).to eq("create")
+      expect(request["principal_before"]).to be_nil
+      expect(request["principal_after"]).to eq({ "type" => "ScenarioUser", "id" => 1, "scope" => "default" })
+      expect(request["principal_changed"]).to be(true)
+    end
+  end
+
+  describe "redirect locations never retain a query string" do
+    it "strips a sensitive token from a redirect target before it reaches the artifact" do
+      example = find_example(@catalog, "redirects with a sensitive token in the query string")
+      request = example.fetch("requests").first
+
+      expect(request["redirect_location"]).to eq("/reset-password/confirm")
+      expect(request["redirect_location"]).not_to include("token")
+      expect(request["redirect_location"]).not_to include("secret")
     end
   end
 
@@ -173,19 +215,18 @@ RSpec.describe "Karst RSpec scenario observer" do
       requests = example.fetch("requests")
 
       expect(requests.size).to eq(5)
-      roles = requests.map { |request| request["role"] }
-      expect(roles).to eq(%w[authentication subject authentication authentication subject])
+      expect(requests.map { |request| request["principal_changed"] }).to eq([true, false, true, true, false])
 
       denied = requests[1]
       expect(denied["controller"]).to eq("ScenarioAdminController")
       expect(denied["status"]).to eq(302)
       expect(denied["redirect_location"]).to eq("/dashboard")
-      expect(denied["principal"]).to eq({ "type" => "ScenarioUser", "id" => 1, "scope" => "default" })
+      expect(denied["principal_after"]).to eq({ "type" => "ScenarioUser", "id" => 1, "scope" => "default" })
 
       allowed = requests[4]
       expect(allowed["controller"]).to eq("ScenarioAdminController")
       expect(allowed["status"]).to eq(200)
-      expect(allowed["principal"]).to eq({ "type" => "ScenarioUser", "id" => 2, "scope" => "default" })
+      expect(allowed["principal_after"]).to eq({ "type" => "ScenarioUser", "id" => 2, "scope" => "default" })
     end
   end
 

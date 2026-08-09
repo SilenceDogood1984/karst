@@ -61,6 +61,8 @@ ScenarioApplication.routes.draw do
   get "/admin", to: "scenario_admin#show", as: :admin
   get "/things", to: "scenario_things#index", as: :things
   get "/things/:id", to: "scenario_things#show", as: :thing
+  post "/signup", to: "scenario_signups#create", as: :signup
+  post "/password-resets", to: "scenario_password_resets#create", as: :password_resets
 end
 
 class ScenarioSessionsController < ActionController::Base
@@ -92,6 +94,25 @@ class ScenarioAdminController < ActionController::Base
     return redirect_to(dashboard_path) unless user.role == "admin"
 
     render plain: "Admin"
+  end
+end
+
+class ScenarioSignupsController < ActionController::Base
+  # Establishes a Warden principal directly within what is, for this
+  # example, the actual subject request under test -- not a prior sign-in
+  # step. Proves the observer never treats "this request changed the
+  # principal" as a signal that the request is setup/plumbing.
+  def create
+    request.env["warden"].set_user(ScenarioUsers.find_by_email("author@example.com"), scope: :default)
+    redirect_to dashboard_path
+  end
+end
+
+class ScenarioPasswordResetsController < ActionController::Base
+  # The token here stands in for anything sensitive a redirect target might
+  # carry (password reset, OAuth callback, signed URL).
+  def create
+    redirect_to "/reset-password/confirm?token=secret-value-123"
   end
 end
 

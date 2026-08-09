@@ -130,7 +130,7 @@ module Karst
           builder = current&.requests&.last
           return unless builder
 
-          builder.redirect_location = strip_host(payload[:location])
+          builder.redirect_location = strip_query(strip_host(payload[:location]))
         end
 
         def on_process_action(payload)
@@ -142,8 +142,12 @@ module Karst
           builder.principal_after = state.principal
         end
 
-        def strip_query(path)
-          path.to_s.split("?").first
+        # Query strings can carry tokens (password resets, OAuth callbacks,
+        # signed URLs) and are never retained, on request paths or on
+        # redirect targets below -- either can leak the same class of secret
+        # into the catalog artifact.
+        def strip_query(value)
+          value.to_s.split("?").first
         end
 
         def strip_host(location)
@@ -237,7 +241,7 @@ module Karst
           :passed
         end
 
-        # rubocop:disable Metrics/MethodLength
+        # rubocop:disable Metrics/MethodLength, Metrics/AbcSize
         def freeze_requests(builders)
           builders.map do |builder|
             RequestObservation.new(
@@ -250,12 +254,13 @@ module Karst
               format: builder.format,
               status: builder.status,
               redirect_location: builder.redirect_location,
-              role: builder.principal_after == builder.principal_before ? :subject : :authentication,
-              principal: builder.principal_after
+              principal_before: builder.principal_before,
+              principal_after: builder.principal_after,
+              principal_changed: builder.principal_after != builder.principal_before
             ).freeze
           end.freeze
         end
-        # rubocop:enable Metrics/MethodLength
+        # rubocop:enable Metrics/MethodLength, Metrics/AbcSize
 
         def description_parts(example)
           outer = example.example_group.parent_groups.reverse.map(&:description)

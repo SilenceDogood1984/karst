@@ -4,14 +4,18 @@ module Karst
   module Spec
     # One HTTP request observed during a single RSpec example.
     #
-    # `role` is :authentication when the active Warden principal changed
-    # (established or cleared) while this exact request was processed, and
-    # :subject otherwise. This is an observed runtime fact -- the principal
-    # actually changed -- not a guess based on the request's path, so a
-    # sign-in issued through any route, helper, or literal path is identified
-    # the same way, and a request that happens to authenticate as a side
-    # effect of the behavior under test is labeled :authentication like any
-    # other principal change would be.
+    # `principal_before`/`principal_after` are the active Warden principal
+    # immediately before and immediately after this request was processed;
+    # `principal_changed` is true when they differ -- a login, a logout, or a
+    # switch from one principal to another. This is raw observed evidence,
+    # not an interpretation of what the request was FOR. Karst does not
+    # classify a request as "setup" or "the subject under test": a signup
+    # route, an invitation-acceptance route, or a checkout-completion route
+    # that happens to establish a session is a legitimate subject request,
+    # not authentication plumbing, and a single request carries no reliable
+    # signal for telling those apart. That classification, if Karst ever
+    # offers one, belongs to catalog-building logic downstream of this
+    # observer, informed by more context than one request can supply.
     #
     # Named `http_method`, not `method`, so it never shadows Object#method.
     RequestObservation = Data.define(
@@ -24,8 +28,9 @@ module Karst
       :format,
       :status,
       :redirect_location,
-      :role,
-      :principal
+      :principal_before,
+      :principal_after,
+      :principal_changed
     )
   end
 end
