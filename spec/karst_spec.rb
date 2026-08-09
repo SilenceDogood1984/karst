@@ -56,8 +56,18 @@ RSpec.describe Karst do
       described_class.config.buffer_size = 5
 
       expect(described_class.buffer).to equal(original)
-      3.times { |event| original.call(event) }
+      3.times { |event| original.send(:call, event) }
       expect(original.to_a).to eq([1, 2])
+    end
+
+    it "does not expose evidence ingestion through the public buffer" do
+      event = Karst::Sql::Event.new(
+        name: nil, sql: "SELECT 1", cached: false, duration_ms: 1.0, monotonic_started_at: 1.0
+      )
+
+      expect(described_class.buffer).not_to respond_to(:call)
+      expect { described_class.buffer.call(event) }.to raise_error(NoMethodError, /private method [`']call/)
+      expect(described_class.buffer.size).to eq(0)
     end
 
     it "constructs one buffer when first accessed concurrently" do
@@ -111,10 +121,10 @@ RSpec.describe Karst do
     end
 
     it "does not construct a Window from a stale buffer reference across separate calls" do
-      described_class.buffer.call(event("SELECT 1", started_at: 1.0))
+      described_class.buffer.send(:call, event("SELECT 1", started_at: 1.0))
       first_window = described_class.window
 
-      described_class.buffer.call(event("SELECT 2", started_at: 2.0))
+      described_class.buffer.send(:call, event("SELECT 2", started_at: 2.0))
       second_window = described_class.window
 
       expect(first_window.event_count).to eq(1)
