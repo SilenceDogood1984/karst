@@ -8,8 +8,10 @@ require "karst/web/panel"
 RSpec.describe Karst::Web::Panel do
   let(:catalog_state_class) do
     Data.define(:status, :matches) do
-      def scenarios_for(controller:, action:)
-        matches.fetch([controller, action], [])
+      def scenarios_for(controller:, action:, http_method: nil)
+        matches.fetch([controller, action], []).select do |scenario|
+          http_method.nil? || scenario.http_method == http_method
+        end
       end
     end
   end
