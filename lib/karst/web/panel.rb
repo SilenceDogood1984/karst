@@ -33,21 +33,25 @@ module Karst
 
         private
 
+        # rubocop:disable Metrics/MethodLength
         def document(params)
           controller = string_param(params, "controller")
           action = string_param(params, "action")
+          http_method = string_param(params, "method")
+          path = string_param(params, "path")
           catalog = load_catalog
           <<~HTML
             <!DOCTYPE html>
             <html lang="en"><head><meta charset="utf-8"><title>Karst scenarios</title>
-            <style>body{font:16px system-ui,sans-serif;max-width:58rem;margin:2rem auto;padding:0 1rem;color:#202124}form,.scenario,.runtime{border:1px solid #ddd;border-radius:.4rem;padding:1rem;margin:1rem 0}.scenario h4{margin:.1rem 0}.evidence{display:flex;gap:1rem;flex-wrap:wrap}.label{font-size:.78rem;font-weight:700;text-transform:uppercase}.failed,.pending{border-left:5px solid #777}code{background:#f4f4f4;padding:.12rem .3rem}small{color:#555}</style>
+            <style>body{font:16px system-ui,sans-serif;max-width:58rem;margin:2rem auto;padding:0 1rem;color:#202124}form,.scenario,.runtime{border:1px solid #ddd;border-radius:.4rem;padding:1rem;margin:1rem 0}.scenario h4{margin:.1rem 0}.evidence{display:flex;gap:1rem;flex-wrap:wrap}.label{font-size:.78rem;font-weight:700;text-transform:uppercase}.failed,.pending{border-left:5px solid #777}code{background:#f4f4f4;padding:.12rem .3rem}small{color:#555}.page-context{color:#555;margin-bottom:0}</style>
             </head><body><h1>Karst</h1>
             #{route_form(controller, action)}
-            #{catalog_section(catalog, controller, action)}
+            #{catalog_section(catalog, controller, action, http_method, path)}
             #{runtime_section}
             </body></html>
           HTML
         end
+        # rubocop:enable Metrics/MethodLength
 
         def string_param(params, key)
           value = params[key]
@@ -73,17 +77,37 @@ module Karst
           HTML
         end
 
-        def catalog_section(catalog, controller, action)
-          return catalog_unreadable unless catalog
-          return missing_catalog if catalog.status == :missing
-          return catalog_unreadable if catalog.status == :invalid
-          return select_route if controller.empty? || action.empty?
+        # rubocop:disable Metrics/CyclomaticComplexity, Metrics/MethodLength
+        def catalog_section(catalog, controller, action, http_method, path)
+          identity = page_identity(controller, action, http_method, path)
+          return "#{identity}#{catalog_unreadable}" unless catalog
+          return "#{identity}#{missing_catalog}" if catalog.status == :missing
+          return "#{identity}#{catalog_unreadable}" if catalog.status == :invalid
+          return "#{identity}#{select_route}" if controller.empty? || action.empty?
 
-          scenarios = catalog.scenarios_for(controller: controller, action: action)
-          heading = "<p><strong>#{escape(controller)}##{escape(action)}</strong></p><h2>Tested scenarios</h2>"
+          scenarios = catalog.scenarios_for(
+            controller: controller, action: action, http_method: http_method.empty? ? nil : http_method
+          )
+          heading = "#{identity}<h2>Tested scenarios</h2>"
           return "#{heading}<p>No observed specs currently cover this route.</p>" if scenarios.empty?
 
           "#{heading}#{scenario_groups(scenarios)}"
+        end
+        # rubocop:enable Metrics/CyclomaticComplexity, Metrics/MethodLength
+
+        # The controller/action pairing is always the identity line; the
+        # method/path line above it is contextual evidence of the actual host
+        # request that linked here (see Karst::Web::Badge), shown only when
+        # present, never used to select scenarios.
+        def page_identity(controller, action, http_method, path)
+          return "" if controller.empty? || action.empty?
+
+          route_line = path.empty? ? "" : "<p class=\"page-context\">#{method_prefix(http_method)}#{escape(path)}</p>"
+          "#{route_line}<p><strong>#{escape(controller)}##{escape(action)}</strong></p>"
+        end
+
+        def method_prefix(http_method)
+          http_method.empty? ? "" : "#{escape(http_method)} "
         end
 
         def missing_catalog
