@@ -39,6 +39,24 @@ RSpec.describe "Karst RSpec scenario observer" do
           expect(last_response.status).to eq(200)
         end
 
+
+        context "with explicit QA scenarios" do
+          it "uses string metadata", karst: "Author with no books" do
+            get "/things"
+            expect(last_response.status).to eq(200)
+          end
+
+          it "uses structured metadata", karst: { name: "Admin" } do
+            get "/things"
+            expect(last_response.status).to eq(200)
+          end
+
+          it "allows a duplicate QA-facing name", karst: "Author with no books" do
+            get thing_path(42)
+            expect(last_response.status).to eq(200)
+          end
+        end
+
         it "exercises a route helper with a dynamic id segment" do
           get thing_path(42)
           expect(last_response.status).to eq(200)
@@ -148,6 +166,59 @@ RSpec.describe "Karst RSpec scenario observer" do
       expect(request["principal_before"]).to be_nil
       expect(request["principal_after"]).to be_nil
       expect(request["principal_changed"]).to be(false)
+      expect(example).to include("karst_explicit" => false, "karst_name" => nil)
+    end
+  end
+
+  describe "explicit scenario metadata" do
+    it "records string and structured names without replacing RSpec descriptions or identity" do
+      string_example = find_example(@catalog, "uses string metadata")
+      hash_example = find_example(@catalog, "uses structured metadata")
+
+      expect(string_example).to include("karst_explicit" => true, "karst_name" => "Author with no books")
+      expect(hash_example).to include("karst_explicit" => true, "karst_name" => "Admin")
+      expect(string_example.fetch("description_parts")).to eq(
+        ["Scenario catalog fixture", "with explicit QA scenarios", "uses string metadata"]
+      )
+      expect(string_example.fetch("full_description")).to end_with("with explicit QA scenarios uses string metadata")
+      expect(string_example.fetch("example_id")).to match(/\[\d+:\d+:\d+\]\z/)
+    end
+
+    it "allows duplicate human-readable names while retaining distinct technical identities" do
+      duplicates = @catalog.select { |example| example["karst_name"] == "Author with no books" }
+
+      expect(duplicates.size).to eq(2)
+      expect(duplicates.map { |example| example.fetch("example_id") }.uniq.size).to eq(2)
+    end
+  end
+
+  describe "malformed scenario metadata" do
+    def run_malformed_fixture(value_source)
+      harness = File.expand_path("../support/scenario_application", __dir__)
+      output_path = File.join(Dir.mktmpdir("karst-invalid-metadata"), "scenarios.json")
+      script = <<~RUBY
+        require "rspec/core"
+        require #{harness.inspect}
+        Karst::Spec::Observer.install!(output: #{output_path.inspect})
+        RSpec.describe "invalid metadata" do
+          it("fails fast", karst: #{value_source}) { raise "example body should not run" }
+        end
+        exit(RSpec::Core::Runner.run([], $stderr, $stdout))
+      RUBY
+
+      Open3.capture2e({ "RAILS_ENV" => "test" }, RbConfig.ruby,
+                      "-I#{File.expand_path('../../lib', __dir__)}", "-e", script)
+    end
+
+    ["true", "123", "{}", '{ name: "" }', '{ setup: "anything" }'].each do |value_source|
+      it "fails fast for karst: #{value_source}" do
+        output, status = run_malformed_fixture(value_source)
+
+        expect(status).not_to be_success
+        expect(output).to include("Karst::Spec::InvalidMetadataError")
+        expect(output).to include("expected a non-empty String or { name: non_empty_string }")
+        expect(output).not_to include("example body should not run")
+      end
     end
   end
 
