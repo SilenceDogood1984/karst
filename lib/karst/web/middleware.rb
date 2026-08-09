@@ -5,7 +5,9 @@ require_relative "panel"
 require_relative "badge"
 require_relative "../execution_context"
 require "rack/utils"
+require "rack/request"
 require "active_support/notifications"
+require_relative "../access/sweep"
 
 module Karst
   module Web
@@ -45,7 +47,8 @@ module Karst
         if owned?(env)
           return @app.call(env) unless development? && @locality.local?(env["REMOTE_ADDR"])
 
-          return Panel.render(params: Rack::Utils.parse_nested_query(env["QUERY_STRING"].to_s))
+          params = owned_params(env)
+          return Panel.render(params: params, access_result: analyze(env, params))
         end
 
         return @app.call(env) unless development? && @locality.local?(env["REMOTE_ADDR"])
@@ -67,6 +70,22 @@ module Karst
 
       def owned?(env)
         env["PATH_INFO"] == OWNED_PATH
+      end
+
+      def owned_params(env)
+        query = Rack::Utils.parse_nested_query(env["QUERY_STRING"].to_s)
+        return query unless env["REQUEST_METHOD"] == "POST"
+
+        query.merge(Rack::Request.new(env).POST)
+      end
+
+      def analyze(env, params)
+        return nil unless env["REQUEST_METHOD"] == "POST" && params["operation"] == "access_sweep"
+
+        Access::Sweep.new(path: params["path"], http_method: params["method"],
+                          principals: Identity.principals).call
+      rescue Access::Error, Identity::Error, ArgumentError => e
+        e
       end
 
       # Re-checked per request as defense in depth: the middleware is only

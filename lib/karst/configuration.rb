@@ -4,7 +4,9 @@ module Karst
   # Process-level settings that control Karst's implemented behavior.
   class Configuration
     attr_accessor :enabled, :principals, :assume_identity, :clear_identity, :principal_label
-    attr_reader :buffer_size
+    attr_reader :buffer_size, :access_sweep_limit
+
+    MAX_ACCESS_SWEEP_LIMIT = 100
 
     def initialize
       @enabled = defined?(Rails) && Rails.respond_to?(:env) ? Rails.env.development? || Rails.env.test? : false
@@ -13,6 +15,15 @@ module Karst
       @assume_identity = nil
       @clear_identity = nil
       @principal_label = nil
+      @access_sweep_limit = 25
+    end
+
+    def access_sweep_limit=(value)
+      unless value.is_a?(Integer) && value.positive? && value <= MAX_ACCESS_SWEEP_LIMIT
+        raise ArgumentError, "access_sweep_limit must be between 1 and #{MAX_ACCESS_SWEEP_LIMIT}"
+      end
+
+      @access_sweep_limit = value
     end
 
     def buffer_size=(value)

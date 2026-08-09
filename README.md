@@ -80,6 +80,39 @@ or authentication secrets.
 only model/class name, `id`, and a display label. The default label is the safe
 `"Account #44"` form and never calls `to_s` or reads arbitrary attributes.
 
+## Experimental observed-access sweep
+
+Karst can sequentially probe the exact current GET path with the first bounded
+set returned by `config.principals`. Configure the principal source and both
+identity hooks above, open a host page, follow its Karst badge (or open `/karst`
+with route context), and explicitly select **Analyze 25 principals**. Opening
+the panel never starts a sweep. The results are **observed outcomes**, not
+authorization claims: status, query-free redirect destination or exception
+class, safe `Karst::Identity.describe` label, elapsed time, and database-write
+evidence are grouped without response bodies.
+
+The default `config.access_sweep_limit` is 25 and can be set from 1 through the
+hard ceiling of 100. Active Record relations receive `limit` before they are
+materialized; other Enumerables are consumed lazily only up to the bound. There
+is no count query, random sampling, route discovery, resource substitution, or
+parallel execution. Target query strings are discarded, exact resource IDs are
+preserved, and external/protocol-relative URLs and every method except GET are
+rejected.
+
+Every principal receives a fresh `ActionDispatch::Integration::Session` and is
+assumed and cleared only through `Karst::Identity`. Each synchronous request is
+wrapped in `ActiveRecord::Base.transaction(requires_new: true)` and deliberately
+rolled back. This verifies rollback for writes made through the same Active
+Record connection in the in-process integration request; Karst does **not**
+claim isolation for additional databases/connections. SQL notifications are
+also inspected for `INSERT`, `UPDATE`, and `DELETE` evidence.
+
+The rollback cannot isolate email, jobs, network requests, files, Redis, other
+processes, or third-party APIs. GET endpoints can still cause those effects.
+Use this experimental workflow only on development data and routes whose
+non-database behavior is understood; `/karst` remains development-only and
+local-only.
+
 When Warden has already been loaded, Karst can alternatively use the public
 `set_user` and `logout` APIs on an existing Rack `env["warden"]` proxy. Warden is
 not required or eagerly loaded. A bare `ActionDispatch::Integration::Session`
@@ -100,6 +133,7 @@ Configure Karst in a Rails initializer:
 Karst.configure do |config|
   config.enabled = true
   config.buffer_size = 2_000
+  config.access_sweep_limit = 25
 end
 ```
 

@@ -3,6 +3,7 @@
 require_relative "karst/version"
 require_relative "karst/configuration"
 require_relative "karst/identity"
+require_relative "karst/access/sweep"
 require_relative "karst/buffer"
 require_relative "karst/sql/event"
 require_relative "karst/sql/canonicalizer"

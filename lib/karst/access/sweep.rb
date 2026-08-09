@@ -1,0 +1,125 @@
+# frozen_string_literal: true
+
+require "active_support/notifications"
+require "uri"
+require_relative "../identity"
+require_relative "../value"
+
+module Karst
+  module Access
+    class Error < StandardError; end
+    class UnsafeTarget < Error; end
+    class UnsupportedMethod < Error; end
+    class Unavailable < Error; end
+
+    Outcome = Value.define(:principal, :status, :redirect, :exception_class,
+                           :writes_observed, :write_count, :elapsed_ms)
+    Result = Value.define(:path, :http_method, :outcomes, :elapsed_ms, :aborted_reason) do
+      def groups
+        outcomes.group_by { |item| [item.status, item.redirect, item.exception_class, item.writes_observed] }
+      end
+    end
+
+    # Sequentially observes one concrete local GET using a fresh integration
+    # session and a rollback-only transaction for every bounded principal.
+    class Sweep
+      MUTATION = %r{\A\s*(?:/\*.*?\*/\s*)*(INSERT|UPDATE|DELETE)\b}im
+
+      def initialize(path:, principals:, http_method: "GET", limit: Karst.config.access_sweep_limit,
+                     application: nil)
+        @path = normalize_path(path)
+        @http_method = http_method.to_s.upcase
+        raise UnsupportedMethod, "access sweeps support GET only" unless @http_method == "GET"
+        raise ArgumentError, "limit exceeds configured access_sweep_limit" unless valid_limit?(limit)
+
+        @principals = principals
+        @limit = limit
+        @application = application || Rails.application
+      end
+
+      def call
+        raise Unavailable, "access sweeps are development-only" unless Rails.env.development?
+
+        require "action_dispatch/testing/integration" unless defined?(ActionDispatch::Integration::Session)
+
+        started = monotonic
+        outcomes = bounded_principals.map { |principal| probe(principal) }
+        Result.new(path: @path, http_method: @http_method, outcomes: outcomes.freeze,
+                   elapsed_ms: elapsed(started), aborted_reason: nil)
+      end
+
+      private
+
+      def normalize_path(value)
+        raw = value.to_s.split("?", 2).first
+        uri = URI.parse(raw)
+        local = uri.relative? && raw.start_with?("/") && !raw.start_with?("//")
+        raise UnsafeTarget, "target must be a local application path" unless local
+
+        raw
+      rescue URI::InvalidURIError
+        raise UnsafeTarget, "target must be a valid local application path"
+      end
+
+      def valid_limit?(limit)
+        limit.is_a?(Integer) && limit.positive? && limit <= Karst.config.access_sweep_limit
+      end
+
+      def bounded_principals
+        source = @principals
+        source = source.limit(@limit) if source.respond_to?(:limit)
+        source.each.lazy.take(@limit).to_a
+      end
+
+      # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
+      def probe(principal)
+        session = ActionDispatch::Integration::Session.new(@application)
+        started = monotonic
+        status = redirect = exception_class = nil
+        writes = 0
+        callback = ->(_name, _start, _finish, _id, payload) { writes += 1 if payload[:sql].to_s.match?(MUTATION) }
+
+        with_rollback do
+          ActiveSupport::Notifications.subscribed(callback, "sql.active_record") do
+            Karst::Identity.with(session, principal) do
+              session.get(@path)
+              status = session.response.status
+              redirect = clean_redirect(session.response.location) if status >= 300 && status < 400
+            end
+          end
+        rescue StandardError => e
+          exception_class = e.class.name
+        end
+        Outcome.new(principal: Karst::Identity.describe(principal), status: status, redirect: redirect,
+                    exception_class: exception_class, writes_observed: writes.positive?, write_count: writes,
+                    elapsed_ms: elapsed(started))
+      end
+      # rubocop:enable Metrics/AbcSize, Metrics/MethodLength
+
+      def with_rollback
+        raise Unavailable, "Active Record rollback isolation is unavailable" unless defined?(ActiveRecord::Base)
+
+        ActiveRecord::Base.transaction(requires_new: true) do
+          yield
+          raise ActiveRecord::Rollback
+        end
+      end
+
+      def clean_redirect(location)
+        return nil if location.to_s.empty?
+
+        URI.parse(location).tap { |uri| uri.query = nil }.to_s
+      rescue URI::InvalidURIError
+        location.to_s.split("?", 2).first
+      end
+
+      def monotonic
+        Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      end
+
+      def elapsed(started)
+        ((monotonic - started) * 1000.0).round(1)
+      end
+    end
+  end
+end
