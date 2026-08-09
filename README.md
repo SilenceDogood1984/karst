@@ -46,7 +46,7 @@ window = Karst.window
 
 A `Window`'s counts and durations apply only to that Window. Fingerprints are a derived identity for grouping observed SQL shapes within a process, not a proof of semantic equivalence, and may change across Karst versions.
 
-In Rails development, Karst also serves this same capture state and Window snapshot at `GET /karst`, loopback-only, through a small Rack middleware — no engine, route, or controller. It is a standalone page, not attached to any other page in the host application: Karst's evidence today is process-local, not request-scoped, so the page makes no claim about any particular request, controller, action, route, or user.
+In Rails development, Karst also serves this same capture state and Window snapshot at `GET /karst` through a small Rack middleware — no engine, route, or controller. Access is limited to true loopback peers and, under WSL, the single host-side default gateway used by a Windows browser; forwarding headers and private address ranges are not trusted. Nonlocal requests fall through to the host application. The page is standalone, not attached to any other page in the host application: Karst's evidence today is process-local, not request-scoped, so the page makes no claim about any particular request, controller, action, route, or user.
 
 ## Configuration
 

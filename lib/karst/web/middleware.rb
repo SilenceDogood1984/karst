@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require "ipaddr"
+require_relative "locality"
 require_relative "panel"
 
 module Karst
@@ -21,15 +21,13 @@ module Karst
       OWNED_PATH = "/karst"
       private_constant :OWNED_PATH
 
-      LOOPBACK_RANGES = [IPAddr.new("127.0.0.0/8"), IPAddr.new("::1")].freeze
-      private_constant :LOOPBACK_RANGES
-
       def initialize(app)
         @app = app
+        @locality = Locality.new
       end
 
       def call(env)
-        return @app.call(env) unless owned?(env) && development? && loopback?(env)
+        return @app.call(env) unless owned?(env) && development? && @locality.local?(env["REMOTE_ADDR"])
 
         Panel.render
       end
@@ -45,15 +43,6 @@ module Karst
       # that guarantee independent of how or when the middleware was inserted.
       def development?
         Rails.env.development?
-      end
-
-      # Only Rack's own REMOTE_ADDR, never client-supplied X-Forwarded-For or
-      # Forwarded headers, which a non-local client could set to claim locality.
-      def loopback?(env)
-        address = IPAddr.new(env["REMOTE_ADDR"].to_s)
-        LOOPBACK_RANGES.any? { |range| range.include?(address) }
-      rescue IPAddr::Error
-        false
       end
     end
   end
