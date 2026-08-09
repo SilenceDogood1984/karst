@@ -6,6 +6,7 @@ require_relative "karst/buffer"
 require_relative "karst/sql/event"
 require_relative "karst/sql/canonicalizer"
 require_relative "karst/sql/shape"
+require_relative "karst/sql/window"
 require_relative "karst/subscription"
 
 # Public entry point for Karst configuration and subscription ownership.
@@ -31,6 +32,22 @@ module Karst
     def buffer
       capacity = config.buffer_size
       @ownership_mutex.synchronize { @buffer ||= Buffer.new(capacity: capacity) }
+    end
+
+    # One immutable snapshot of currently retained SQL evidence: safely canonicalized
+    # Events grouped into Sql::Shape, plus the Events whose SQL declined canonicalization.
+    def window
+      active_buffer = buffer
+      events = active_buffer.to_a
+      shapes, declined = Sql::Shape.send(:group, events)
+
+      Sql::Window.new(
+        shapes: shapes.sort_by { |shape| [-shape.count, -shape.duration_ms_total, shape.fingerprint] }.freeze,
+        declined: declined,
+        event_count: events.size,
+        capacity: active_buffer.capacity,
+        saturated: events.size == active_buffer.capacity
+      )
     end
 
     def subscribe!

@@ -87,6 +87,41 @@ RSpec.describe Karst do
     end
   end
 
+  describe "window" do
+    def event(sql, started_at:)
+      Karst::Sql::Event.new(name: nil, sql: sql, cached: false, duration_ms: 1.0, monotonic_started_at: started_at)
+    end
+
+    before do
+      described_class.unsubscribe!
+      described_class.instance_variable_set(:@config, configuration_class.new)
+      described_class.remove_instance_variable(:@buffer) if described_class.instance_variable_defined?(:@buffer)
+      described_class.config.buffer_size = 10
+    end
+
+    it "exists as the public entry point for a Karst::Sql::Window snapshot" do
+      expect(described_class.window).to be_a(Karst::Sql::Window)
+    end
+
+    it "reads the live buffer exactly once per call" do
+      buffer = described_class.buffer
+      expect(buffer).to receive(:to_a).once.and_call_original
+
+      described_class.window
+    end
+
+    it "does not construct a Window from a stale buffer reference across separate calls" do
+      described_class.buffer.call(event("SELECT 1", started_at: 1.0))
+      first_window = described_class.window
+
+      described_class.buffer.call(event("SELECT 2", started_at: 2.0))
+      second_window = described_class.window
+
+      expect(first_window.event_count).to eq(1)
+      expect(second_window.event_count).to eq(2)
+    end
+  end
+
   describe "subscription lifecycle" do
     before do
       described_class.unsubscribe!
@@ -291,6 +326,8 @@ RSpec.describe Karst do
   describe "public constant visibility" do
     it "keeps supported constants public" do
       expect(Karst::Sql::Event).to be_a(Class)
+      expect(Karst::Sql::Shape).to be_a(Class)
+      expect(Karst::Sql::Window).to be_a(Class)
       expect(Karst::VERSION).to be_a(String)
     end
 

@@ -3,6 +3,8 @@
 module Karst
   # Bounded transient in-process retention of recently captured evidence.
   class Buffer
+    attr_reader :capacity
+
     def initialize(capacity:)
       raise ArgumentError, "capacity must be a positive Integer" unless capacity.is_a?(Integer) && capacity.positive?
 
@@ -11,6 +13,9 @@ module Karst
       @mutex = Mutex.new
     end
 
+    # Ingestion path used by Subscription. Kept public: Subscription invokes it as a
+    # plain method call on its configured receiver, and making it private would require
+    # changing Subscription's call site, which this change intentionally leaves untouched.
     def call(event)
       @mutex.synchronize do
         @events << event

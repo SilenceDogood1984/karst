@@ -28,7 +28,23 @@ Karst owns an idempotent Active Support subscription to `sql.active_record` and 
 Karst.buffer.to_a
 ```
 
-The buffer is bounded, transient, in-process evidence retention, not analysis. Its default capacity is 2,000 events; when full, it discards the oldest events first. Restarting the process clears the evidence, and multiple application processes each have a separate buffer. Karst does not persist, fingerprint, or analyze these events.
+The buffer is bounded, transient, in-process evidence retention, not analysis. Its default capacity is 2,000 events; when full, it discards the oldest events first. Restarting the process clears the evidence, and multiple application processes each have a separate buffer.
+
+Karst's first analysis surface derives one snapshot of that retained evidence on demand:
+
+```ruby
+window = Karst.window
+```
+
+`Karst.window` reads `Karst.buffer` exactly once and returns an immutable `Karst::Sql::Window` built entirely from that single read — nothing about it changes if the live buffer changes afterward. A `Window` has:
+
+- `shapes` — a frozen Array of `Karst::Sql::Shape`, one per distinct query shape observed in the snapshot, ordered by count descending, then total duration descending, then fingerprint ascending. Each `Shape` aggregates count, cache hits, duration statistics, and up to three sample `Sql::Event` objects (first, slowest, latest) for events whose SQL Karst could safely canonicalize.
+- `declined` — a frozen Array of the original `Sql::Event` objects, in original order, whose SQL Karst declined to canonicalize. These are excluded from `shapes` entirely; Karst does not group or interpret them.
+- `event_count` — the number of events in the snapshot. Always equal to `shapes.sum(&:count) + declined.size`.
+- `capacity` — the retained-buffer capacity that applied to this snapshot.
+- `saturated` — `true` when `event_count == capacity`. A saturated window means the buffer was full at snapshot time, so older events may already have been evicted; counts and durations describe only what remains retained, not lifetime totals.
+
+A `Window`'s counts and durations apply only to that Window. Fingerprints are a derived identity for grouping observed SQL shapes within a process, not a proof of semantic equivalence, and may change across Karst versions.
 
 ## Configuration
 
