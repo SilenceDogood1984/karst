@@ -21,7 +21,8 @@ RSpec.describe Karst::Spec::ExampleObservation do
     described_class.new(
       example_id: "./spec/x_spec.rb[1:1]", file_path: "./spec/x_spec.rb", line_number: 3,
       spec_type: :request, description_parts: ["X", "does a thing"],
-      full_description: "X does a thing", outcome: :passed, requests: requests
+      full_description: "X does a thing", karst_explicit: false, karst_name: nil,
+      outcome: :passed, requests: requests
     )
   end
 
