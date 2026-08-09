@@ -192,13 +192,30 @@ RSpec.describe Karst::Sql::Shape do
     end
   end
 
-  describe "canonical_sql vs fingerprint_sql" do
-    it "displays the canonicalizer output rather than an IN-arity-collapsed rewrite" do
+  describe "canonical_sql identity" do
+    it "displays the IN-arity-collapsed identity SQL that backs the fingerprint, not a pre-collapse variant" do
       events = [event("SELECT * FROM users WHERE id IN (1, 2, 3)", 1.0)]
 
       shapes, = group(events)
+      shape = shapes.first
 
-      expect(shapes.first.canonical_sql).to eq("SELECT * FROM users WHERE id IN (?, ?, ?)")
+      expect(shape.canonical_sql).to eq("SELECT * FROM users WHERE id IN (?+)")
+      expect(shape.fingerprint).to eq(Digest::SHA256.hexdigest(shape.canonical_sql)[0, 16])
+    end
+
+    it "is deterministic regardless of which arity arrives first" do
+      one = event("SELECT * FROM users WHERE id IN (1)", 5.0, started_at: 1.0)
+      two = event("SELECT * FROM users WHERE id IN (1, 2)", 9.0, started_at: 2.0)
+      four = event("SELECT * FROM users WHERE id IN (1, 2, 3, 4)", 3.0, started_at: 3.0)
+
+      forward_shapes, = group([one, two, four])
+      reversed_shapes, = group([four, two, one])
+
+      expect(forward_shapes.size).to eq(1)
+      expect(reversed_shapes.size).to eq(1)
+      expect(forward_shapes.first.canonical_sql).to eq("SELECT * FROM users WHERE id IN (?+)")
+      expect(forward_shapes.first.canonical_sql).to eq(reversed_shapes.first.canonical_sql)
+      expect(forward_shapes.first.fingerprint).to eq(reversed_shapes.first.fingerprint)
     end
   end
 

@@ -31,15 +31,17 @@ module Karst
         private
 
         # events -> [shapes, declined]
-        # Groups by the fingerprint SQL string itself (not the truncated digest), so a digest
-        # collision could never merge two structurally different shapes.
+        # Groups by the identity SQL string itself (not the truncated digest), so a digest
+        # collision could never merge two structurally different shapes. The identity SQL is
+        # the post-IN-normalization form, and backs both the fingerprint and canonical_sql, so
+        # a Shape never mixes an arity-collapsed identity with a pre-collapse displayed string.
         def group(events)
           grouped = {}
           declined = []
 
           events.each { |event| assign(event, grouped, declined) }
 
-          shapes = grouped.map { |fingerprint_sql, bucket| build(fingerprint_sql, bucket) }
+          shapes = grouped.map { |identity_sql, group_events| build(identity_sql, group_events) }
 
           [shapes.freeze, declined.freeze]
         end
@@ -48,21 +50,18 @@ module Karst
           canonical = Canonicalizer.call(event.sql)
           return declined << event unless canonical
 
-          fingerprint_sql = normalize_in_lists(canonical)
-          bucket = (grouped[fingerprint_sql] ||= { canonical_sql: canonical, events: [] })
-          bucket[:events] << event
+          identity_sql = normalize_in_lists(canonical)
+          (grouped[identity_sql] ||= []) << event
         end
 
         def normalize_in_lists(canonical_sql)
-          canonical_sql.gsub(IN_PLACEHOLDER_LIST) { "#{Regexp.last_match(1)}#{Regexp.last_match(2)}(?+)" }
+          canonical_sql.gsub(IN_PLACEHOLDER_LIST) { "#{Regexp.last_match(1)}#{Regexp.last_match(2)}(?+)" }.freeze
         end
 
-        def build(fingerprint_sql, bucket)
-          events = bucket[:events]
-
+        def build(identity_sql, events)
           new(
-            fingerprint: Digest::SHA256.hexdigest(fingerprint_sql)[0, FINGERPRINT_LENGTH].freeze,
-            canonical_sql: bucket[:canonical_sql],
+            fingerprint: Digest::SHA256.hexdigest(identity_sql)[0, FINGERPRINT_LENGTH].freeze,
+            canonical_sql: identity_sql,
             count: events.size,
             cached_count: events.count(&:cached),
             samples: select_samples(events).freeze,
