@@ -11,6 +11,8 @@ require "spec_helper"
 require "fileutils"
 require "tmpdir"
 require "stringio"
+require "open3"
+require "rbconfig"
 # Rails 6.1 / Ruby 2.7 needs "logger" required before "active_support" is
 # pulled in transitively -- see Karst::Subscription's own require ordering
 # and ARCHITECTURE.md's "No scattered version checks" section.
@@ -106,19 +108,45 @@ RSpec.describe "karst:install generator" do
       expect(content).to include("TODO")
     end
 
+    def not_configured_raise(action)
+      format(
+        'raise NotImplementedError, "KarstIdentityController#%<action>s has not been configured for this ' \
+        'application yet"', action: action
+      )
+    end
+
+    def executable_lines(body)
+      body.lines.map(&:strip).reject { |line| line.start_with?("#") || line.empty? }
+    end
+
     it "raises instead of silently implementing a fake generic authentication mechanism" do
       content = read("app/controllers/karst_identity_controller.rb")
 
-      %w[create destroy].each do |action|
-        body = content[/def #{action}\n(.*?)\n  end/m, 1]
-        executable_lines = body.lines.map(&:strip).reject { |line| line.start_with?("#") || line.empty? }
+      destroy_body = content[/def destroy\n(.*?)\n  end/m, 1]
+      expect(executable_lines(destroy_body)).to eq([not_configured_raise("destroy")])
 
-        expected = format(
-          'raise NotImplementedError, "KarstIdentityController#%<action>s has not been configured for this ' \
-          'application yet"', action: action
-        )
-        expect(executable_lines).to eq([expected])
-      end
+      create_body = content[/def create\n(.*?)\n  end/m, 1]
+      expect(executable_lines(create_body)).to eq(
+        [
+          "principal = resolve_principal",
+          "return head(:forbidden) unless principal",
+          not_configured_raise("create")
+        ]
+      )
+    end
+
+    it "resolves the submitted principal strictly through Karst::Identity.resolve, never Model.find" do
+      content = read("app/controllers/karst_identity_controller.rb")
+      # Executable (non-comment) lines only: the surrounding documentation
+      # is allowed, and expected, to name the unsafe pattern in prose while
+      # warning against it -- only real code is checked here.
+      code_lines = content.lines.reject { |line| line.strip.start_with?("#") || line.strip.empty? }.join
+
+      expect(code_lines).to include(
+        "Karst::Identity.resolve(model_name: params[:principal_type], id: params[:principal_id])"
+      )
+      expect(code_lines).not_to match(/\.find\(params\[:principal_id\]\)/)
+      expect(code_lines).not_to include("constantize")
     end
   end
 
@@ -147,10 +175,93 @@ RSpec.describe "karst:install generator" do
 
       expect { run_generator }.not_to raise_error
 
-      expect(read("config/routes.rb")).to eq(first_run_routes)
-      expect(read("config/routes.rb").scan("karst_test_login").size).to eq(1)
+      second_run_routes = read("config/routes.rb")
+      expect(second_run_routes).to eq(first_run_routes)
+      # A real regression check on the development route block itself, not
+      # just a byte-for-byte diff: neither the guard nor either route line
+      # is duplicated by a second run.
+      expect(second_run_routes.scan("if Rails.env.development?").size).to eq(1)
+      expect(second_run_routes.scan("karst_test_login").size).to eq(1)
+      expect(second_run_routes.scan("karst_test_logout").size).to eq(1)
       expect(read("config/initializers/karst.rb")).to eq(first_run_initializer)
       expect(read("app/controllers/karst_identity_controller.rb")).to eq(first_run_controller)
+    end
+
+    it "still runs a third time without further change (not merely once-repeatable)" do
+      run_generator
+      stable_routes = read("config/routes.rb")
+
+      run_generator
+
+      expect(read("config/routes.rb")).to eq(stable_routes)
+      expect(read("config/routes.rb").scan("karst_test_login").size).to eq(1)
+    end
+  end
+
+  describe "the generated controller's principal resolution, exercised at runtime" do
+    # This boots a real, minimal Rails::Application in a fresh process and
+    # requires the exact controller file the generator wrote to disk --
+    # proving the generated resolve_principal helper actually enforces
+    # config.principals, not merely that its source text looks right.
+    it "accepts only a principal already yielded by config.principals" do
+      seed_routes_file
+      run_generator
+      controller_path = File.join(destination_root, "app/controllers/karst_identity_controller.rb")
+
+      script = <<~RUBY
+        require "logger"
+        require "rails"
+        require "action_controller/railtie"
+        require "karst"
+
+        class KarstInstallRuntimeApplication < Rails::Application
+          config.eager_load = false
+          config.logger = Logger.new(nil)
+          config.secret_key_base = "karst-install-generator-runtime-secret"
+          config.hosts.clear if config.respond_to?(:hosts)
+        end
+
+        class ApplicationController < ActionController::Base
+        end
+
+        require #{controller_path.inspect}
+
+        RuntimePrincipal = Struct.new(:id)
+        allowed = [RuntimePrincipal.new(1), RuntimePrincipal.new(2)]
+        Karst.configure { |config| config.principals = -> { allowed } }
+
+        KarstInstallRuntimeApplication.initialize!
+        KarstInstallRuntimeApplication.routes.draw do
+          post "/karst_test_login", to: "karst_identity#create"
+        end
+
+        session = ActionDispatch::Integration::Session.new(KarstInstallRuntimeApplication)
+
+        session.post("/karst_test_login", params: { principal_type: "RuntimePrincipal", principal_id: 1 })
+        unless session.response.status == 500
+          abort "in-scope principal did not reach the generated TODO (500): got \#{session.response.status}"
+        end
+
+        session.post("/karst_test_login", params: { principal_type: "RuntimePrincipal", principal_id: 999 })
+        unless session.response.status == 403
+          abort "an id outside config.principals was not rejected: got \#{session.response.status}"
+        end
+
+        session.post("/karst_test_login", params: { principal_type: "SomethingElse", principal_id: 1 })
+        unless session.response.status == 403
+          abort "a mismatched principal_type was not rejected: got \#{session.response.status}"
+        end
+      RUBY
+
+      output, status = Open3.capture2e(
+        { "RAILS_ENV" => "test" },
+        RbConfig.ruby,
+        "-I#{File.expand_path('../../lib', __dir__)}",
+        "-e",
+        script
+      )
+
+      expect(status).to be_success, output
     end
   end
 

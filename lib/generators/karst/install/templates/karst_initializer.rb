@@ -39,8 +39,18 @@ Karst.configure do |config|
   # down authentication on an ActionDispatch::Integration::Session works,
   # including calling Warden's public API directly on the session.
   #
+  # Sends both principal_type and principal_id so the controller can
+  # resolve the principal strictly through Karst::Identity.resolve, the
+  # same descriptor Karst itself derives via Karst::Identity.describe --
+  # never a bare id a controller might otherwise be tempted to pass
+  # straight into Model.find.
+  #
   # config.assume_identity = lambda do |session, principal|
-  #   session.post "/karst_test_login", params: { principal_id: principal.id }
+  #   descriptor = Karst::Identity.describe(principal)
+  #   session.post "/karst_test_login", params: {
+  #     principal_type: descriptor.model_name,
+  #     principal_id: descriptor.id
+  #   }
   # end
   #
   # config.clear_identity = lambda do |session|

@@ -24,11 +24,14 @@
 #   - the TODOs below must only ever establish/clear a session; never read,
 #     log, or return a real password, external token, or other secret
 #
-# Karst never constantizes an arbitrary model name from the request:
-# `params[:principal_id]` is only ever compared against principals already
-# yielded by this application's own configured `config.principals`, resolved
-# through Karst::Identity -- never used to look up an arbitrary record on
-# its own.
+# Karst never constantizes an arbitrary model name from the request.
+# `resolve_principal` below never calls `find`, `constantize`, or any other
+# unrestricted lookup on the submitted params -- it only ever returns a
+# principal already yielded by this application's own configured
+# `config.principals`, resolved strictly through `Karst::Identity.resolve`.
+# Do not replace it with a direct `Model.find(params[:principal_id])`: that
+# would let a submitted id reach outside the principal scope this
+# application configured, exactly what `config.principals` exists to bound.
 class KarstIdentityController < ApplicationController
   # This is an internal, development-only probe endpoint invoked by Karst's
   # own integration session -- not a user-facing form a third-party page
@@ -43,24 +46,28 @@ class KarstIdentityController < ApplicationController
   #
   #   skip_before_action :authenticate_user!, raise: false
 
-  # TODO: replace with this application's real authentication setup.
-  # Whatever happens here must be fully undone by `destroy` below, and must
-  # be safe to call many times in a row: a single access sweep probes many
-  # principals, each wrapped in its own assume/run/clear cycle.
-  #
-  # Examples -- do not assume any of these match this application; pick the
-  # one that fits, or write something else entirely:
-  #
-  #   # Rails session-based auth:
-  #   session[:user_id] = params[:principal_id]
-  #
-  #   # Devise:
-  #   user = User.find(params[:principal_id])
-  #   sign_in(user)
-  #
-  #   # Warden directly:
-  #   request.env["warden"].set_user(User.find(params[:principal_id]))
   def create
+    principal = resolve_principal
+    return head(:forbidden) unless principal
+
+    # TODO: replace with this application's real authentication setup,
+    # using the already-resolved `principal` above -- never re-derive it
+    # from params. Whatever happens here must be fully undone by `destroy`
+    # below, and must be safe to call many times in a row: a single access
+    # sweep probes many principals, each wrapped in its own
+    # assume/run/clear cycle.
+    #
+    # Examples -- do not assume any of these match this application; pick
+    # the one that fits, or write something else entirely:
+    #
+    #   # Rails session-based auth:
+    #   session[:user_id] = principal.id
+    #
+    #   # Devise:
+    #   sign_in(principal)
+    #
+    #   # Warden directly:
+    #   request.env["warden"].set_user(principal)
     raise NotImplementedError, "KarstIdentityController#create has not been configured for this application yet"
   end
 
@@ -74,5 +81,14 @@ class KarstIdentityController < ApplicationController
   #   sign_out(:user)
   def destroy
     raise NotImplementedError, "KarstIdentityController#destroy has not been configured for this application yet"
+  end
+
+  private
+
+  # Resolves params[:principal_id] strictly within this application's own
+  # config.principals, mirroring how Karst's browser "Test as" flow already
+  # resolves a submitted principal -- never an unrestricted model lookup.
+  def resolve_principal
+    Karst::Identity.resolve(model_name: params[:principal_type], id: params[:principal_id])
   end
 end
