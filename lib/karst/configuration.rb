@@ -3,7 +3,8 @@
 module Karst
   # Process-level settings that control Karst's implemented behavior.
   class Configuration
-    attr_accessor :enabled, :principals, :assume_identity, :clear_identity, :principal_label
+    attr_accessor :enabled, :principals, :assume_identity, :clear_identity, :principal_label,
+                  :assume_browser_identity, :clear_browser_identity
     attr_reader :buffer_size, :access_sweep_limit
 
     MAX_ACCESS_SWEEP_LIMIT = 100
@@ -15,6 +16,8 @@ module Karst
       @assume_identity = nil
       @clear_identity = nil
       @principal_label = nil
+      @assume_browser_identity = nil
+      @clear_browser_identity = nil
       @access_sweep_limit = 25
     end
 

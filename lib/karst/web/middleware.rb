@@ -3,6 +3,7 @@
 require_relative "locality"
 require_relative "panel"
 require_relative "badge"
+require_relative "browser_identity"
 require_relative "../execution_context"
 require "rack/utils"
 require "rack/request"
@@ -45,12 +46,7 @@ module Karst
       end
 
       def call(env)
-        if owned?(env)
-          return @app.call(env) unless development? && @locality.local?(env["REMOTE_ADDR"])
-
-          params = owned_params(env)
-          return Panel.render(params: params, access_result: analyze(env, params))
-        end
+        return call_owned(env) if owned?(env)
 
         return @app.call(env) unless development? && @locality.local?(env["REMOTE_ADDR"])
 
@@ -58,6 +54,19 @@ module Karst
       end
 
       private
+
+      def call_owned(env)
+        return @app.call(env) unless development? && @locality.local?(env["REMOTE_ADDR"])
+
+        params = owned_params(env)
+        browser_identity = BrowserIdentity.new(Rack::Request.new(env))
+        identity_response = mutate_browser_identity(env, params, browser_identity)
+        return identity_response if identity_response
+
+        Panel.render(params: params, access_result: analyze(env, params),
+                     csrf_token: browser_token(browser_identity),
+                     browser_identity_active: browser_identity_active?(browser_identity))
+      end
 
       def call_with_badge(env)
         Karst::ExecutionContext[CONTEXT_KEY] = nil
@@ -87,6 +96,30 @@ module Karst
         Access::Sweep.new(path: params["path"], http_method: params["method"], principals: sampled.principals).call
       rescue Access::Error, Identity::Error, ArgumentError => e
         e
+      end
+
+      def mutate_browser_identity(env, params, browser_identity)
+        return unless env["REQUEST_METHOD"] == "POST"
+
+        path = case params["operation"]
+               when "test_as" then browser_identity.assume(params)
+               when "stop_test_as" then browser_identity.clear(params)
+               end
+        path && [303, { "location" => path, "cache-control" => "no-store" }, []]
+      rescue Identity::Error
+        [403, { "content-type" => "text/plain; charset=utf-8", "cache-control" => "no-store" }, ["Forbidden"]]
+      end
+
+      def browser_token(browser_identity)
+        browser_identity.token if Identity.browser_supported?
+      rescue Identity::Error
+        nil
+      end
+
+      def browser_identity_active?(browser_identity)
+        Identity.browser_supported? && browser_identity.active?
+      rescue Identity::Error
+        false
       end
 
       # Re-checked per request as defense in depth: the middleware is only

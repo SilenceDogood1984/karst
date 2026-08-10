@@ -113,5 +113,26 @@ RSpec.describe Karst::Web::Panel do
     expect(body).to include("rollback was attempted", "other connections and non-database effects are not isolated",
                             "2 database writes observed")
   end
+
+  it "only renders Test as when browser identity is configured" do
+    descriptor = Karst::Identity::PrincipalDescriptor.new(model_name: "User", id: 27, display_label: "User #27")
+    outcome = Karst::Access::Outcome.new(principal: descriptor, status: 200, redirect: nil,
+                                         exception_class: nil, writes_observed: false, write_count: 0,
+                                         elapsed_ms: 1.0, database_rollback_attempted: true)
+    result = Karst::Access::Result.new(path: "/documents/22/reader", http_method: "GET", outcomes: [outcome],
+                                       elapsed_ms: 1.0, aborted_reason: nil,
+                                       database_isolation: :same_connection_rollback_attempted)
+    arguments = { params: route.merge("method" => "GET", "path" => result.path),
+                  access_result: result, csrf_token: "nonce" }
+
+    expect(described_class.render(**arguments).last.join).not_to include("Test as")
+    Karst.config.assume_browser_identity = ->(*) {}
+    Karst.config.clear_browser_identity = ->(*) {}
+    body = described_class.render(**arguments).last.join
+    expect(body).to include("User #27", "Test as", 'value="/documents/22/reader"')
+  ensure
+    Karst.config.assume_browser_identity = nil
+    Karst.config.clear_browser_identity = nil
+  end
 end
 # rubocop:enable Metrics/BlockLength

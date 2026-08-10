@@ -66,6 +66,34 @@ module Karst
         PrincipalDescriptor.new(model_name: model_name, id: id, display_label: label)
       end
 
+      # Resolves only principals exposed by the configured source. In
+      # particular, this never constantizes a submitted model name or performs
+      # an unrestricted model lookup.
+      def resolve(model_name:, id:)
+        principals.each do |principal|
+          descriptor = describe(principal)
+          return principal if descriptor.model_name == model_name.to_s && descriptor.id.to_s == id.to_s
+        end
+        nil
+      end
+
+      def browser_supported?
+        Karst.config.assume_browser_identity.respond_to?(:call) &&
+          Karst.config.clear_browser_identity.respond_to?(:call)
+      end
+
+      def assume_browser(request, principal)
+        raise Unavailable, "browser identity hooks are not configured" unless browser_supported?
+
+        Karst.config.assume_browser_identity.call(request, principal)
+      end
+
+      def clear_browser(request)
+        raise Unavailable, "browser identity hooks are not configured" unless browser_supported?
+
+        Karst.config.clear_browser_identity.call(request)
+      end
+
       private
 
       def adapter
