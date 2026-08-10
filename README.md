@@ -95,9 +95,10 @@ Karst.configure do |config|
 end
 ```
 
-When both hooks are configured, each observed principal has a **Test as**
-button. Karst resolves the submitted descriptor only through the configured
-`principals` source, invokes the hook, and redirects to the exact analyzed
+When both hooks are configured, each usable observed principal has a prominent
+**Test as** button. Other outcomes remain collapsed as raw evidence and do not
+offer that primary action. Karst resolves the submitted descriptor only
+through the configured `principals` source, invokes the hook, and redirects to the exact analyzed
 local path with its query string removed. **Stop testing as** invokes the clear
 hook and therefore clears to whatever identity (normally anonymous) the host
 defines; generic restoration of a previous identity is not attempted.
@@ -120,6 +121,28 @@ starts a sweep. The results are **observed outcomes**, not authorization
 claims: status, query-free redirect destination or exception class, safe
 `Karst::Identity.describe` label, elapsed time, and database-write evidence are
 grouped without response bodies.
+
+The panel promotes **usable principals** above the remaining observed outcomes
+so its primary answer is who can be used to test the current page. “Usable” is
+a host-configurable presentation policy over an observed HTTP outcome; it is
+not an authorization conclusion. By default, statuses from 200 through 299 are
+usable, while redirects, exceptions, and outcomes without a status are not.
+Applications can narrowly replace that policy without changing or filtering
+the sweep evidence:
+
+```ruby
+Karst.configure do |config|
+  config.usable_access_outcome = lambda do |outcome|
+    outcome.status && (200..299).cover?(outcome.status)
+  end
+end
+```
+
+Every outcome remains in the bounded sweep result. Non-usable status groups,
+redirects, exceptions, timings, and write/rollback warnings remain available
+under **Other observed outcomes**. If none of the sampled candidates produces
+a usable outcome, the panel says exactly that; it does not claim that no user
+can access the page.
 
 The default `config.access_sweep_limit` is 25 and can be set from 1 through the
 hard ceiling of 100. Active Record relations receive `limit` before they are
@@ -230,7 +253,14 @@ Document #22
 
 This is evidence, not an authorization claim -- it never states or implies *why* the outcome occurred, only which foreign-key columns, if any, point from one given record to the other's id. Only foreign-key-shaped columns (ending in `_id`) are ever inspected, so no other attribute -- name, email, token, or anything else -- is ever read or shown; only a direct column-value comparison between the two given records is made, never a join, a `has_many` traversal, or any multi-hop graph walk.
 
-The sweep itself still performs no route discovery or resource substitution (see above): `ResourceEvidence` is a distinct, downstream, opt-in step that never changes what a sweep executes. Resolving the exact resource from a route path is attempted only through Rails' own route recognition plus its controller-to-model naming convention, and only trusted when every step succeeds unambiguously -- a recognized route with an `:id` segment, a controller name that classifies to a real loaded Active Record model, and a record that actually exists for that id. Anything softer (an unrecognized route, a controller with no conventional model, a missing record) is reported back as a `limitation` string rather than guessed at; `Result#to_text` renders it as `Unavailable: <reason>` instead of silently fabricating a relationship. `ResourceEvidence.new(resource:, principal:).call` is available directly when you already hold both actual records and want to skip route resolution entirely.
+The panel runs this downstream evidence step for usable outcomes and displays a
+**Related state** block when a direct relationship is available. A missing or
+limited resolution simply omits that block; it does not hide the usable
+principal. Principal descriptors are resolved only through
+`config.principals`, so even a valid model name and database id cannot expand
+Karst's configured principal universe.
+
+The sweep itself still performs no route discovery or resource substitution (see above): `ResourceEvidence` is a distinct, downstream, opt-in step that never changes what a sweep executes. Resolving the exact resource from a route path is attempted only through Rails' own route recognition plus its controller-to-model naming convention, and only trusted when every step succeeds unambiguously -- a recognized route with an `:id` segment, a controller name that classifies to a real loaded Active Record model, and a record that actually exists for that id. Anything softer (an unrecognized route, a controller with no conventional model, a missing record, or a principal outside the configured source) is reported back as a `limitation` string rather than guessed at; `Result#to_text` renders it as `Unavailable: <reason>` instead of silently fabricating a relationship. `ResourceEvidence.new(resource:, principal:).call` is available directly when you already hold both actual records and want to skip route resolution entirely.
 
 ## Configuration
 

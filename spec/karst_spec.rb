@@ -46,6 +46,20 @@ RSpec.describe Karst do
         expect { configuration.access_sweep_limit = value }.to raise_error(ArgumentError)
       end
     end
+
+    it "treats only observed 2xx statuses as usable by default and accepts a custom policy" do
+      configuration = configuration_class.new
+      outcome = Struct.new(:status)
+
+      expect([200, 204, 299].map { |status| configuration.usable_access_outcome.call(outcome.new(status)) })
+        .to all(be_truthy)
+      expect([nil, 302, 401, 403].map { |status| configuration.usable_access_outcome.call(outcome.new(status)) })
+        .to all(be_falsey)
+
+      configuration.usable_access_outcome = ->(observed) { observed.status == 302 }
+      expect(configuration.usable_access_outcome.call(outcome.new(302))).to be(true)
+      expect { configuration.usable_access_outcome = :two_xx }.to raise_error(ArgumentError, /callable/)
+    end
   end
 
   describe "process-level buffer" do

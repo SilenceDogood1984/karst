@@ -29,5 +29,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Reorganized `/karst` access results around a host-configurable usable-outcome presentation policy (2xx by default): usable sampled principals and their Test-as actions are prominent, exact-resource relationship evidence is shown when available, and every other raw outcome remains preserved in a subordinate expandable section. Resource-evidence principal resolution now obeys the configured principal source.
 - Marked configuration, buffer, subscription, and the experimental SQL canonicalizer as private implementation constants.
 - Lowered `required_ruby_version` to `>= 2.7` and the `activesupport` dependency to `>= 6.1, < 9`.
