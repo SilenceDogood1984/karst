@@ -1,12 +1,17 @@
 # frozen_string_literal: true
 
 require_relative "../value"
+require_relative "sweep"
 
 module Karst
   module Access
     # Selects a small, bounded, deterministic set of candidate principals from
-    # a large Active Record scope, biased toward covering behaviorally
-    # distinct database states rather than the first N rows encountered.
+    # a large Active Record scope, biased toward covering distinct observed
+    # database-state dimensions (booleans, enums, nullable-FK presence,
+    # low-cardinality scalars) rather than the first N rows encountered. This
+    # is schema-state diversity, not behavioral diversity -- the sampler never
+    # executes a route, so it has no evidence about how any of these states
+    # actually behave; that evidence only exists once Access::Sweep runs.
     #
     # This class only selects candidates -- it never executes a route, never
     # compares outcomes, and never inspects PII. Its result is fed to
@@ -16,6 +21,15 @@ module Karst
     # back to the same bounded-first strategy Sweep itself already used.
     # rubocop:disable Metrics/ClassLength
     class PrincipalSampler
+      # Raised when the Active Record source has no single, simple primary
+      # key column (a composite primary key, or none at all). Sampling relies
+      # on ordering and excluding by one primary-key column throughout; rather
+      # than fail confusingly deep inside a query chain, this fails fast at
+      # the boundary with an actionable message. A plain Enumerable/Array
+      # principal source (including an already-materialized `relation.to_a`)
+      # is unaffected -- it never reaches this path.
+      class UnsupportedPrimaryKey < Error; end
+
       # A column is considered a candidate for stratification only when the
       # number of distinct values observed does not exceed this cutoff.
       # Chosen conservatively: enough to represent a handful of workflow
@@ -44,6 +58,16 @@ module Karst
         card cvv iban passport license
       ].freeze
 
+      # Foreign-key-shaped columns (ending in "_id") whose name suggests a
+      # tenant/account boundary are excluded from candidacy outright, not
+      # just when non-nullable. A *nullable* tenant-style foreign key would
+      # otherwise reach #nullable_foreign_key_targets, which samples
+      # presence/absence without ever running the cardinality check below --
+      # so cardinality alone cannot be the thing keeping a high-cardinality
+      # tenant/account identifier out of the sampler; this name-based
+      # exclusion is what actually guarantees it, regardless of nullability.
+      TENANCY_FK_TOKENS = %w[tenant account organization org company workspace team customer client shop].freeze
+
       ALLOWED_SCALAR_TYPES = %i[integer bigint string].freeze
 
       Candidate = Value.define(:principal, :reasons)
@@ -54,10 +78,23 @@ module Karst
       Target = Struct.new(:key, :reason, :matcher, :scope, keyword_init: true)
       private_constant :Target
 
+      # Total SQL queries #call will ever issue for a given limit, across
+      # every query-issuing step (seed selection, scalar-column cardinality
+      # discovery, per-target lookups, and the final fill query). This is a
+      # hard cap enforced at every one of those call sites individually (see
+      # #query_allowed?), not merely an estimate: #call always issues at most
+      # this many queries, regardless of table width or row count. Reaching
+      # the cap simply means #call may return fewer than `limit` principals
+      # rather than exceeding its query budget.
+      def self.query_budget(limit)
+        MAX_SCALAR_DISCOVERY_QUERIES + (limit * 4) + 2
+      end
+
       def initialize(source:, limit: Karst.config.access_sweep_limit)
         @source = source
         @limit = limit
         @queries = 0
+        @query_budget = self.class.query_budget(limit)
       end
 
       def call
@@ -95,14 +132,14 @@ module Karst
       # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
       def representative_sample(relation)
         klass = relation.klass
-        primary_key = klass.primary_key
+        primary_key = single_primary_key!(klass)
         dimensions = build_dimensions(relation, klass)
         selected = {}
         covered = {}
 
         seed_candidate(relation, primary_key, dimensions, covered, selected)
         each_target(dimensions) do |target|
-          break if selected.size >= @limit || @queries >= query_budget
+          break if selected.size >= @limit || !query_allowed?
           next if covered.key?(target.key)
 
           record = fetch_matching(relation, primary_key, target, selected.keys)
@@ -119,14 +156,36 @@ module Karst
       end
       # rubocop:enable Metrics/AbcSize, Metrics/MethodLength
 
+      def single_primary_key!(klass)
+        primary_key = klass.primary_key
+        return primary_key if primary_key.is_a?(String)
+
+        raise UnsupportedPrimaryKey,
+              "Karst::Access::PrincipalSampler requires #{klass.name} to have a single-column primary key " \
+              "(got #{primary_key.inspect}); pass an already-materialized Array/Enumerable of principals " \
+              "instead to use bounded-first sampling"
+      end
+
+      def query_allowed?
+        @queries < @query_budget
+      end
+
       def seed_candidate(relation, primary_key, dimensions, covered, selected)
+        return unless query_allowed?
+
         @queries += 1
         seed = relation.order(primary_key).limit(1).first
         return unless seed
 
-        reasons = dimensions.flatten.select { |target| target.matcher.call(seed) }
-        reasons.each { |target| covered[target.key] = true }
-        selected[seed.public_send(primary_key)] = Candidate.new(principal: seed, reasons: reasons.map(&:reason))
+        selected[seed.public_send(primary_key)] = Candidate.new(
+          principal: seed, reasons: cover_matching(seed, dimensions, covered)
+        )
+      end
+
+      def cover_matching(seed, dimensions, covered)
+        matched = dimensions.flatten.select { |target| target.matcher.call(seed) }
+        matched.each { |target| covered[target.key] = true }
+        matched.map(&:reason)
       end
 
       def each_target(dimensions)
@@ -144,6 +203,8 @@ module Karst
       end
 
       def fetch_matching(relation, primary_key, target, exclude_ids)
+        return nil unless query_allowed?
+
         @queries += 1
         scope = target.scope.call(relation)
         scope = scope.where.not(primary_key => exclude_ids) if exclude_ids.any?
@@ -152,16 +213,12 @@ module Karst
 
       def fill_remaining(relation, primary_key, selected)
         remaining = @limit - selected.size
-        return if remaining <= 0
+        return if remaining <= 0 || !query_allowed?
 
         @queries += 1
         relation.where.not(primary_key => selected.keys).order(primary_key).limit(remaining).each do |record|
           selected[record.public_send(primary_key)] = Candidate.new(principal: record, reasons: [])
         end
-      end
-
-      def query_budget
-        MAX_SCALAR_DISCOVERY_QUERIES + (@limit * 4) + 2
       end
 
       # Returns an Array of dimensions, each an Array of Target -- the shape
@@ -171,7 +228,7 @@ module Karst
         @scalar_discovery_budget = MAX_SCALAR_DISCOVERY_QUERIES
         dimensions = []
         candidate_columns(klass).each do |column|
-          break if dimensions.size >= MAX_DIMENSIONS
+          break if dimensions.size >= MAX_DIMENSIONS || !query_allowed?
 
           targets = dimension_targets(relation, column, klass)
           dimensions << targets if targets && targets.size > 1
@@ -185,7 +242,8 @@ module Karst
       end
 
       def scalar_dimension_targets(relation, column)
-        return nil unless ALLOWED_SCALAR_TYPES.include?(column.type) && @scalar_discovery_budget.positive?
+        return nil unless ALLOWED_SCALAR_TYPES.include?(column.type) && @scalar_discovery_budget.positive? &&
+                          query_allowed?
 
         @scalar_discovery_budget -= 1
         scalar_targets(relation, column)
@@ -193,12 +251,23 @@ module Karst
 
       def candidate_columns(klass)
         klass.columns_hash.values.reject do |column|
-          column.name == klass.primary_key || sensitive_name?(column.name) || encrypted_attribute?(klass, column)
+          column.name == klass.primary_key || sensitive_name?(column.name) || encrypted_attribute?(klass, column) ||
+            tenancy_foreign_key?(column)
         end
       end
 
       def sensitive_name?(column_name)
         column_name.to_s.downcase.split("_").any? { |token| SENSITIVE_TOKENS.include?(token) }
+      end
+
+      # See TENANCY_FK_TOKENS: this is what actually keeps a high-cardinality
+      # tenant/account foreign key out of candidacy, independent of whether
+      # the column happens to be nullable (and therefore would otherwise
+      # reach the cardinality-check-free presence/absence path).
+      def tenancy_foreign_key?(column)
+        return false unless column.name.end_with?("_id")
+
+        column.name.to_s.downcase.split("_").any? { |token| TENANCY_FK_TOKENS.include?(token) }
       end
 
       def encrypted_attribute?(klass, column)

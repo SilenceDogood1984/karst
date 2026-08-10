@@ -26,6 +26,21 @@ class SamplerPrincipal < PrincipalSamplerFixtureRecord
   end
 end
 
+# A deliberately adversarial fixture for the hard query-budget regression:
+# many boolean/enum dimension targets that no row in the (small, homogeneous)
+# table ever satisfies, so every one of those lookups is a wasted query. If
+# the budget were an estimate rather than an enforced invariant, this table
+# would drive #call well past PrincipalSampler.query_budget(limit).
+class BudgetStressPrincipal < PrincipalSamplerFixtureRecord
+  CATEGORY_KEYS = (0..29).to_h { |i| ["category#{i}", i] }.freeze
+
+  if ActiveRecord::VERSION::MAJOR >= 7
+    enum :category, CATEGORY_KEYS
+  else
+    enum category: CATEGORY_KEYS
+  end
+end
+
 # rubocop:disable Metrics/BlockLength
 RSpec.describe Karst::Access::PrincipalSampler do
   before(:all) do
@@ -34,14 +49,26 @@ RSpec.describe Karst::Access::PrincipalSampler do
       t.integer :status, null: false, default: 0
       t.integer :author_id
       t.integer :tenant_id, null: false
+      t.integer :account_id
       t.string :external_ref
       t.string :email
       t.datetime :created_at
     end
   end
 
+  before(:all) do
+    PrincipalSamplerFixtureRecord.connection.create_table :budget_stress_principals, force: true do |t|
+      t.boolean :flag_a, null: false, default: false
+      t.boolean :flag_b, null: false, default: false
+      t.boolean :flag_c, null: false, default: false
+      t.boolean :flag_d, null: false, default: false
+      t.integer :category, null: false, default: 0
+    end
+  end
+
   after(:all) do
     PrincipalSamplerFixtureRecord.connection.drop_table :sampler_principals, if_exists: true
+    PrincipalSamplerFixtureRecord.connection.drop_table :budget_stress_principals, if_exists: true
   end
 
   before do
@@ -122,6 +149,13 @@ RSpec.describe Karst::Access::PrincipalSampler do
       expect(result.principals).not_to be_empty
       expect(result.principals.map(&:tenant_id).uniq).to eq([7])
       expect(reasons_starting_with(result, "tenant_id=")).to be_empty
+    end
+
+    it "never treats a nullable tenant-style foreign key as a presence/absence dimension" do
+      SamplerPrincipal.find_each.with_index { |row, i| row.update!(account_id: i) }
+
+      result = described_class.new(source: SamplerPrincipal.all, limit: 10).call
+      expect(reasons_starting_with(result, "account_id")).to be_empty
     end
 
     def reasons_starting_with(result, prefix)
@@ -215,6 +249,59 @@ RSpec.describe Karst::Access::PrincipalSampler do
 
       expect(large_queries).to eq(small_queries)
       expect(large_queries).to be < 50
+    end
+
+    it "never issues more queries than the declared budget, even under an adversarial fixture" do
+      BudgetStressPrincipal.delete_all
+      create_homogeneous_stress_principals(5)
+
+      [1, 2, 3, 5, 25].each do |limit|
+        budget = described_class.query_budget(limit)
+        queries = sql_queries { described_class.new(source: BudgetStressPrincipal.all, limit: limit).call }
+
+        expect(queries.size).to be <= budget
+      end
+    end
+
+    it "returns at most, and may return fewer than, `limit` principals once the budget is exhausted" do
+      BudgetStressPrincipal.delete_all
+      create_homogeneous_stress_principals(5)
+
+      result = described_class.new(source: BudgetStressPrincipal.all, limit: 3).call
+
+      expect(result.principals.size).to be <= 3
+      expect(result.queries).to be <= described_class.query_budget(3)
+    end
+
+    def create_homogeneous_stress_principals(count)
+      count.times do
+        BudgetStressPrincipal.create!(flag_a: false, flag_b: false, flag_c: false, flag_d: false,
+                                      category: :category0)
+      end
+    end
+  end
+
+  describe "primary key safety" do
+    before do
+      SamplerPrincipal.create!(premium: false, status: :active, tenant_id: 1)
+    end
+
+    it "raises a Karst-specific actionable error for a composite primary key rather than crashing obscurely" do
+      allow(SamplerPrincipal).to receive(:primary_key).and_return(%w[tenant_id id])
+
+      expect { described_class.new(source: SamplerPrincipal.all, limit: 5).call }
+        .to raise_error(Karst::Access::PrincipalSampler::UnsupportedPrimaryKey, /single-column primary key/)
+    end
+
+    it "raises the same actionable error when the model has no primary key at all" do
+      allow(SamplerPrincipal).to receive(:primary_key).and_return(nil)
+
+      expect { described_class.new(source: SamplerPrincipal.all, limit: 5).call }
+        .to raise_error(Karst::Access::PrincipalSampler::UnsupportedPrimaryKey, /single-column primary key/)
+    end
+
+    it "is a Karst::Access::Error, so the existing middleware/panel error surface catches it unchanged" do
+      expect(Karst::Access::PrincipalSampler::UnsupportedPrimaryKey.ancestors).to include(Karst::Access::Error)
     end
   end
 end

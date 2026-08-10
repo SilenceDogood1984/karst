@@ -105,24 +105,41 @@ rejected.
 When `config.principals` returns an Active Record relation or model class, the
 panel's Analyze button runs `Karst::Access::PrincipalSampler` ahead of the
 sweep instead of taking whatever rows happen to sort first. It selects up to
-`access_sweep_limit` principals biased toward covering distinct database
-states -- boolean columns, `enum` columns, presence/absence of a nullable
-foreign key, and other low-cardinality scalar columns (10 or fewer observed
-distinct values, checked with one bounded `DISTINCT ... LIMIT` query per
-candidate column, never a full-table scan or `COUNT(*)`). A conservative,
-name-based filter unconditionally excludes anything resembling email, name,
-phone, address, token, password, or other sensitive columns, regardless of
-cardinality, and a high-cardinality foreign key (a typical `tenant_id` or
-`account_id` in a multi-tenant table) never becomes a stratification dimension
-because it fails the cardinality check. Query volume is bounded by the number
-of dimensions and the configured limit, not by table size, so it behaves the
-same whether the underlying table has a thousand rows or a million. Selection
-is deterministic and never escapes the relation `config.principals` returned
--- an already tenant-scoped relation stays tenant-scoped. The sampler only
-selects candidates: it runs no route, compares no outcomes, and its result
-feeds `Karst::Access::Sweep` exactly like any other bounded principal source.
-Any other Enumerable source falls back to the existing bounded-first strategy,
-unchanged.
+`access_sweep_limit` principals biased toward covering distinct *observed
+database states* -- boolean columns, `enum` columns, presence/absence of a
+nullable foreign key, and other low-cardinality scalar columns (10 or fewer
+observed distinct values, checked with one bounded `DISTINCT ... LIMIT` query
+per candidate column, never a full-table scan or `COUNT(*)`). This is
+schema-state diversity the sampler observed in the database, not behavioral
+diversity: the sampler never executes a route, so it has no evidence about how
+any of these principals actually behave -- that evidence exists only once
+`Access::Sweep` runs.
+
+A conservative, name-based filter unconditionally excludes anything resembling
+email, name, phone, address, token, password, or other sensitive columns,
+regardless of cardinality. Separately, a foreign key shaped like a
+tenant/account/organization boundary (`tenant_id`, `account_id`, and similar)
+is excluded by name as well, independent of nullability or cardinality --
+cardinality alone cannot be what keeps such a column out, since a *nullable*
+one would otherwise reach presence/absence sampling without ever going through
+the cardinality check.
+
+Query volume is bounded by the number of dimensions and the configured limit,
+not by table size, so it behaves the same whether the underlying table has a
+thousand rows or a million; `Karst::Access::PrincipalSampler.query_budget(limit)`
+states that bound explicitly and it is enforced at every query-issuing call
+site, not merely estimated -- a call may return fewer than `limit` principals
+if the budget is exhausted, but never issues more queries than the budget
+declares. An Active Record source with a composite or missing primary key
+raises `Karst::Access::PrincipalSampler::UnsupportedPrimaryKey` (a
+`Karst::Access::Error`) rather than failing obscurely mid-query; pass an
+already-materialized `Array`/Enumerable of principals instead to use bounded-
+first sampling in that case. Selection is deterministic and never escapes the
+relation `config.principals` returned -- an already tenant-scoped relation
+stays tenant-scoped. The sampler only selects candidates: it runs no route,
+compares no outcomes, and its result feeds `Karst::Access::Sweep` exactly like
+any other bounded principal source. Any other Enumerable source falls back to
+the existing bounded-first strategy, unchanged.
 
 Every principal receives a fresh `ActionDispatch::Integration::Session` and is
 assumed and cleared only through `Karst::Identity`. Each synchronous request is
