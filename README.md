@@ -46,7 +46,7 @@ window = Karst.window
 
 A `Window`'s counts and durations apply only to that Window. Fingerprints are a derived identity for grouping observed SQL shapes within a process, not a proof of semantic equivalence, and may change across Karst versions.
 
-In Rails development, Karst serves a read-only scenario panel at `GET /karst` through a small Rack middleware — no engine, route, or controller. The panel reads `tmp/karst/scenarios.json` through `Karst::Spec::Catalog` and shows the statuses, redirects, principal types, outcomes, and spec provenance observed for a controller/action. It distinguishes a missing or invalid artifact from a ready catalog with no matching scenarios. Runtime SQL Window counts remain available as secondary evidence.
+In Rails development, Karst serves a read-only evidence panel at `GET /karst` through a small Rack middleware — no engine, route, or controller. The panel's primary workflow answers "which existing principal can I use to test what I'm looking at": a compact route identity (method, path, controller/action) sits at the top, followed by the **Analyze** action described below and, once run, the usable principals it found. Spec evidence (read from `tmp/karst/scenarios.json` through `Karst::Spec::Catalog`, showing statuses, redirects, principal types, outcomes, and spec provenance for a controller/action) and Runtime SQL Window counts are supporting diagnostics, collapsed by default under **Diagnostics**. The spec evidence summary distinguishes a missing or invalid artifact from a ready catalog with no matching scenarios.
 
 ## Identity adapters
 
