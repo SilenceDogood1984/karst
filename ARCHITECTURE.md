@@ -9,6 +9,7 @@ This document describes how Karst is put together and the policy that governs wh
 - `Karst::Spec::Observer` / `Spec::Reporter` — an opt-in RSpec integration that turns real spec execution (via `ActiveSupport::Notifications` and Warden's public hooks) into a deterministic JSON scenario artifact, with no source parsing and no database access.
 - `Karst::Spec::Catalog` — a read-only index over that artifact; requires none of RSpec, Rails, or a database to read an already-written catalog.
 - `Karst::Web::Middleware` / `Web::Panel` / `Web::Badge` / `Web::Locality` — Karst's development-only HTTP surface: `GET /karst` served directly at the Rack boundary (no engine, route, or controller) plus an optional page-local badge injected into eligible host HTML responses.
+- `Karst::Access::PrincipalSampler` — an optional, bounded-query candidate-selection step ahead of `Access::Sweep`. Over an Active Record relation/class it replaces "first 25 rows" with deterministic principals chosen to cover distinct boolean/enum/nullable-foreign-key/low-cardinality-scalar states; over any other Enumerable it falls back to the same bounded-first strategy `Sweep` itself uses. Deliberately a separate class from `Sweep`: it only selects candidates and never executes a route.
 
 Each area is deliberately narrow and composable; none of them depends on the others' internals beyond the public objects listed above.
 

@@ -85,11 +85,12 @@ only model/class name, `id`, and a display label. The default label is the safe
 Karst can sequentially probe the exact current GET path with the first bounded
 set returned by `config.principals`. Configure the principal source and both
 identity hooks above, open a host page, follow its Karst badge (or open `/karst`
-with route context), and explicitly select **Analyze 25 principals**. Opening
-the panel never starts a sweep. The results are **observed outcomes**, not
-authorization claims: status, query-free redirect destination or exception
-class, safe `Karst::Identity.describe` label, elapsed time, and database-write
-evidence are grouped without response bodies.
+with route context), and explicitly select **Analyze 25 principals** (or
+**Analyze 25 representative principals** -- see below). Opening the panel never
+starts a sweep. The results are **observed outcomes**, not authorization
+claims: status, query-free redirect destination or exception class, safe
+`Karst::Identity.describe` label, elapsed time, and database-write evidence are
+grouped without response bodies.
 
 The default `config.access_sweep_limit` is 25 and can be set from 1 through the
 hard ceiling of 100. Active Record relations receive `limit` before they are
@@ -98,6 +99,30 @@ is no count query, random sampling, route discovery, resource substitution, or
 parallel execution. Target query strings are discarded, exact resource IDs are
 preserved, and external/protocol-relative URLs and every method except GET are
 rejected.
+
+### Representative principal sampling
+
+When `config.principals` returns an Active Record relation or model class, the
+panel's Analyze button runs `Karst::Access::PrincipalSampler` ahead of the
+sweep instead of taking whatever rows happen to sort first. It selects up to
+`access_sweep_limit` principals biased toward covering distinct database
+states -- boolean columns, `enum` columns, presence/absence of a nullable
+foreign key, and other low-cardinality scalar columns (10 or fewer observed
+distinct values, checked with one bounded `DISTINCT ... LIMIT` query per
+candidate column, never a full-table scan or `COUNT(*)`). A conservative,
+name-based filter unconditionally excludes anything resembling email, name,
+phone, address, token, password, or other sensitive columns, regardless of
+cardinality, and a high-cardinality foreign key (a typical `tenant_id` or
+`account_id` in a multi-tenant table) never becomes a stratification dimension
+because it fails the cardinality check. Query volume is bounded by the number
+of dimensions and the configured limit, not by table size, so it behaves the
+same whether the underlying table has a thousand rows or a million. Selection
+is deterministic and never escapes the relation `config.principals` returned
+-- an already tenant-scoped relation stays tenant-scoped. The sampler only
+selects candidates: it runs no route, compares no outcomes, and its result
+feeds `Karst::Access::Sweep` exactly like any other bounded principal source.
+Any other Enumerable source falls back to the existing bounded-first strategy,
+unchanged.
 
 Every principal receives a fresh `ActionDispatch::Integration::Session` and is
 assumed and cleared only through `Karst::Identity`. Each synchronous request is

@@ -43,6 +43,7 @@ KarstTestApplication.routes.draw do
   get "/documents/:id/edit", to: "karst_access_fixture#document"
 end
 
+# rubocop:disable Metrics/BlockLength
 RSpec.describe "bounded access sweep Rails integration" do
   before do
     allow(Rails).to receive(:env).and_return(ActiveSupport::StringInquirer.new("development"))
@@ -71,4 +72,26 @@ RSpec.describe "bounded access sweep Rails integration" do
     expect(result.outcomes.map(&:writes_observed)).to all(be(true))
     expect(KarstAccessPrincipal.order(:id).pluck(:visits)).to eq([0, 0, 0, 0])
   end
+
+  it "feeds PrincipalSampler's representative candidates into Sweep, surfacing a minority state first-N misses" do
+    KarstAccessPrincipal.delete_all
+    30.times { KarstAccessPrincipal.create!(behavior: "ok") }
+    minority = KarstAccessPrincipal.create!(behavior: "forbidden")
+
+    naive_first_25_ids = KarstAccessPrincipal.order(:id).limit(25).pluck(:id)
+    expect(naive_first_25_ids).not_to include(minority.id)
+
+    expect(Karst::Access::PrincipalSampler.representative_capable?(KarstAccessPrincipal.all)).to be(true)
+    expect(Karst::Access::PrincipalSampler.representative_capable?([1, 2, 3])).to be(false)
+
+    sampled = Karst::Access::PrincipalSampler.new(source: KarstAccessPrincipal.all, limit: 25).call
+    expect(sampled.strategy).to eq(:representative)
+    expect(sampled.principals.map(&:id)).to include(minority.id)
+
+    result = Karst::Access::Sweep.new(path: "/documents/read/edit", principals: sampled.principals,
+                                      application: KarstTestApplication).call
+
+    expect(result.outcomes.map(&:status)).to include(403)
+  end
 end
+# rubocop:enable Metrics/BlockLength
