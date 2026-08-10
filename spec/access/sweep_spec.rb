@@ -83,6 +83,16 @@ RSpec.describe Karst::Access::Sweep do
     expect(result.groups.values).to eq([[clean, writing]])
   end
 
+  it "carries an optional candidate_pool_size through to the result, defaulting to nil" do
+    with_pool = described_class.new(path: "/documents", principals: [Principal.new(1)], candidate_pool_size: 1_000,
+                                    application: Object.new).call
+    without_pool = described_class.new(path: "/documents", principals: [Principal.new(1)],
+                                       application: Object.new).call
+
+    expect(with_pool.candidate_pool_size).to eq(1_000)
+    expect(without_pool.candidate_pool_size).to be_nil
+  end
+
   it "limits relation-like sources before materializing them" do
     relation = double("relation")
     limited = [Principal.new(1), Principal.new(2)]

@@ -111,6 +111,42 @@ RSpec.describe "bounded access sweep Rails integration" do
     expect(result.outcomes.map(&:status)).to include(403)
   end
 
+  it "bounds representative sampling to a recent candidate pool and reports it truthfully, without losing " \
+     "resolution of an older allowed principal" do
+    KarstAccessPrincipal.delete_all
+    total = 600
+    pool_size = 50
+    Karst.config.principal_candidate_pool_size = pool_size
+    Karst.config.principals = -> { KarstAccessPrincipal.all }
+
+    old_principal = KarstAccessPrincipal.create!(behavior: "ok")
+    (total - 1).times { KarstAccessPrincipal.create!(behavior: "ok") }
+    recent_minority = KarstAccessPrincipal.create!(behavior: "forbidden")
+
+    # No created_at column exists on this fixture, so the pool falls back to
+    # primary-key descending order -- the most-recently-inserted (highest
+    # id) rows, which is exactly where recent_minority lands.
+    expected_pool_ids = KarstAccessPrincipal.order(id: :desc).limit(pool_size).pluck(:id)
+    expect(expected_pool_ids).not_to include(old_principal.id)
+
+    sampled = Karst::Access::PrincipalSampler.new(source: KarstAccessPrincipal.all, limit: 25).call
+    expect(sampled.candidate_pool_size).to eq(pool_size)
+    expect(sampled.principals.map(&:id) - expected_pool_ids).to be_empty
+    expect(sampled.principals.map(&:id)).to include(recent_minority.id)
+
+    result = Karst::Access::Sweep.new(path: "/documents/read/edit", principals: sampled.principals,
+                                      candidate_pool_size: sampled.candidate_pool_size,
+                                      application: KarstTestApplication).call
+    expect(result.candidate_pool_size).to eq(pool_size)
+
+    # config.principals remains the complete allowed universe: an old
+    # principal outside the sampling pool is still resolvable.
+    expect(Karst::Identity.resolve(model_name: "KarstAccessPrincipal", id: old_principal.id)).to eq(old_principal)
+  ensure
+    Karst.config.principal_candidate_pool_size = 1_000
+    Karst.config.principals = nil
+  end
+
   it "bypasses non-reentrant host middleware at the route dispatch boundary" do
     principal = KarstAccessPrincipal.find_by!(behavior: "ok")
     calls_before = KarstNonReentrantMiddleware.calls

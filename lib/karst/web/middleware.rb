@@ -103,7 +103,8 @@ module Karst
         return nil unless env["REQUEST_METHOD"] == "POST" && params["operation"] == "access_sweep"
 
         sampled = Access::PrincipalSampler.new(source: Identity.principals).call
-        Access::Sweep.new(path: params["path"], http_method: params["method"], principals: sampled.principals).call
+        Access::Sweep.new(path: params["path"], http_method: params["method"], principals: sampled.principals,
+                          candidate_pool_size: sampled.candidate_pool_size).call
       rescue Access::Error, Identity::Error, ArgumentError => e
         e
       end
