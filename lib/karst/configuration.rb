@@ -5,7 +5,7 @@ module Karst
   class Configuration
     attr_accessor :enabled, :principals, :assume_identity, :clear_identity, :principal_label,
                   :assume_browser_identity, :clear_browser_identity
-    attr_reader :buffer_size, :access_sweep_limit
+    attr_reader :buffer_size, :access_sweep_limit, :usable_access_outcome
 
     MAX_ACCESS_SWEEP_LIMIT = 100
 
@@ -19,6 +19,7 @@ module Karst
       @assume_browser_identity = nil
       @clear_browser_identity = nil
       @access_sweep_limit = 25
+      @usable_access_outcome = ->(outcome) { outcome.status && (200..299).cover?(outcome.status) }
     end
 
     def access_sweep_limit=(value)
@@ -33,6 +34,12 @@ module Karst
       raise ArgumentError, "buffer_size must be a positive Integer" unless value.is_a?(Integer) && value.positive?
 
       @buffer_size = value
+    end
+
+    def usable_access_outcome=(policy)
+      raise ArgumentError, "usable_access_outcome must be callable" unless policy.respond_to?(:call)
+
+      @usable_access_outcome = policy
     end
   end
 end

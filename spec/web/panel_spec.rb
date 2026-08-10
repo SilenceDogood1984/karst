@@ -41,6 +41,19 @@ RSpec.describe Karst::Web::Panel do
 
   let(:route) { { "controller" => "PagesController", "action" => "index" } }
 
+  def access_outcome(id:, status:, redirect: nil, exception_class: nil)
+    descriptor = Karst::Identity::PrincipalDescriptor.new(model_name: "User", id: id, display_label: "User ##{id}")
+    Karst::Access::Outcome.new(principal: descriptor, status: status, redirect: redirect,
+                               exception_class: exception_class, writes_observed: false, write_count: 0,
+                               elapsed_ms: 1.0, database_rollback_attempted: true)
+  end
+
+  def access_result(outcomes)
+    Karst::Access::Result.new(path: "/documents/22/reader", http_method: "GET", outcomes: outcomes,
+                              elapsed_ms: outcomes.size.to_f, aborted_reason: nil,
+                              database_isolation: :same_connection_rollback_attempted)
+  end
+
   it "distinguishes missing and invalid catalogs" do
     expect(render(catalog(:missing))).to include(
       "No Karst scenario catalog has been generated yet.", "bundle exec rspec"
@@ -109,9 +122,70 @@ RSpec.describe Karst::Web::Panel do
     body = described_class.render(params: route.merge("method" => "GET", "path" => "/pages"),
                                   access_result: result).last.join
 
-    expect(body.scan("200 OK — 2").size).to eq(1)
+    expect(body).to include("Usable principals — 2")
     expect(body).to include("rollback was attempted", "other connections and non-database effects are not isolated",
                             "2 database writes observed")
+  end
+
+  it "promotes all usable principals and collapses other raw outcomes without Test as actions" do
+    outcomes = [access_outcome(id: 27, status: 200), access_outcome(id: 28, status: 204),
+                access_outcome(id: 1, status: 302, redirect: "/login"),
+                access_outcome(id: 2, status: 403), access_outcome(id: 3, status: nil, exception_class: "RuntimeError")]
+    Karst.config.assume_browser_identity = ->(*) {}
+    Karst.config.clear_browser_identity = ->(*) {}
+
+    body = described_class.render(params: route.merge("method" => "GET", "path" => "/documents/22/reader"),
+                                  access_result: access_result(outcomes), csrf_token: "nonce").last.join
+
+    expect(body).to include("Usable principals — 2", "User #27", "Observed 200 OK", "User #28",
+                            "Observed 204 No Content", "Other observed outcomes — 3", "302 → /login — 1",
+                            "Exception: RuntimeError — 1")
+    expect(body.scan("Test as").size).to eq(2)
+    expect(body.index("User #27")).to be < body.index("<details>")
+  end
+
+  it "describes zero usable sampled principals without overclaiming" do
+    body = described_class.render(params: route.merge("method" => "GET", "path" => "/documents/22/reader"),
+                                  access_result: access_result([access_outcome(id: 1, status: 401)])).last.join
+
+    expect(body).to include("Usable principals — 0", "No sampled principal produced a usable outcome.",
+                            "Other observed outcomes — 1")
+    expect(body).not_to include("No user can access this page")
+  end
+
+  it "uses the configured usable-outcome presentation policy" do
+    Karst.config.usable_access_outcome = ->(outcome) { outcome.status == 302 }
+    body = described_class.render(params: route.merge("method" => "GET", "path" => "/documents/22/reader"),
+                                  access_result: access_result([access_outcome(id: 1, status: 302)])).last.join
+
+    expect(body).to include("Usable principals — 1", "Observed 302 Found", "Other observed outcomes — 0")
+  end
+
+  it "shows exact-resource relationships for usable principals when available" do
+    relationship = Karst::Access::ResourceEvidence::Relationship.new(
+      column: "user_id", from_model: "Document", from_id: 22, to_model: "User", to_id: 27
+    )
+    evidence = Karst::Access::ResourceEvidence::Result.new(
+      principal: access_outcome(id: 27, status: 200).principal,
+      resource: Karst::Access::ResourceEvidence::ResourceDescriptor.new(model_name: "Document", id: 22),
+      relationships: [relationship], observed_status: 200, observed_redirect: nil, limitation: nil
+    )
+    allow(Karst::Access::ResourceEvidence).to receive(:for_outcome).and_return(evidence)
+
+    body = described_class.render(params: route.merge("method" => "GET", "path" => "/documents/22/reader"),
+                                  access_result: access_result([access_outcome(id: 27, status: 200)])).last.join
+
+    expect(body).to include("Related state", "Document #22", "user_id → User #27")
+  end
+
+  it "keeps usable principals visible when resource evidence is limited" do
+    allow(Karst::Access::ResourceEvidence).to receive(:for_outcome).and_raise(StandardError, "unavailable")
+
+    body = described_class.render(params: route.merge("method" => "GET", "path" => "/documents/22/reader"),
+                                  access_result: access_result([access_outcome(id: 27, status: 200)])).last.join
+
+    expect(body).to include("Usable principals — 1", "User #27", "Observed 200 OK")
+    expect(body).not_to include("Related state")
   end
 
   it "only renders Test as when browser identity is configured" do

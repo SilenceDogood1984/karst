@@ -116,16 +116,15 @@ module Karst
         end
 
         # Resolves the actual record behind a Karst::Identity::PrincipalDescriptor
-        # (recorded by Access::Sweep as the safe principal representation).
-        # Returns [record, nil] on success or [nil, reason] otherwise.
+        # only through the configured principal source. A valid model/id outside
+        # that source is deliberately unresolved.
         def resolve_principal(descriptor)
-          klass = active_record_class(descriptor.model_name)
-          return [nil, "principal model #{descriptor.model_name} is not a loaded Active Record model"] unless klass
-
-          record = klass.find_by(klass.primary_key => descriptor.id)
-          return [nil, "no #{klass.name} record exists for id #{descriptor.id.inspect}"] unless record
+          record = Identity.resolve(model_name: descriptor.model_name, id: descriptor.id)
+          return [nil, "principal is not available from the configured principal source"] unless record
 
           [record, nil]
+        rescue Identity::Error
+          [nil, "the configured principal source is unavailable"]
         end
 
         private

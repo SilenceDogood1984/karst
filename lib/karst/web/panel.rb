@@ -44,7 +44,7 @@ module Karst
           <<~HTML
             <!DOCTYPE html>
             <html lang="en"><head><meta charset="utf-8"><title>Karst scenarios</title>
-            <style>body{font:16px system-ui,sans-serif;max-width:58rem;margin:2rem auto;padding:0 1rem;color:#202124}form,.scenario,.runtime{border:1px solid #ddd;border-radius:.4rem;padding:1rem;margin:1rem 0}.scenario h4{margin:.1rem 0}.evidence{display:flex;gap:1rem;flex-wrap:wrap}.label{font-size:.78rem;font-weight:700;text-transform:uppercase}.failed,.pending{border-left:5px solid #777}code{background:#f4f4f4;padding:.12rem .3rem}small{color:#555}.page-context{color:#555;margin-bottom:0}</style>
+            <style>body{font:16px system-ui,sans-serif;max-width:58rem;margin:2rem auto;padding:0 1rem;color:#202124}form,.scenario,.runtime,.usable-principal{border:1px solid #ddd;border-radius:.4rem;padding:1rem;margin:1rem 0}.scenario h4{margin:.1rem 0}.evidence{display:flex;gap:1rem;flex-wrap:wrap}.label{font-size:.78rem;font-weight:700;text-transform:uppercase}.failed,.pending{border-left:5px solid #777}code{background:#f4f4f4;padding:.12rem .3rem}small{color:#555}.page-context{color:#555;margin-bottom:0}.usable-principal h4{display:flex;justify-content:space-between;align-items:center;margin:0}.usable-principal form{border:0;padding:0;margin:0}.related-state{margin:.75rem 0 0;padding:.75rem;border-left:3px solid #ddd}details{margin:1rem 0}summary{cursor:pointer;font-weight:700}</style>
             </head><body><h1>Karst</h1>
             #{stop_testing_form(path, csrf_token, browser_identity_active)}
             #{route_form(controller, action)}
@@ -117,42 +117,98 @@ module Karst
           "<input type=\"hidden\" name=\"#{name}\" value=\"#{escape(value)}\">"
         end
 
-        # rubocop:disable Metrics/AbcSize
+        # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
         def access_result(result, csrf_token)
           return "" unless result
           return "<p>Analysis unavailable: #{escape(result.message)}</p>" if result.is_a?(StandardError)
 
           write_count = result.outcomes.count(&:writes_observed)
           warning = write_count.positive? ? write_warning(write_count) : ""
-          groups = result.groups.map { |_key, outcomes| outcome_group(outcomes, result.path, csrf_token) }.join
+          usable, other = result.outcomes.partition { |outcome| usable_outcome?(outcome) }
+          usable_section = usable_outcomes(usable, result, csrf_token)
+          other_section = other_outcomes(other, result.path)
           isolation = "<p><small>Database rollback was attempted on the Active Record base connection; " \
                       "other connections and non-database effects are not isolated.</small></p>"
           "<p>#{result.outcomes.size} principals tested · #{escape(result.elapsed_ms / 1000.0)}s</p>" \
-            "#{isolation}#{warning}#{groups}"
+            "#{isolation}#{warning}#{usable_section}#{other_section}"
         end
-        # rubocop:enable Metrics/AbcSize
+        # rubocop:enable Metrics/AbcSize, Metrics/MethodLength
 
         def write_warning(count)
           "<p><strong>⚠ Database writes were observed during #{count} probes.</strong></p>"
         end
 
+        def usable_outcome?(outcome)
+          Karst.config.usable_access_outcome.call(outcome)
+        end
+
+        def usable_outcomes(outcomes, result, csrf_token)
+          cards = outcomes.map { |outcome| usable_principal(outcome, result, csrf_token) }.join
+          empty = outcomes.empty? ? "<p>No sampled principal produced a usable outcome.</p>" : ""
+          "<section><h3>Usable principals — #{outcomes.size}</h3>#{empty}#{cards}</section>"
+        end
+
+        def usable_principal(outcome, result, csrf_token)
+          writes = outcome.writes_observed ? " — ⚠ #{escape(outcome.write_count)} database writes observed" : ""
+          action = test_as_form(outcome.principal, result.path, csrf_token)
+          evidence = resource_evidence(outcome, result)
+          "<article class=\"usable-principal\"><h4><span>#{escape(outcome.principal.display_label)}#{writes}</span>" \
+            "#{action}</h4><p>#{outcome_title(outcome, prefix: 'Observed ')} · " \
+            "#{escape(outcome.elapsed_ms)}ms</p>#{evidence}</article>"
+        end
+
+        def resource_evidence(outcome, result)
+          evidence = Access::ResourceEvidence.for_outcome(outcome: outcome, path: result.path,
+                                                          http_method: result.http_method)
+          return "" if evidence.limitation || evidence.relationships.empty?
+
+          "<div class=\"related-state\"><strong>Related state</strong><br>" \
+            "#{relationship_groups(evidence.relationships)}</div>"
+        rescue StandardError
+          ""
+        end
+
+        def relationship_groups(relationships)
+          relationships.group_by { |item| [item.from_model, item.from_id] }.map do |key, items|
+            model, id = key
+            "<strong>#{escape(model)} ##{escape(id)}</strong><ul>#{relationship_rows(items)}</ul>"
+          end.join
+        end
+
+        def relationship_rows(relationships)
+          relationships.map do |item|
+            "<li>#{escape(item.column)} → #{escape(item.to_model)} ##{escape(item.to_id)}</li>"
+          end.join
+        end
+
+        def other_outcomes(outcomes, path)
+          groups = outcomes.group_by { |item| [item.status, item.redirect, item.exception_class] }
+                           .map { |_key, grouped| outcome_group(grouped, path, nil) }.join
+          "<details><summary>Other observed outcomes — #{outcomes.size} <span>Show</span></summary>#{groups}</details>"
+        end
+
         def outcome_group(outcomes, path, csrf_token)
           first = outcomes.first
-          title = if first.exception_class
-                    "Exception: #{escape(first.exception_class)}"
-                  elsif first.redirect
-                    "#{escape(first.status)} → #{escape(first.redirect)}"
-                  else
-                    status_title(first.status)
-                  end
+          title = outcome_title(first)
           labels = outcomes.map { |item| outcome_principal(item, path, csrf_token) }.join
           "<article class=\"scenario\"><h3>#{title} — #{outcomes.size}</h3><ul>#{labels}</ul></article>"
+        end
+
+        def outcome_title(outcome, prefix: "")
+          title = if outcome.exception_class
+                    "Exception: #{escape(outcome.exception_class)}"
+                  elsif outcome.redirect
+                    "#{escape(outcome.status)} → #{escape(outcome.redirect)}"
+                  else
+                    status_title(outcome.status)
+                  end
+          "#{prefix}#{title}"
         end
 
         def outcome_principal(item, path, csrf_token)
           writes = item.writes_observed ? " — ⚠ #{escape(item.write_count)} database writes observed" : ""
           action = test_as_form(item.principal, path, csrf_token)
-          "<li>#{escape(item.principal.display_label)}#{writes}#{action}</li>"
+          "<li>#{escape(item.principal.display_label)} — #{escape(item.elapsed_ms)}ms#{writes}#{action}</li>"
         end
 
         def test_as_form(principal, path, csrf_token)

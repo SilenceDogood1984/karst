@@ -48,6 +48,10 @@ RSpec.describe Karst::Access::ResourceEvidence do
     EvidenceDocument.delete_all
   end
 
+  before do
+    Karst.config.principals = -> { EvidenceUser.all }
+  end
+
   describe "#call" do
     it "reports an observed foreign key on the resource pointing at the principal" do
       user = EvidenceUser.create!(name: "Ada", email: "ada@example.com")
@@ -243,7 +247,7 @@ RSpec.describe Karst::Access::ResourceEvidence do
       record, limitation = described_class.resolve_principal(descriptor)
 
       expect(record).to be_nil
-      expect(limitation).to match(/not a loaded Active Record model/)
+      expect(limitation).to match(/not available from the configured principal source/)
     end
 
     it "reports a limitation when no record exists for the descriptor's id" do
@@ -253,7 +257,19 @@ RSpec.describe Karst::Access::ResourceEvidence do
       record, limitation = described_class.resolve_principal(descriptor)
 
       expect(record).to be_nil
-      expect(limitation).to match(/no EvidenceUser record exists/)
+      expect(limitation).to match(/not available from the configured principal source/)
+    end
+
+    it "never resolves a database principal outside the configured source" do
+      included = EvidenceUser.create!(name: "Ada")
+      excluded = EvidenceUser.create!(name: "Grace")
+      Karst.config.principals = -> { EvidenceUser.where(id: included.id) }
+      descriptor = Karst::Identity.describe(excluded)
+
+      record, limitation = described_class.resolve_principal(descriptor)
+
+      expect(record).to be_nil
+      expect(limitation).to match(/not available from the configured principal source/)
     end
   end
 
