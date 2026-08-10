@@ -186,6 +186,23 @@ You can still reach the panel directly with query parameters, as a fallback: `/k
 
 Access is limited to true loopback peers and, under WSL, the single host-side default gateway used by a Windows browser; forwarding headers and private address ranges are not trusted. Nonlocal requests and every path other than `/karst` fall through unchanged to the host application (aside from the badge link Karst adds to eligible HTML responses). The controller/action context is always derived from real request evidence, not the query string: the standalone panel request is never attributed to a host controller/action, and the badge link never carries the host page's own query string.
 
+### Exact-resource state evidence
+
+`Karst::Access::ResourceEvidence` is a separate, read-only step you can run after a sweep, for one outcome you have already selected (for example, the one principal that observed `200` where every other bounded principal observed `302`). Given that outcome and the sweep's exact path, `ResourceEvidence.for_outcome(outcome:, path:, http_method: "GET")` reports simple, directly observed foreign-key relationships between the exact resource that route addresses and that exact principal -- for example, that `Document#22`'s `user_id` column equals `User#27`'s id. `Result#to_text` renders this as plain evidence:
+
+```
+User #27
+Observed 200
+
+Related state:
+Document #22
+  user_id → User #27
+```
+
+This is evidence, not an authorization claim -- it never states or implies *why* the outcome occurred, only which foreign-key columns, if any, point from one given record to the other's id. Only foreign-key-shaped columns (ending in `_id`) are ever inspected, so no other attribute -- name, email, token, or anything else -- is ever read or shown; only a direct column-value comparison between the two given records is made, never a join, a `has_many` traversal, or any multi-hop graph walk.
+
+The sweep itself still performs no route discovery or resource substitution (see above): `ResourceEvidence` is a distinct, downstream, opt-in step that never changes what a sweep executes. Resolving the exact resource from a route path is attempted only through Rails' own route recognition plus its controller-to-model naming convention, and only trusted when every step succeeds unambiguously -- a recognized route with an `:id` segment, a controller name that classifies to a real loaded Active Record model, and a record that actually exists for that id. Anything softer (an unrecognized route, a controller with no conventional model, a missing record) is reported back as a `limitation` string rather than guessed at; `Result#to_text` renders it as `Unavailable: <reason>` instead of silently fabricating a relationship. `ResourceEvidence.new(resource:, principal:).call` is available directly when you already hold both actual records and want to skip route resolution entirely.
+
 ## Configuration
 
 Configure Karst in a Rails initializer:
