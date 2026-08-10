@@ -42,11 +42,12 @@ RSpec.describe Karst::Web::Panel do
   let(:route) { { "controller" => "PagesController", "action" => "index" } }
   let(:analyzed_route) { route.merge("method" => "GET", "path" => "/documents/22/reader") }
 
-  def access_outcome(id:, status:, redirect: nil, exception_class: nil)
+  def access_outcome(id:, status:, redirect: nil, exception_class: nil, sampling_reasons: nil)
     descriptor = Karst::Identity::PrincipalDescriptor.new(model_name: "User", id: id, display_label: "User ##{id}")
     Karst::Access::Outcome.new(principal: descriptor, status: status, redirect: redirect,
                                exception_class: exception_class, writes_observed: false, write_count: 0,
-                               elapsed_ms: 1.0, database_rollback_attempted: true)
+                               elapsed_ms: 1.0, database_rollback_attempted: true,
+                               sampling_reasons: sampling_reasons)
   end
 
   def access_result(outcomes, candidate_pool_size: nil)
@@ -126,6 +127,23 @@ RSpec.describe Karst::Web::Panel do
       body = render(catalog(:ready), analyzed_route)
 
       expect(body).to include("No principal source is configured")
+      expect(body).to include("config.principals or config.principal_sources")
+    end
+
+    it "renders the representative label when any configured source (not just the first) is AR-capable" do
+      first_source = Object.new
+      second_source = Object.new
+      Karst.config.principal_sources = { legacy: -> { first_source }, authors: -> { second_source } }
+      allow(Karst::Access::PrincipalSampler).to receive(:representative_capable?).with(first_source)
+                                                                                 .and_return(false)
+      allow(Karst::Access::PrincipalSampler).to receive(:representative_capable?).with(second_source)
+                                                                                 .and_return(true)
+
+      body = render(catalog(:ready), analyzed_route)
+
+      expect(body).to include("Analyze 25 representative principals")
+    ensure
+      Karst.config.principal_sources = nil
     end
 
     it "does not offer access analysis for non-GET routes" do
@@ -232,6 +250,46 @@ RSpec.describe Karst::Web::Panel do
 
       expect(body).to include("1 principals tested")
       expect(body).not_to include("candidate pool")
+    end
+  end
+
+  describe "sampling evidence ('Sampled for')" do
+    it "shows a compact line under a usable principal when sampling reasons are available" do
+      outcome = access_outcome(id: 27, status: 200, sampling_reasons: ["role=local_admin", "premium=true"])
+      body = described_class.render(params: analyzed_route, access_result: access_result([outcome])).last.join
+
+      expect(body).to include("Sampled for: role=local_admin · premium=true")
+      expect(body.index("Observed 200 OK")).to be < body.index("Sampled for:")
+    end
+
+    it "omits the line entirely when no sampling reasons are available" do
+      outcome = access_outcome(id: 27, status: 200, sampling_reasons: [])
+      body = described_class.render(params: analyzed_route, access_result: access_result([outcome])).last.join
+
+      expect(body).not_to include("Sampled for:")
+    end
+
+    it "omits the line when the outcome carries no sampling_reasons at all (nil)" do
+      outcome = access_outcome(id: 27, status: 200, sampling_reasons: nil)
+      body = described_class.render(params: analyzed_route, access_result: access_result([outcome])).last.join
+
+      expect(body).not_to include("Sampled for:")
+    end
+
+    it "escapes sampling reason text rather than rendering it as markup" do
+      hostile = "<script>alert(1)</script>"
+      outcome = access_outcome(id: 27, status: 200, sampling_reasons: [hostile])
+      body = described_class.render(params: analyzed_route, access_result: access_result([outcome])).last.join
+
+      expect(body).not_to include(hostile)
+      expect(body).to include(CGI.escapeHTML(hostile))
+    end
+
+    it "does not render sampling evidence for collapsed non-usable outcomes" do
+      outcome = access_outcome(id: 27, status: 401, sampling_reasons: ["role=local_admin"])
+      body = described_class.render(params: analyzed_route, access_result: access_result([outcome])).last.join
+
+      expect(body).not_to include("Sampled for:")
     end
   end
 

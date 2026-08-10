@@ -236,28 +236,33 @@ module Karst
         # rubocop:enable Metrics/ParameterLists
 
         def analyze_form(context)
-          source = principal_source
-          kind = source && Access::PrincipalSampler.representative_capable?(source) ? "representative " : ""
+          sources = principal_sources
+          kind = sources && any_representative?(sources) ? "representative " : ""
           label = "Analyze #{Karst.config.access_sweep_limit} #{kind}principals"
           operation = "<input type=\"hidden\" name=\"operation\" value=\"access_sweep\">"
           button = "<button class=\"primary\" type=\"submit\">#{escape(label)}</button>"
           form = "<form action=\"/karst\" method=\"post\">#{context}#{operation}#{button}</form>"
-          "#{form}#{principal_source_hint(source)}"
+          "#{form}#{principal_source_hint(sources)}"
         end
 
-        # Only ever type-checks the configured source (see
-        # Access::PrincipalSampler.representative_capable?); it never queries
-        # or enumerates it, so this is safe to compute on every panel render.
-        def principal_source
-          Identity.principals
+        # Only ever type-checks each configured source's evaluated records
+        # (see Access::PrincipalSampler.representative_capable?); it never
+        # queries or enumerates any of them, so this is safe to compute on
+        # every panel render.
+        def principal_sources
+          Identity.principal_sources
         rescue Identity::Error
           nil
         end
 
-        def principal_source_hint(source)
-          return "" if source
+        def any_representative?(sources)
+          sources.values.any? { |source| Access::PrincipalSampler.representative_capable?(source.evaluate) }
+        end
 
-          "<p class=\"hint\">No principal source is configured (config.principals). " \
+        def principal_source_hint(sources)
+          return "" if sources
+
+          "<p class=\"hint\">No principal source is configured (config.principals or config.principal_sources). " \
             "Analyzing will report why nothing could be sampled.</p>"
         end
 
@@ -333,7 +338,19 @@ module Karst
           evidence = resource_evidence(outcome, result)
           "<article class=\"usable-principal\"><h4><span>#{escape(outcome.principal.display_label)}#{writes}</span>" \
             "#{action}</h4><p>#{outcome_title(outcome, prefix: 'Observed ')} · " \
-            "#{escape(outcome.elapsed_ms)}ms</p>#{evidence}</article>"
+            "#{escape(outcome.elapsed_ms)}ms</p>#{sampled_for(outcome)}#{evidence}</article>"
+        end
+
+        # A compact, secondary line -- deliberately below the observed
+        # outcome and above any resource evidence, never a card of its own --
+        # so it augments a usable principal without competing with Test as,
+        # the observed outcome, or resource evidence for attention. Sampling
+        # evidence, not an authorization claim: see PrincipalDimension.
+        def sampled_for(outcome)
+          reasons = outcome.sampling_reasons
+          return "" if reasons.nil? || reasons.empty?
+
+          "<p class=\"meta\">Sampled for: #{escape(reasons.join(' · '))}</p>"
         end
 
         def resource_evidence(outcome, result)

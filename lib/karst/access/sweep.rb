@@ -13,8 +13,15 @@ module Karst
     class UnsupportedMethod < Error; end
     class Unavailable < Error; end
 
+    # sampling_reasons is a frozen Array of short evidence strings (e.g.
+    # "role=local_admin", "source=authors") explaining why PrincipalSampler
+    # or PrincipalSelection deliberately included this principal, or an
+    # empty Array when the principal came from plain first-N/fill sampling
+    # or was supplied directly rather than through a sampler. This is
+    # sampling evidence, not an authorization claim.
     Outcome = Value.define(:principal, :status, :redirect, :exception_class,
-                           :writes_observed, :write_count, :elapsed_ms, :database_rollback_attempted)
+                           :writes_observed, :write_count, :elapsed_ms, :database_rollback_attempted,
+                           :sampling_reasons)
 
     # candidate_pool_size is nil unless the caller supplying `principals` (see
     # Access::PrincipalSampler::Result) knows it sampled from a bounded
@@ -30,12 +37,18 @@ module Karst
 
     # Sequentially observes one concrete local GET using a fresh integration
     # session and a rollback-only transaction for every bounded principal.
+    # rubocop:disable Metrics/ClassLength
     class Sweep
       MUTATION = %r{\A\s*(?:/\*.*?\*/\s*)*(INSERT|UPDATE|DELETE)\b}im
 
+      # sampling_reasons optionally maps a principal (by Ruby equality, so
+      # the same Active Record identity even across separate instances) to
+      # the Array of reasons it was selected for -- see
+      # Access::PrincipalSampler::Candidate/PrincipalSelection. A principal
+      # with no entry simply gets an empty Array on its Outcome.
       # rubocop:disable Metrics/ParameterLists
       def initialize(path:, principals:, http_method: "GET", limit: Karst.config.access_sweep_limit,
-                     application: nil, candidate_pool_size: nil)
+                     application: nil, candidate_pool_size: nil, sampling_reasons: {})
         @path = normalize_path(path)
         @http_method = http_method.to_s.upcase
         raise UnsupportedMethod, "access sweeps support GET only" unless @http_method == "GET"
@@ -46,6 +59,7 @@ module Karst
         @application = application || Rails.application
         @probe_application = build_probe_application
         @candidate_pool_size = candidate_pool_size
+        @sampling_reasons = sampling_reasons
       end
       # rubocop:enable Metrics/ParameterLists
 
@@ -112,7 +126,8 @@ module Karst
         end
         Outcome.new(principal: Karst::Identity.describe(principal), status: status, redirect: redirect,
                     exception_class: exception_class, writes_observed: writes.positive?, write_count: writes,
-                    elapsed_ms: elapsed(started), database_rollback_attempted: true)
+                    elapsed_ms: elapsed(started), database_rollback_attempted: true,
+                    sampling_reasons: (@sampling_reasons[principal] || []).freeze)
       end
       # rubocop:enable Metrics/AbcSize, Metrics/MethodLength
 
@@ -162,5 +177,6 @@ module Karst
         ((monotonic - started) * 1000.0).round(1)
       end
     end
+    # rubocop:enable Metrics/ClassLength
   end
 end

@@ -73,6 +73,69 @@ RSpec.describe Karst do
       expect(configuration.usable_access_outcome.call(outcome.new(302))).to be(true)
       expect { configuration.usable_access_outcome = :two_xx }.to raise_error(ArgumentError, /callable/)
     end
+
+    describe "principal_dimensions" do
+      it "defaults to empty and normalizes a configured Hash into PrincipalDimension instances" do
+        configuration = configuration_class.new
+
+        expect(configuration.principal_dimensions).to eq({})
+        configuration.principal_dimensions = { role: :role, system_admin: :system_admin? }
+        expect(configuration.principal_dimensions.keys).to eq(%i[role system_admin])
+        expect(configuration.principal_dimensions.values).to all(be_a(Karst::Access::PrincipalDimension))
+      end
+
+      it "rejects a sensitive dimension name or accessor at assignment time" do
+        configuration = configuration_class.new
+
+        expect { configuration.principal_dimensions = { email: :status } }.to raise_error(ArgumentError)
+        expect { configuration.principal_dimensions = { contact: :email } }.to raise_error(ArgumentError)
+      end
+    end
+
+    describe "principal_sources" do
+      it "is nil when neither config.principals nor config.principal_sources is configured" do
+        configuration = configuration_class.new
+        expect(configuration.principal_sources).to be_nil
+      end
+
+      it "wraps a bare config.principals as one implicit :default source, carrying principal_dimensions" do
+        configuration = configuration_class.new
+        configuration.principals = -> { [] }
+        configuration.principal_dimensions = { role: :role }
+
+        sources = configuration.principal_sources
+
+        expect(sources.keys).to eq([:default])
+        expect(sources[:default].records).to equal(configuration.principals)
+        expect(sources[:default].dimensions).to have_key(:role)
+      end
+
+      it "prefers an explicit config.principal_sources over a bare config.principals" do
+        configuration = configuration_class.new
+        configuration.principals = -> { [] }
+        configuration.principal_sources = { authors: -> { [] }, readers: -> { [] } }
+
+        expect(configuration.principal_sources.keys).to eq(%i[authors readers])
+      end
+
+      it "normalizes an explicit Hash into PrincipalSource instances, accepting per-source dimensions" do
+        configuration = configuration_class.new
+        configuration.principal_sources = {
+          authors: { records: -> { [] }, dimensions: { premium: :premium? } },
+          readers: -> { [] }
+        }
+
+        expect(configuration.principal_sources[:authors].dimensions).to have_key(:premium)
+        expect(configuration.principal_sources[:readers].dimensions).to eq({})
+      end
+
+      it "raises for an invalid principal_sources shape rather than failing later, obscurely" do
+        configuration = configuration_class.new
+        expect { configuration.principal_sources = [:authors] }.to raise_error(ArgumentError, /must be a Hash/)
+        expect { configuration.principal_sources = { authors: 42 } }
+          .to raise_error(ArgumentError, /must be callable or a Hash/)
+      end
+    end
   end
 
   describe "process-level buffer" do

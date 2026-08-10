@@ -220,5 +220,66 @@ RSpec.describe Karst::Identity do
       expect(described_class.resolve(model_name: "KarstIdentityUser", id: target.id)).to eq(target)
     end
   end
+
+  describe "principal_sources" do
+    it "is unavailable when neither config.principals nor config.principal_sources is configured" do
+      expect { described_class.principal_sources }.to raise_error(Karst::Identity::Unavailable, /principal source/)
+    end
+
+    it "wraps a bare config.principals as one implicit :default source" do
+      Karst.config.principals = -> { [] }
+
+      expect(described_class.principal_sources.keys).to eq([:default])
+    end
+
+    it "reflects an explicit config.principal_sources" do
+      Karst.config.principal_sources = { authors: -> { [] }, readers: -> { [] } }
+
+      expect(described_class.principal_sources.keys).to eq(%i[authors readers])
+    end
+  end
+
+  describe "resolve across multiple configured sources" do
+    AuthorPrincipal = Struct.new(:id) unless defined?(AuthorPrincipal)
+    ReaderPrincipal = Struct.new(:id) unless defined?(ReaderPrincipal)
+
+    after { Karst.config.principal_sources = nil }
+
+    it "resolves a model that only the second configured source exposes" do
+      author = AuthorPrincipal.new(1)
+      reader = ReaderPrincipal.new(1)
+      Karst.config.principal_sources = { authors: -> { [author] }, readers: -> { [reader] } }
+
+      expect(described_class.resolve(model_name: "ReaderPrincipal", id: 1)).to equal(reader)
+    end
+
+    it "distinguishes overlapping ids across sources by model name, never returning the wrong model" do
+      author = AuthorPrincipal.new(1)
+      reader = ReaderPrincipal.new(1)
+      Karst.config.principal_sources = { authors: -> { [author] }, readers: -> { [reader] } }
+
+      expect(described_class.resolve(model_name: "AuthorPrincipal", id: 1)).to equal(author)
+      expect(described_class.resolve(model_name: "ReaderPrincipal", id: 1)).to equal(reader)
+    end
+
+    it "resolves nothing for a model name that matches no configured source, without constantizing it" do
+      Karst.config.principal_sources = { authors: -> { [AuthorPrincipal.new(1)] } }
+
+      expect(described_class.resolve(model_name: "System::Admin", id: 1)).to be_nil
+    end
+
+    it "stops at the first matching source without ever evaluating a later configured source" do
+      later_source_evaluated = false
+      later_source = lambda do
+        later_source_evaluated = true
+        [ReaderPrincipal.new(1)]
+      end
+      Karst.config.principal_sources = { authors: -> { [AuthorPrincipal.new(1)] }, readers: later_source }
+
+      described_class.resolve(model_name: "AuthorPrincipal", id: 1)
+
+      expect(later_source_evaluated).to be(false)
+    end
+  end
 end
 # rubocop:enable Metrics/BlockLength

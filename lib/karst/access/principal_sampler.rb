@@ -2,6 +2,8 @@
 
 require_relative "../value"
 require_relative "sweep"
+require_relative "principal_dimension"
+require_relative "sensitive_attribute_names"
 
 module Karst
   module Access
@@ -47,17 +49,6 @@ module Karst
       MAX_DIMENSIONS = 8
       MAX_SCALAR_DISCOVERY_QUERIES = 8
 
-      # Column names are never PII-inspected, only compared (case-insensitive,
-      # underscore-tokenized) against this list. Deliberately conservative:
-      # false positives (skipping a safe column) are free; false negatives
-      # are not.
-      SENSITIVE_TOKENS = %w[
-        email name first last full phone mobile fax address street city zip
-        postal country ssn social security password secret salt encrypted
-        token key api credential auth login username url website dob birth
-        card cvv iban passport license
-      ].freeze
-
       # Foreign-key-shaped columns (ending in "_id") whose name suggests a
       # tenant/account boundary are excluded from candidacy outright, not
       # just when non-nullable. A *nullable* tenant-style foreign key would
@@ -97,11 +88,16 @@ module Karst
         1 + MAX_SCALAR_DISCOVERY_QUERIES + (limit * 4) + 2
       end
 
+      # dimensions is a Hash of Symbol => PrincipalDimension (see
+      # Karst::Access::PrincipalDimension), already validated/normalized by
+      # the caller (Configuration or PrincipalSource) -- PrincipalSampler
+      # never accepts raw accessor values directly.
       def initialize(source:, limit: Karst.config.access_sweep_limit,
-                     pool_size: Karst.config.principal_candidate_pool_size)
+                     pool_size: Karst.config.principal_candidate_pool_size, dimensions: {})
         @source = source
         @limit = limit
         @pool_size = pool_size
+        @dimensions = dimensions
         @queries = 0
         @query_budget = self.class.query_budget(limit)
       end
@@ -284,21 +280,130 @@ module Karst
       # Returns an Array of dimensions, each an Array of Target -- the shape
       # #each_target round-robins over to interleave coverage across
       # dimensions rather than exhausting one dimension before the next.
+      # Configured dimensions (see #configured_dimension_targets) always go
+      # first and are never capped by MAX_DIMENSIONS -- an application that
+      # explicitly named a dimension gets it, full stop; MAX_DIMENSIONS only
+      # bounds how much *generic* schema discovery fills in around them.
       def build_dimensions(relation, klass)
         @scalar_discovery_budget = MAX_SCALAR_DISCOVERY_QUERIES
-        dimensions = []
+        dimensions = configured_dimension_targets(relation, klass)
+        configured_columns = @dimensions.values.filter_map { |dimension| dimension.column_for(klass)&.name }
+        add_generic_dimensions(relation, klass, dimensions, configured_columns)
+        dimensions
+      end
+
+      def add_generic_dimensions(relation, klass, dimensions, configured_columns)
         candidate_columns(klass).each do |column|
           break if dimensions.size >= MAX_DIMENSIONS || !query_allowed?
+          next if configured_columns.include?(column.name)
 
           targets = dimension_targets(relation, column, klass)
           dimensions << targets if targets && targets.size > 1
         end
-        dimensions
       end
 
       def dimension_targets(relation, column, klass)
         enum_targets(column, klass) || boolean_targets(column) || nullable_foreign_key_targets(column, klass) ||
           scalar_dimension_targets(relation, column)
+      end
+
+      # Builds one Target group per configured PrincipalDimension (see
+      # Karst::Access::PrincipalDimension), in configured order. A dimension
+      # backed by a real column (an enum, boolean, or plain scalar) is
+      # discovered the same bounded way generic schema dimensions are -- a
+      # single `DISTINCT ... LIMIT` query, never a full scan. A dimension
+      # that is not a real column (a predicate method, or a callable) cannot
+      # be translated to SQL, so it is instead evaluated once, in Ruby, over
+      # the already query-bounded `relation` (the recent-N candidate pool
+      # #representative_sample derived) -- never per-row against the full
+      # table -- via #configured_pool_targets.
+      def configured_dimension_targets(relation, klass)
+        return [] if @dimensions.empty?
+
+        @pool_records = nil
+        results = []
+        @dimensions.each_value do |dimension|
+          break unless query_allowed?
+
+          targets = configured_targets_for(relation, klass, dimension)
+          results << targets if targets && targets.size > 1
+        end
+        results
+      end
+
+      def configured_targets_for(relation, klass, dimension)
+        column = dimension.column_for(klass)
+        return configured_column_targets(relation, column, klass, dimension) if column
+
+        @pool_records ||= materialize_pool(relation)
+        configured_pool_targets(dimension, @pool_records, klass.primary_key)
+      end
+
+      def materialize_pool(relation)
+        return [] unless query_allowed?
+
+        @queries += 1
+        relation.to_a
+      end
+
+      def configured_column_targets(relation, column, klass, dimension)
+        configured_enum_targets(column, klass, dimension) || configured_boolean_targets(column, dimension) ||
+          configured_scalar_targets(relation, column, dimension)
+      end
+
+      def configured_enum_targets(column, klass, dimension)
+        return nil unless klass.respond_to?(:defined_enums)
+
+        mapping = klass.defined_enums[column.name]
+        return nil unless mapping
+
+        mapping.keys.sort.map { |key| configured_equality_target(dimension, column, key) }
+      end
+
+      def configured_boolean_targets(column, dimension)
+        return nil unless column.type == :boolean
+
+        [true, false].map { |value| configured_equality_target(dimension, column, value) }
+      end
+
+      def configured_scalar_targets(relation, column, dimension)
+        return nil unless query_allowed?
+
+        @queries += 1
+        values = relation.distinct.limit(CARDINALITY_CUTOFF + 1).pluck(column.name)
+        return nil if values.size > CARDINALITY_CUTOFF || values.size <= 1
+
+        values.sort_by(&:to_s).map { |value| configured_equality_target(dimension, column, value) }
+      end
+
+      def configured_equality_target(dimension, column, value)
+        Target.new(
+          key: "dimension:#{dimension.name}=#{value}", reason: "#{dimension.name}=#{dimension.format_value(value)}",
+          matcher: ->(record) { record.public_send(column.name) == value },
+          scope: ->(rel) { rel.where(column.name => value) }
+        )
+      end
+
+      # A predicate/callable dimension has no SQL scope, so its Target scope
+      # instead narrows to the exact primary keys observed (within the
+      # already-bounded pool) to hold that value -- still a single bounded,
+      # deterministic query per target through the ordinary #fetch_matching
+      # path, never a second unbounded scan.
+      def configured_pool_targets(dimension, pool_records, primary_key)
+        grouped = pool_records.group_by { |record| dimension.value_for(record) }
+        return nil if grouped.size <= 1 || grouped.size > CARDINALITY_CUTOFF
+
+        grouped.sort_by { |value, _records| value.to_s }
+               .map { |value, records| configured_pool_target(dimension, primary_key, value, records) }
+      end
+
+      def configured_pool_target(dimension, primary_key, value, records)
+        ids = records.map { |record| record.public_send(primary_key) }
+        Target.new(
+          key: "dimension:#{dimension.name}=#{value}", reason: "#{dimension.name}=#{dimension.format_value(value)}",
+          matcher: ->(record) { dimension.value_for(record) == value },
+          scope: ->(rel) { rel.where(primary_key => ids) }
+        )
       end
 
       def scalar_dimension_targets(relation, column)
@@ -317,7 +422,7 @@ module Karst
       end
 
       def sensitive_name?(column_name)
-        column_name.to_s.downcase.split("_").any? { |token| SENSITIVE_TOKENS.include?(token) }
+        SensitiveAttributeNames.match?(column_name)
       end
 
       # See TENANCY_FK_TOKENS: this is what actually keeps a high-cardinality

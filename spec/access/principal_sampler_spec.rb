@@ -41,6 +41,19 @@ class BudgetStressPrincipal < PrincipalSamplerFixtureRecord
   end
 end
 
+# A fixture dedicated to configured Karst::Access::PrincipalDimension
+# coverage: `role` is a plain scalar column (an attribute dimension),
+# `premium` is a real boolean column reachable either directly or through
+# Rails' auto-generated `premium?` predicate (a queryable dimension either
+# way), and `system_admin?` is a computed predicate with no backing column
+# at all (so it can only be evaluated over the bounded candidate pool, never
+# translated to SQL).
+class DimensionPrincipal < PrincipalSamplerFixtureRecord
+  def system_admin?
+    role == "system_admin"
+  end
+end
+
 # rubocop:disable Metrics/BlockLength
 RSpec.describe Karst::Access::PrincipalSampler do
   before(:all) do
@@ -66,9 +79,18 @@ RSpec.describe Karst::Access::PrincipalSampler do
     end
   end
 
+  before(:all) do
+    PrincipalSamplerFixtureRecord.connection.create_table :dimension_principals, force: true do |t|
+      t.string :role, null: false, default: "responder"
+      t.boolean :premium, null: false, default: false
+      t.string :plan
+    end
+  end
+
   after(:all) do
     PrincipalSamplerFixtureRecord.connection.drop_table :sampler_principals, if_exists: true
     PrincipalSamplerFixtureRecord.connection.drop_table :budget_stress_principals, if_exists: true
+    PrincipalSamplerFixtureRecord.connection.drop_table :dimension_principals, if_exists: true
   end
 
   before do
@@ -421,6 +443,116 @@ RSpec.describe Karst::Access::PrincipalSampler do
 
     it "is a Karst::Access::Error, so the existing middleware/panel error surface catches it unchanged" do
       expect(Karst::Access::PrincipalSampler::UnsupportedPrimaryKey.ancestors).to include(Karst::Access::Error)
+    end
+  end
+
+  describe "configured dimensions" do
+    def dimensions(hash)
+      Karst::Access::PrincipalDimension.normalize(hash)
+    end
+
+    def reasons_for(result, id)
+      result.candidates.find { |candidate| candidate.principal.id == id }.reasons
+    end
+
+    before do
+      DimensionPrincipal.delete_all
+    end
+
+    it "deliberately represents at least one record for each configured attribute-dimension value within " \
+       "the limit, ahead of simply filling with the majority value" do
+      900.times { DimensionPrincipal.create!(role: "responder") }
+      6.times { DimensionPrincipal.create!(role: "local_admin") }
+      3.times { DimensionPrincipal.create!(role: "group_admin") }
+      2.times { DimensionPrincipal.create!(role: "reseller") }
+      DimensionPrincipal.create!(role: "system_admin")
+
+      result = described_class.new(source: DimensionPrincipal.all, limit: 10,
+                                   dimensions: dimensions(role: :role)).call
+
+      selected_roles = result.principals.map(&:role).uniq
+      expect(selected_roles).to include("local_admin", "group_admin", "reseller", "system_admin")
+      local_admin_candidate = result.candidates.find { |candidate| candidate.principal.role == "local_admin" }
+      expect(local_admin_candidate.reasons).to include("role=local_admin")
+    end
+
+    it "represents a configured boolean predicate (`premium?`) exactly like the real boolean column, without " \
+       "a duplicate reason from generic schema discovery" do
+      47.times { DimensionPrincipal.create!(premium: false) }
+      premium = DimensionPrincipal.create!(premium: true)
+
+      result = described_class.new(source: DimensionPrincipal.all, limit: 10,
+                                   dimensions: dimensions(premium: :premium?)).call
+
+      expect(result.principals.map(&:id)).to include(premium.id)
+      reasons = reasons_for(result, premium.id)
+      expect(reasons.count("premium=true")).to eq(1)
+    end
+
+    it "represents a configured callable dimension, bounded to the already-fetched candidate pool" do
+      47.times { DimensionPrincipal.create!(plan: "standard") }
+      reseller = DimensionPrincipal.create!(plan: "reseller")
+      dimension = dimensions(reseller: ->(record) { record.plan == "reseller" })
+
+      result = described_class.new(source: DimensionPrincipal.all, limit: 10, dimensions: dimension).call
+
+      expect(result.principals.map(&:id)).to include(reseller.id)
+      expect(reasons_for(result, reseller.id)).to include("reseller=true")
+    end
+
+    it "represents a computed predicate with no backing column, evaluated in Ruby over the bounded pool" do
+      47.times { DimensionPrincipal.create!(role: "responder") }
+      admin = DimensionPrincipal.create!(role: "system_admin")
+
+      result = described_class.new(source: DimensionPrincipal.all, limit: 10,
+                                   dimensions: dimensions(admin: :system_admin?)).call
+
+      expect(result.principals.map(&:id)).to include(admin.id)
+      expect(reasons_for(result, admin.id)).to include("admin=true")
+    end
+
+    it "prioritizes configured dimensions over generic schema heuristics when both could otherwise apply" do
+      47.times { DimensionPrincipal.create!(role: "responder", premium: false) }
+      minority = DimensionPrincipal.create!(role: "responder", premium: true)
+
+      # Only 3 slots: without configured-dimension priority, generic
+      # discovery over two low-cardinality columns (role, premium) would
+      # already exhaust the limit before the configured dimension's own
+      # target-lookup queries ever ran.
+      result = described_class.new(source: DimensionPrincipal.all, limit: 3,
+                                   dimensions: dimensions(premium: :premium)).call
+
+      expect(result.principals.map(&:id)).to include(minority.id)
+    end
+
+    it "still runs generic schema discovery for columns no configured dimension names, once room remains" do
+      47.times { DimensionPrincipal.create!(role: "responder", premium: false) }
+      premium_minority = DimensionPrincipal.create!(role: "responder", premium: true)
+
+      result = described_class.new(source: DimensionPrincipal.all, limit: 10,
+                                   dimensions: dimensions(role: :role)).call
+
+      expect(result.principals.map(&:id)).to include(premium_minority.id)
+    end
+
+    it "behaves exactly as before when no dimensions are configured" do
+      47.times { DimensionPrincipal.create!(role: "responder") }
+
+      result = described_class.new(source: DimensionPrincipal.all, limit: 5).call
+
+      expect(result.strategy).to eq(:representative)
+      expect(result.principals.size).to eq(5)
+    end
+
+    it "never issues more queries than the declared budget once configured dimensions are added" do
+      60.times { |i| DimensionPrincipal.create!(role: %w[responder local_admin group_admin][i % 3], plan: "p#{i}") }
+      dimension = dimensions(role: :role, admin: :system_admin?, reseller: ->(record) { record.plan == "p0" })
+
+      queries = sql_queries do
+        described_class.new(source: DimensionPrincipal.all, limit: 10, dimensions: dimension).call
+      end
+
+      expect(queries.size).to be <= described_class.query_budget(10)
     end
   end
 end
