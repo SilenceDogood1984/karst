@@ -2,6 +2,7 @@
 
 require "active_support/notifications"
 require "uri"
+require_relative "probe_application"
 require_relative "../identity"
 require_relative "../value"
 
@@ -35,6 +36,7 @@ module Karst
         @principals = principals
         @limit = limit
         @application = application || Rails.application
+        @probe_application = ProbeApplication.for(@application)
       end
 
       def call
@@ -74,7 +76,7 @@ module Karst
 
       # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
       def probe(principal)
-        session = ActionDispatch::Integration::Session.new(@application)
+        session = ActionDispatch::Integration::Session.new(@probe_application)
         started = monotonic
         status = redirect = exception_class = nil
         writes = 0

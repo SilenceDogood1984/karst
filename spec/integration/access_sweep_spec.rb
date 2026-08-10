@@ -14,6 +14,8 @@ class KarstAccessPrincipal < ActiveRecord::Base
 end
 
 class KarstAccessFixtureController < ActionController::Base
+  before_action :mark_controller_execution, only: :document
+
   def login
     session[:karst_principal_id] = params[:id]
     head :no_content
@@ -32,9 +34,15 @@ class KarstAccessFixtureController < ActionController::Base
     return head(:forbidden) if principal.behavior == "forbidden"
     raise "fixture detail must not escape" if principal.behavior == "raise"
 
-    head :ok
+    render plain: "#{session[:before_action]}:#{principal.behavior}"
   end
   # rubocop:enable Metrics/AbcSize
+
+  private
+
+  def mark_controller_execution
+    session[:before_action] = "before_action_ran"
+  end
 end
 
 KarstTestApplication.routes.draw do
@@ -43,6 +51,7 @@ KarstTestApplication.routes.draw do
   get "/documents/:id/edit", to: "karst_access_fixture#document"
 end
 
+# rubocop:disable Metrics/BlockLength
 RSpec.describe "bounded access sweep Rails integration" do
   before do
     allow(Rails).to receive(:env).and_return(ActiveSupport::StringInquirer.new("development"))
@@ -71,4 +80,35 @@ RSpec.describe "bounded access sweep Rails integration" do
     expect(result.outcomes.map(&:writes_observed)).to all(be(true))
     expect(KarstAccessPrincipal.order(:id).pluck(:visits)).to eq([0, 0, 0, 0])
   end
+
+  it "bypasses non-reentrant host middleware at the route dispatch boundary" do
+    principal = KarstAccessPrincipal.find_by!(behavior: "ok")
+    calls_before = KarstNonReentrantMiddleware.calls
+
+    nested = ActionDispatch::Integration::Session.new(KarstTestApplication)
+    begin
+      Thread.current[:karst_host_middleware_active] = true
+      nested.get("/documents/read/edit")
+    ensure
+      Thread.current[:karst_host_middleware_active] = false
+    end
+    expect(nested.response).to have_attributes(status: 500)
+
+    result = Karst::Access::Sweep.new(path: "/documents/read/edit", principals: [principal],
+                                      application: KarstTestApplication).call
+
+    expect(result.outcomes.first).to have_attributes(status: 200, exception_class: nil)
+    expect(KarstNonReentrantMiddleware.calls).to eq(calls_before)
+
+    probe = ActionDispatch::Integration::Session.new(Karst::Access::ProbeApplication.for(KarstTestApplication))
+    probe.post("/karst_access/login", params: { id: principal.id })
+    probe.get("/documents/read/edit")
+    expect(probe.response.body).to eq("before_action_ran:ok")
+    expect(KarstNonReentrantMiddleware.calls).to eq(calls_before)
+
+    browser = ActionDispatch::Integration::Session.new(KarstTestApplication)
+    browser.get("/documents/read/edit")
+    expect(KarstNonReentrantMiddleware.calls).to eq(calls_before + 1)
+  end
 end
+# rubocop:enable Metrics/BlockLength
