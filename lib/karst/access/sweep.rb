@@ -21,7 +21,7 @@ module Karst
     # sampling evidence, not an authorization claim.
     Outcome = Value.define(:principal, :status, :redirect, :exception_class,
                            :writes_observed, :write_count, :elapsed_ms, :database_rollback_attempted,
-                           :sampling_reasons)
+                           :sampling_reasons, :body_marker_observed)
 
     # candidate_pool_size is nil unless the caller supplying `principals` (see
     # Access::PrincipalSampler::Result) knows it sampled from a bounded
@@ -47,8 +47,9 @@ module Karst
       # Access::PrincipalSampler::Candidate/PrincipalSelection. A principal
       # with no entry simply gets an empty Array on its Outcome.
       # rubocop:disable Metrics/ParameterLists
+      # rubocop:disable Metrics/MethodLength
       def initialize(path:, principals:, http_method: "GET", limit: Karst.config.access_sweep_limit,
-                     application: nil, candidate_pool_size: nil, sampling_reasons: {})
+                     application: nil, candidate_pool_size: nil, sampling_reasons: {}, body_includes: nil)
         @path = normalize_path(path)
         @http_method = http_method.to_s.upcase
         raise UnsupportedMethod, "access sweeps support GET only" unless @http_method == "GET"
@@ -60,7 +61,9 @@ module Karst
         @probe_application = build_probe_application
         @candidate_pool_size = candidate_pool_size
         @sampling_reasons = sampling_reasons
+        @body_includes = body_includes
       end
+      # rubocop:enable Metrics/MethodLength
       # rubocop:enable Metrics/ParameterLists
 
       def call
@@ -99,12 +102,13 @@ module Karst
         source.each.lazy.take(@limit).to_a
       end
 
-      # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
+      # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity
       def probe(principal)
         session = ActionDispatch::Integration::Session.new(@probe_application)
         configure_host(session)
         started = monotonic
         status = redirect = exception_class = nil
+        body_marker_observed = nil
         writes = 0
         callback = ->(_name, _start, _finish, _id, payload) { writes += 1 if payload[:sql].to_s.match?(MUTATION) }
 
@@ -117,6 +121,9 @@ module Karst
                 exception_class = rendered_exception.class.name
               else
                 status = session.response.status
+                if @body_includes && session.response.respond_to?(:body)
+                  body_marker_observed = session.response.body.to_s.include?(@body_includes.to_s)
+                end
                 redirect = clean_redirect(session.response.location) if status >= 300 && status < 400
               end
             end
@@ -127,9 +134,10 @@ module Karst
         Outcome.new(principal: Karst::Identity.describe(principal), status: status, redirect: redirect,
                     exception_class: exception_class, writes_observed: writes.positive?, write_count: writes,
                     elapsed_ms: elapsed(started), database_rollback_attempted: true,
-                    sampling_reasons: (@sampling_reasons[principal] || []).freeze)
+                    sampling_reasons: (@sampling_reasons[principal] || []).freeze,
+                    body_marker_observed: body_marker_observed)
       end
-      # rubocop:enable Metrics/AbcSize, Metrics/MethodLength
+      # rubocop:enable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity
 
       def with_rollback
         raise Unavailable, "Active Record rollback isolation is unavailable" unless defined?(ActiveRecord::Base)

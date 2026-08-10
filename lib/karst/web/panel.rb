@@ -242,7 +242,15 @@ module Karst
           operation = "<input type=\"hidden\" name=\"operation\" value=\"access_sweep\">"
           button = "<button class=\"primary\" type=\"submit\">#{escape(label)}</button>"
           form = "<form action=\"/karst\" method=\"post\">#{context}#{operation}#{button}</form>"
-          "#{form}#{principal_source_hint(sources)}"
+          "#{form}#{scenario_forms}#{principal_source_hint(sources)}"
+        end
+
+        def scenario_forms
+          Karst.config.access_scenarios.values.map do |scenario|
+            fields = hidden("operation", "artifact_sweep") + hidden("scenario", scenario.name)
+            label = "Analyze artifact scenario: #{scenario.name}"
+            "<form action=\"/karst\" method=\"post\">#{fields}<button type=\"submit\">#{escape(label)}</button></form>"
+          end.join
         end
 
         # Only ever type-checks each configured source's evaluated records
@@ -270,9 +278,12 @@ module Karst
           "<input type=\"hidden\" name=\"#{name}\" value=\"#{escape(value)}\">"
         end
 
+        # rubocop:disable Metrics/AbcSize
         def access_result(result, csrf_token)
           return "" unless result
           return "<p>Analysis unavailable: #{escape(result.message)}</p>" if result.is_a?(StandardError)
+
+          return scenario_result(result, csrf_token) if result.respond_to?(:scenario_name)
 
           write_count = result.outcomes.count(&:writes_observed)
           warning = write_count.positive? ? write_warning(write_count) : ""
@@ -281,6 +292,31 @@ module Karst
           other_section = other_outcomes(other, result.path)
           "#{access_meta(result)}#{warning}#{usable_section}#{other_section}"
         end
+        # rubocop:enable Metrics/AbcSize
+
+        def scenario_result(result, csrf_token)
+          matches, mismatches = result.outcomes.partition(&:match)
+          cards = matches.map { |outcome| verified_context(outcome, csrf_token) }.join
+          summary = "<details><summary>Failed candidates — #{mismatches.size}</summary></details>"
+          meta = "<p class=\"meta\">#{result.outcomes.size} combinations tested (limit #{result.combination_limit}; " \
+                 "artifact candidates limited to #{result.artifact_candidate_limit}).</p>"
+          "#{meta}<section class=\"usable\"><h2>Verified context — #{matches.size}</h2>#{cards}</section>#{summary}"
+        end
+
+        # rubocop:disable Layout/LineLength, Metrics/AbcSize
+        def verified_context(outcome, csrf_token)
+          marker = if outcome.expected.key?(:body_includes)
+                     outcome.body_marker_observed ? " · expected marker observed" : " · expected marker absent"
+                   else
+                     ""
+                   end
+          expected = outcome.expected.map { |key, value| "#{key}=#{value}" }.join(", ")
+          action = test_as_form(outcome.principal, outcome.path, csrf_token)
+          "<article class=\"usable-principal\"><h4><span>#{escape(outcome.principal.display_label)}</span>#{action}</h4>" \
+            "<p><strong>#{escape(outcome.artifact.display_label)}</strong></p><p><code>GET #{escape(outcome.path)}</code></p>" \
+            "<p>Expected #{escape(expected)} · Observed #{escape(outcome.status || outcome.exception_class)}#{marker} · Match yes</p></article>"
+        end
+        # rubocop:enable Layout/LineLength, Metrics/AbcSize
 
         def access_meta(result)
           seconds = escape(result.elapsed_ms / 1000.0)

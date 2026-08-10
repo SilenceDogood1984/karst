@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require_relative "access/principal_source"
+require_relative "access/artifact_source"
+require_relative "access/scenario"
 
 module Karst
   # Process-level settings that control Karst's implemented behavior.
@@ -8,7 +10,7 @@ module Karst
     attr_accessor :enabled, :principals, :assume_identity, :clear_identity, :principal_label,
                   :assume_browser_identity, :clear_browser_identity
     attr_reader :buffer_size, :access_sweep_limit, :usable_access_outcome, :principal_candidate_pool_size,
-                :principal_dimensions
+                :principal_dimensions, :artifact_sources, :access_scenarios
 
     MAX_ACCESS_SWEEP_LIMIT = 100
 
@@ -34,7 +36,27 @@ module Karst
       @principal_candidate_pool_size = 1_000
       @principal_dimensions = {}
       @configured_principal_sources = nil
+      @artifact_sources = {}
+      @access_scenarios = {}
     end
+
+    def artifact_source(name, limit:, &block)
+      source = Access::ArtifactSource.new(name: name, records: block, limit: limit)
+      @artifact_sources = @artifact_sources.merge(source.name => source).freeze
+      source
+    end
+
+    # rubocop:disable Metrics/ParameterLists
+    def access_scenario(name, artifact:, path:, expect:, combination_limit: 25, stop_on_match: true)
+      source = @artifact_sources[artifact.to_sym]
+      raise ArgumentError, "unknown artifact source: #{artifact}" unless source
+
+      scenario = Access::Scenario.new(name: name, artifact_source: source, path: path, expect: expect,
+                                      combination_limit: combination_limit, stop_on_match: stop_on_match)
+      @access_scenarios = @access_scenarios.merge(scenario.name => scenario).freeze
+      scenario
+    end
+    # rubocop:enable Metrics/ParameterLists
     # rubocop:enable Metrics/MethodLength, Metrics/AbcSize
 
     def principal_dimensions=(dimensions)
