@@ -245,7 +245,22 @@ Some development UI conveniences depend on Rack/Rails response behavior. When Ka
 
 ## Installation
 
-Add Karst to your bundle and require `karst`. Active Support is its only runtime dependency; requiring Karst does not load Rails or Active Record.
+Add Karst to your bundle. Active Support is its only runtime dependency; requiring Karst does not load Rails or Active Record.
+
+```sh
+bundle add karst
+bin/rails generate karst:install
+```
+
+`bin/rails generate karst:install` is optional, convenience scaffolding for a Rails host application -- it is never required. Karst remains fully configurable by hand (see [Identity adapters](#identity-adapters) above), and an application that already configures `Karst.configure` manually has nothing to gain from running it. What it does not do is guess: Karst cannot safely infer how an arbitrary application authenticates, so it never wires up a working login flow on your behalf.
+
+The generator creates three things:
+
+- `config/initializers/karst.rb` -- a documented but entirely commented-out initializer with placeholders for every hook described under [Identity adapters](#identity-adapters): `config.principals`, `config.assume_identity`, `config.clear_identity`, `config.assume_browser_identity`, and `config.clear_browser_identity`. The examples in the comments are examples, not assumptions about this application's `User` model, session keys, or auth library.
+- `app/controllers/karst_identity_controller.rb` -- a small, explicitly named `KarstIdentityController` that exists only so Karst's isolated probe session has a real request/response cycle to establish and clear authentication through. Its `create`/`destroy` actions raise `NotImplementedError` with a clearly marked `TODO` until a developer replaces them with this application's real sign-in/sign-out code (session-based, Devise, Warden, or anything else) -- Karst does not implement a generic authentication mechanism for you.
+- Development-only routes for that controller, inserted into `config/routes.rb` inside `if Rails.env.development?`. Running the generator again does not duplicate this block.
+
+Installation is not complete until those TODOs are replaced with this application's real identity semantics; the generator prints next steps as a reminder rather than claiming the work is done. Automatic support for common auth libraries (Devise, Warden) is future work, not part of this generator.
 
 ## Contributing
 
