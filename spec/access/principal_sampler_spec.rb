@@ -281,6 +281,125 @@ RSpec.describe Karst::Access::PrincipalSampler do
     end
   end
 
+  describe "the bounded candidate pool: 500k-dogfood-scale hardening" do
+    def candidate_reasons(result, id)
+      result.candidates.find { |candidate| candidate.principal.id == id }.reasons
+    end
+
+    it "derives the pool with exactly one query, then fixes it as a literal id list every later query is " \
+       "scoped to -- never a live subquery re-evaluated (and re-scanning the full table) on every query" do
+      120.times { |i| SamplerPrincipal.create!(premium: false, status: :active, tenant_id: i, created_at: Time.now) }
+
+      queries = sql_queries { described_class.new(source: SamplerPrincipal.all, limit: 5, pool_size: 30).call }
+      selects = queries.grep(/\ASELECT/i)
+      pool_derivation, rest = selects.partition { |sql| sql.match?(/ORDER BY .*LIMIT \?\z/i) && !sql.include?("IN (") }
+
+      expect(pool_derivation.size).to eq(1)
+      expect(rest).not_to be_empty
+      expect(rest).to all(match(/\bid IN \(\d/))
+    end
+
+    it "orders the pool by created_at desc when the column exists, otherwise by primary key desc" do
+      old = SamplerPrincipal.create!(premium: false, status: :active, tenant_id: 1, created_at: 2.days.ago)
+      recent = SamplerPrincipal.create!(premium: false, status: :active, tenant_id: 2, created_at: Time.now)
+
+      result = described_class.new(source: SamplerPrincipal.all, limit: 5, pool_size: 1).call
+
+      expect(result.principals.map(&:id)).to eq([recent.id])
+      expect(result.principals.map(&:id)).not_to include(old.id)
+    end
+
+    it "never selects, or even discovers dimensions from, a row outside the bounded pool" do
+      total = 3_000
+      pool_size = 200
+      now = Time.now
+      rows = Array.new(total) do |i|
+        { premium: false, status: 0, tenant_id: i, created_at: now - (total - i).minutes }
+      end
+      SamplerPrincipal.insert_all(rows)
+      # A minority state seeded only among the most-recent (in-pool) rows...
+      in_pool_minority = SamplerPrincipal.create!(premium: true, status: :active, tenant_id: 90_001,
+                                                  created_at: now + 1.minute)
+      # ...and an identical minority state seeded only among old (out-of-pool) rows, which must never surface.
+      out_of_pool_minority = SamplerPrincipal.create!(premium: false, status: :canceled, tenant_id: 90_002,
+                                                      created_at: now - (total + 1_000).minutes)
+
+      expected_pool_ids = SamplerPrincipal.order(created_at: :desc).limit(pool_size).pluck(:id)
+      expect(expected_pool_ids).to include(in_pool_minority.id)
+      expect(expected_pool_ids).not_to include(out_of_pool_minority.id)
+
+      result = described_class.new(source: SamplerPrincipal.all, limit: 25, pool_size: pool_size).call
+
+      expect(result.principals.map(&:id) - expected_pool_ids).to be_empty
+      expect(result.principals.map(&:id)).to include(in_pool_minority.id)
+      expect(result.principals.map(&:id)).not_to include(out_of_pool_minority.id)
+      expect(candidate_reasons(result, in_pool_minority.id)).to include("premium=true")
+    end
+
+    it "falls back to primary-key ordering for the pool when the table has no created_at column" do
+      BudgetStressPrincipal.delete_all
+      40.times do |_i|
+        BudgetStressPrincipal.create!(flag_a: false, flag_b: false, flag_c: false, flag_d: false, category: :category0)
+      end
+      newest = BudgetStressPrincipal.create!(flag_a: true, flag_b: false, flag_c: false, flag_d: false,
+                                             category: :category0)
+
+      result = described_class.new(source: BudgetStressPrincipal.all, limit: 5, pool_size: 5).call
+
+      expect(result.principals.map(&:id)).to include(newest.id)
+    end
+
+    it "keeps query volume flat even when the pool itself is scanned repeatedly across a much larger table" do
+      SamplerPrincipal.delete_all
+      (0...8_000).each_slice(1_000) do |slice|
+        rows = slice.map { |i| { premium: i.even?, status: i % 3, tenant_id: i, created_at: Time.now - i.seconds } }
+        SamplerPrincipal.insert_all(rows)
+      end
+
+      queries = sql_queries { described_class.new(source: SamplerPrincipal.all, limit: 25, pool_size: 500).call }
+
+      expect(queries.size).to be <= described_class.query_budget(25)
+    end
+
+    it "still finds minority states within the pool, matching un-pooled representative discovery" do
+      299.times { |i| SamplerPrincipal.create!(premium: false, status: :active, tenant_id: i, created_at: Time.now) }
+      minority = SamplerPrincipal.create!(premium: true, status: :active, tenant_id: 999, created_at: Time.now)
+
+      result = described_class.new(source: SamplerPrincipal.all, limit: 25, pool_size: 1_000).call
+
+      expect(result.principals.map(&:id)).to include(minority.id)
+    end
+
+    it "returns fewer principals than the limit, never an error, once the pool itself is smaller than the limit" do
+      10.times { |i| SamplerPrincipal.create!(premium: false, status: :active, tenant_id: i, created_at: Time.now) }
+
+      result = described_class.new(source: SamplerPrincipal.all, limit: 25, pool_size: 5).call
+
+      expect(result.principals.size).to be <= 5
+    end
+
+    it "reports the configured pool size on a representative result and nil on the Enumerable fallback" do
+      SamplerPrincipal.create!(premium: false, status: :active, tenant_id: 1, created_at: Time.now)
+
+      representative = described_class.new(source: SamplerPrincipal.all, limit: 5, pool_size: 40).call
+      fallback = described_class.new(source: [Struct.new(:id).new(1)], limit: 5, pool_size: 40).call
+
+      expect(representative.candidate_pool_size).to eq(40)
+      expect(fallback.candidate_pool_size).to be_nil
+    end
+
+    it "defaults the pool size from Karst.config.principal_candidate_pool_size" do
+      Karst.config.principal_candidate_pool_size = 17
+      SamplerPrincipal.create!(premium: false, status: :active, tenant_id: 1, created_at: Time.now)
+
+      result = described_class.new(source: SamplerPrincipal.all, limit: 5).call
+
+      expect(result.candidate_pool_size).to eq(17)
+    ensure
+      Karst.config.principal_candidate_pool_size = 1_000
+    end
+  end
+
   describe "primary key safety" do
     before do
       SamplerPrincipal.create!(premium: false, status: :active, tenant_id: 1)

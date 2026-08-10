@@ -2,6 +2,7 @@
 
 require "cgi"
 require "rack/utils"
+require "active_support/number_helper"
 
 begin
   require_relative "../spec/catalog"
@@ -260,8 +261,20 @@ module Karst
 
         def access_meta(result)
           seconds = escape(result.elapsed_ms / 1000.0)
-          "<p class=\"meta\">#{result.outcomes.size} principals tested · #{seconds}s · database rollback was " \
-            "attempted; other connections and non-database effects are not isolated.</p>"
+          "<p class=\"meta\">#{result.outcomes.size} principals tested#{candidate_pool_note(result)} · " \
+            "#{seconds}s · database rollback was attempted; other connections and non-database effects are not " \
+            "isolated.</p>"
+        end
+
+        # A bounded candidate pool is reported explicitly rather than left
+        # implicit, so this never reads as "the entire principal universe was
+        # searched."
+        def candidate_pool_note(result)
+          size = result.candidate_pool_size
+          return "" unless size
+
+          delimited = ActiveSupport::NumberHelper.number_to_delimited(size)
+          " · candidate pool: up to #{escape(delimited)} most recent principals"
         end
 
         def write_warning(count)

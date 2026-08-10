@@ -69,12 +69,23 @@ module Karst
       # Resolves only principals exposed by the configured source. In
       # particular, this never constantizes a submitted model name or performs
       # an unrestricted model lookup.
+      #
+      # For an Active Record relation/class source, this resolves through a
+      # scoped primary-key query against that exact relation instead of
+      # enumerating it -- config.principals may cover hundreds of thousands
+      # of rows, and this must stay a single bounded query regardless of
+      # table size. The relation's own WHERE clauses (tenant scoping, soft
+      # deletes, and so on) still apply, so a principal outside the
+      # configured relation is never resolved -- this never escapes the
+      # relation and never performs an unrestricted model lookup. A generic
+      # Enumerable source (no scoped-query capability) keeps the original
+      # enumerate-and-compare behavior.
       def resolve(model_name:, id:)
-        principals.each do |principal|
-          descriptor = describe(principal)
-          return principal if descriptor.model_name == model_name.to_s && descriptor.id.to_s == id.to_s
-        end
-        nil
+        source = principals
+        relation = active_record_relation(source)
+        return resolve_scoped(relation, model_name: model_name, id: id) if relation
+
+        resolve_enumerated(source, model_name: model_name, id: id)
       end
 
       def browser_supported?
@@ -96,6 +107,36 @@ module Karst
 
       private
 
+      def active_record_relation(source)
+        return source if defined?(ActiveRecord::Relation) && source.is_a?(ActiveRecord::Relation)
+        return source.all if defined?(ActiveRecord::Base) && source.is_a?(Class) && source < ActiveRecord::Base
+
+        nil
+      end
+
+      # A model-name mismatch is checked before ever touching the database:
+      # config.principals is trusted to name one authoritative model, so a
+      # request for a different model name is rejected without issuing a
+      # query rather than attempting (and failing) a primary-key lookup
+      # against the wrong table.
+      def resolve_scoped(relation, model_name:, id:)
+        klass = relation.klass
+        return nil unless model_name_for_klass(klass) == model_name.to_s
+
+        primary_key = klass.primary_key
+        return nil unless primary_key.is_a?(String)
+
+        relation.find_by(primary_key => id)
+      end
+
+      def resolve_enumerated(source, model_name:, id:)
+        source.each do |principal|
+          descriptor = describe(principal)
+          return principal if descriptor.model_name == model_name.to_s && descriptor.id.to_s == id.to_s
+        end
+        nil
+      end
+
       def adapter
         assume_hook = Karst.config.assume_identity
         clear_hook = Karst.config.clear_identity
@@ -114,11 +155,11 @@ module Karst
       end
 
       def model_name_for(principal)
-        if principal.class.respond_to?(:model_name)
-          principal.class.model_name.name.to_s
-        else
-          principal.class.name.to_s
-        end
+        model_name_for_klass(principal.class)
+      end
+
+      def model_name_for_klass(klass)
+        klass.respond_to?(:model_name) ? klass.model_name.name.to_s : klass.name.to_s
       end
 
       def id_for(principal)

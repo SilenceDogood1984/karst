@@ -1,5 +1,11 @@
 AllCops:
   NewCops: enable
+  # A standalone, dev-only measurement script -- not shipped in the gem (see
+  # karst.gemspec's file list) and not subject to the same architectural
+  # constraints (method length, one-class-per-file) as the library it
+  # measures.
+  Exclude:
+    - "benchmark/**/*"
   # This is the Ruby the lint job itself runs (and the syntax ceiling
   # RuboCop's own parser must accept across the whole repo, including
   # modern-only test fixtures) -- not Karst's compatibility floor. Karst

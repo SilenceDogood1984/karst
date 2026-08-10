@@ -15,7 +15,14 @@ module Karst
 
     Outcome = Value.define(:principal, :status, :redirect, :exception_class,
                            :writes_observed, :write_count, :elapsed_ms, :database_rollback_attempted)
-    Result = Value.define(:path, :http_method, :outcomes, :elapsed_ms, :aborted_reason, :database_isolation) do
+
+    # candidate_pool_size is nil unless the caller supplying `principals` (see
+    # Access::PrincipalSampler::Result) knows it sampled from a bounded
+    # recent-N pool rather than the full principal source -- callers use it
+    # to report the sampling scope truthfully rather than implying every
+    # principal was considered.
+    Result = Value.define(:path, :http_method, :outcomes, :elapsed_ms, :aborted_reason, :database_isolation,
+                          :candidate_pool_size) do
       def groups
         outcomes.group_by { |item| [item.status, item.redirect, item.exception_class] }
       end
@@ -26,8 +33,9 @@ module Karst
     class Sweep
       MUTATION = %r{\A\s*(?:/\*.*?\*/\s*)*(INSERT|UPDATE|DELETE)\b}im
 
+      # rubocop:disable Metrics/ParameterLists
       def initialize(path:, principals:, http_method: "GET", limit: Karst.config.access_sweep_limit,
-                     application: nil)
+                     application: nil, candidate_pool_size: nil)
         @path = normalize_path(path)
         @http_method = http_method.to_s.upcase
         raise UnsupportedMethod, "access sweeps support GET only" unless @http_method == "GET"
@@ -37,7 +45,9 @@ module Karst
         @limit = limit
         @application = application || Rails.application
         @probe_application = build_probe_application
+        @candidate_pool_size = candidate_pool_size
       end
+      # rubocop:enable Metrics/ParameterLists
 
       def call
         raise Unavailable, "access sweeps are development-only" unless Rails.env.development?
@@ -48,7 +58,8 @@ module Karst
         outcomes = bounded_principals.map { |principal| probe(principal) }
         Result.new(path: @path, http_method: @http_method, outcomes: outcomes.freeze,
                    elapsed_ms: elapsed(started), aborted_reason: nil,
-                   database_isolation: :same_connection_rollback_attempted)
+                   database_isolation: :same_connection_rollback_attempted,
+                   candidate_pool_size: @candidate_pool_size)
       end
 
       private
