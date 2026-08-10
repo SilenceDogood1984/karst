@@ -80,6 +80,35 @@ or authentication secrets.
 only model/class name, `id`, and a display label. The default label is the safe
 `"Account #44"` form and never calls `to_s` or reads arbitrary attributes.
 
+Access results can optionally hand the real browser session to the host for
+manual QA. Browser hooks are deliberately separate from integration-probe
+hooks because they receive the current Rack request and mutate its session:
+
+```ruby
+Karst.configure do |config|
+  config.assume_browser_identity = lambda do |request, account|
+    request.session[:account_id] = account.id
+  end
+  config.clear_browser_identity = lambda do |request|
+    request.session.delete(:account_id)
+  end
+end
+```
+
+When both hooks are configured, each observed principal has a **Test as**
+button. Karst resolves the submitted descriptor only through the configured
+`principals` source, invokes the hook, and redirects to the exact analyzed
+local path with its query string removed. **Stop testing as** invokes the clear
+hook and therefore clears to whatever identity (normally anonymous) the host
+defines; generic restoration of a previous identity is not attempted.
+
+Because `/karst` is served before Action Controller, Rails authenticity-token
+helpers are not reliably available there. Karst instead stores a random nonce
+in the existing Rack session and requires a constant-time match on every
+browser identity POST. The feature remains restricted to local development
+requests; it requires a writable host session, never accepts external return
+URLs, and is unavailable unless both browser hooks are configured.
+
 ## Experimental observed-access sweep
 
 Karst can sequentially probe the exact current GET path with the first bounded

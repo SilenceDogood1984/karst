@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "cgi"
+require "rack/utils"
 
 begin
   require_relative "../spec/catalog"
@@ -27,14 +28,14 @@ module Karst
 
       # rubocop:disable Metrics/ClassLength
       class << self
-        def render(params: {}, access_result: nil)
-          [200, HEADERS.dup, [document(params, access_result)]]
+        def render(params: {}, access_result: nil, csrf_token: nil, browser_identity_active: false)
+          [200, HEADERS.dup, [document(params, access_result, csrf_token, browser_identity_active)]]
         end
 
         private
 
         # rubocop:disable Metrics/MethodLength
-        def document(params, access_result)
+        def document(params, access_result, csrf_token, browser_identity_active)
           controller = string_param(params, "controller")
           action = string_param(params, "action")
           http_method = string_param(params, "method")
@@ -45,9 +46,10 @@ module Karst
             <html lang="en"><head><meta charset="utf-8"><title>Karst scenarios</title>
             <style>body{font:16px system-ui,sans-serif;max-width:58rem;margin:2rem auto;padding:0 1rem;color:#202124}form,.scenario,.runtime{border:1px solid #ddd;border-radius:.4rem;padding:1rem;margin:1rem 0}.scenario h4{margin:.1rem 0}.evidence{display:flex;gap:1rem;flex-wrap:wrap}.label{font-size:.78rem;font-weight:700;text-transform:uppercase}.failed,.pending{border-left:5px solid #777}code{background:#f4f4f4;padding:.12rem .3rem}small{color:#555}.page-context{color:#555;margin-bottom:0}</style>
             </head><body><h1>Karst</h1>
+            #{stop_testing_form(path, csrf_token, browser_identity_active)}
             #{route_form(controller, action)}
             #{catalog_section(catalog, controller, action, http_method, path)}
-            #{access_section(http_method, path, controller, action, access_result)}
+            #{access_section(http_method, path, controller, action, access_result, csrf_token)}
             #{runtime_section}
             </body></html>
           HTML
@@ -79,7 +81,8 @@ module Karst
         end
 
         # rubocop:disable Metrics/MethodLength
-        def access_section(http_method, path, controller, action, result)
+        # rubocop:disable Metrics/ParameterLists
+        def access_section(http_method, path, controller, action, result, csrf_token)
           return "" if path.empty?
 
           context = hidden("controller", controller) + hidden("action", action) +
@@ -92,8 +95,9 @@ module Karst
                  else
                    "<p>Access analysis is available for GET routes only.</p>"
                  end
-          "<section><h2>Observed access</h2>#{form}#{access_result(result)}</section>"
+          "<section><h2>Observed access</h2>#{form}#{access_result(result, csrf_token)}</section>"
         end
+        # rubocop:enable Metrics/ParameterLists
         # rubocop:enable Metrics/MethodLength
 
         # Deciding the label only ever type-checks the configured source (see
@@ -114,13 +118,13 @@ module Karst
         end
 
         # rubocop:disable Metrics/AbcSize
-        def access_result(result)
+        def access_result(result, csrf_token)
           return "" unless result
           return "<p>Analysis unavailable: #{escape(result.message)}</p>" if result.is_a?(StandardError)
 
           write_count = result.outcomes.count(&:writes_observed)
           warning = write_count.positive? ? write_warning(write_count) : ""
-          groups = result.groups.map { |_key, outcomes| outcome_group(outcomes) }.join
+          groups = result.groups.map { |_key, outcomes| outcome_group(outcomes, result.path, csrf_token) }.join
           isolation = "<p><small>Database rollback was attempted on the Active Record base connection; " \
                       "other connections and non-database effects are not isolated.</small></p>"
           "<p>#{result.outcomes.size} principals tested · #{escape(result.elapsed_ms / 1000.0)}s</p>" \
@@ -132,7 +136,7 @@ module Karst
           "<p><strong>⚠ Database writes were observed during #{count} probes.</strong></p>"
         end
 
-        def outcome_group(outcomes)
+        def outcome_group(outcomes, path, csrf_token)
           first = outcomes.first
           title = if first.exception_class
                     "Exception: #{escape(first.exception_class)}"
@@ -141,13 +145,30 @@ module Karst
                   else
                     status_title(first.status)
                   end
-          labels = outcomes.map { |item| outcome_principal(item) }.join
+          labels = outcomes.map { |item| outcome_principal(item, path, csrf_token) }.join
           "<article class=\"scenario\"><h3>#{title} — #{outcomes.size}</h3><ul>#{labels}</ul></article>"
         end
 
-        def outcome_principal(item)
+        def outcome_principal(item, path, csrf_token)
           writes = item.writes_observed ? " — ⚠ #{escape(item.write_count)} database writes observed" : ""
-          "<li>#{escape(item.principal.display_label)}#{writes}</li>"
+          action = test_as_form(item.principal, path, csrf_token)
+          "<li>#{escape(item.principal.display_label)}#{writes}#{action}</li>"
+        end
+
+        def test_as_form(principal, path, csrf_token)
+          return "" unless Identity.browser_supported? && csrf_token
+
+          fields = hidden("operation", "test_as") + hidden("csrf_token", csrf_token) + hidden("path", path) +
+                   hidden("principal_type", principal.model_name) + hidden("principal_id", principal.id)
+          " <form action=\"/karst\" method=\"post\" style=\"display:inline;border:0;padding:0;margin:0\">" \
+            "#{fields}<button type=\"submit\">Test as</button></form>"
+        end
+
+        def stop_testing_form(path, csrf_token, active)
+          return "" unless active && Identity.browser_supported? && csrf_token
+
+          fields = hidden("operation", "stop_test_as") + hidden("csrf_token", csrf_token) + hidden("path", path)
+          "<form action=\"/karst\" method=\"post\">#{fields}<button type=\"submit\">Stop testing as</button></form>"
         end
 
         def status_title(status)
