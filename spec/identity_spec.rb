@@ -1,9 +1,23 @@
 # frozen_string_literal: true
 
 require "spec_helper"
+require "logger"
+require "active_record"
 require "karst"
 
 KarstIdentitySpecPrincipal = Struct.new(:id)
+
+# A dedicated, isolated Active Record connection -- deliberately not
+# ActiveRecord::Base itself -- so this file's schema/fixtures can never
+# collide with any other spec file's global AR::Base connection state,
+# regardless of randomized spec order.
+class IdentitySpecFixtureRecord < ActiveRecord::Base
+  self.abstract_class = true
+  establish_connection(adapter: "sqlite3", database: ":memory:")
+end
+
+class KarstIdentityUser < IdentitySpecFixtureRecord
+end
 
 # rubocop:disable Metrics/BlockLength
 RSpec.describe Karst::Identity do
@@ -121,6 +135,90 @@ RSpec.describe Karst::Identity do
 
     expect(proxy).to have_received(:set_user).with(principal)
     expect(proxy).to have_received(:logout)
+  end
+
+  # Covers the ~500,000-row dogfood case: resolving a submitted model/id
+  # against config.principals must never enumerate the source, and must
+  # never resolve anything outside the exact relation the application
+  # configured.
+  describe "scoped resolution against an Active Record principal source" do
+    before(:all) do
+      IdentitySpecFixtureRecord.connection.create_table :karst_identity_users, force: true do |t|
+        t.integer :tenant_id, null: false
+        t.datetime :created_at
+      end
+    end
+
+    after(:all) do
+      IdentitySpecFixtureRecord.connection.drop_table :karst_identity_users, if_exists: true
+    end
+
+    before { KarstIdentityUser.delete_all }
+
+    def sql_queries(&block)
+      queries = []
+      callback = lambda do |_name, _start, _finish, _id, payload|
+        queries << payload[:sql]
+      end
+      ActiveSupport::Notifications.subscribed(callback, "sql.active_record", &block)
+      queries
+    end
+
+    it "resolves a principal via a single scoped primary-key query instead of enumerating the source" do
+      target = KarstIdentityUser.create!(tenant_id: 1)
+      299.times { |i| KarstIdentityUser.create!(tenant_id: i + 2) }
+      Karst.config.principals = -> { KarstIdentityUser.all }
+
+      resolved = nil
+      queries = sql_queries { resolved = described_class.resolve(model_name: "KarstIdentityUser", id: target.id) }
+
+      expect(resolved).to eq(target)
+      expect(queries.grep(/\ASELECT/i).size).to eq(1)
+    end
+
+    it "resolves an older principal inside config.principals even though it sits outside any sampling pool" do
+      old_principal = KarstIdentityUser.create!(tenant_id: 1, created_at: 2.years.ago)
+      50.times { |i| KarstIdentityUser.create!(tenant_id: i + 2, created_at: Time.current) }
+      Karst.config.principals = -> { KarstIdentityUser.all }
+
+      resolved = described_class.resolve(model_name: "KarstIdentityUser", id: old_principal.id)
+
+      expect(resolved).to eq(old_principal)
+    end
+
+    it "cannot resolve a principal outside a scoped config.principals relation" do
+      in_scope = KarstIdentityUser.create!(tenant_id: 7)
+      out_of_scope = KarstIdentityUser.create!(tenant_id: 9)
+      Karst.config.principals = -> { KarstIdentityUser.where(tenant_id: 7) }
+
+      expect(described_class.resolve(model_name: "KarstIdentityUser", id: in_scope.id)).to eq(in_scope)
+      expect(described_class.resolve(model_name: "KarstIdentityUser", id: out_of_scope.id)).to be_nil
+    end
+
+    it "never queries when the requested model name does not match the configured source" do
+      user = KarstIdentityUser.create!(tenant_id: 1)
+      Karst.config.principals = -> { KarstIdentityUser.all }
+
+      resolved = :unset
+      queries = sql_queries { resolved = described_class.resolve(model_name: "SomeOtherModel", id: user.id) }
+
+      expect(resolved).to be_nil
+      expect(queries).to be_empty
+    end
+
+    it "returns nil for a submitted id that does not exist within the source, without enumerating it" do
+      KarstIdentityUser.create!(tenant_id: 1)
+      Karst.config.principals = -> { KarstIdentityUser.all }
+
+      expect(described_class.resolve(model_name: "KarstIdentityUser", id: -1)).to be_nil
+    end
+
+    it "accepts a bare Active Record class exactly like an already-scoped relation" do
+      target = KarstIdentityUser.create!(tenant_id: 1)
+      Karst.config.principals = -> { KarstIdentityUser }
+
+      expect(described_class.resolve(model_name: "KarstIdentityUser", id: target.id)).to eq(target)
+    end
   end
 end
 # rubocop:enable Metrics/BlockLength

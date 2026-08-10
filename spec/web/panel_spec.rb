@@ -49,10 +49,11 @@ RSpec.describe Karst::Web::Panel do
                                elapsed_ms: 1.0, database_rollback_attempted: true)
   end
 
-  def access_result(outcomes)
+  def access_result(outcomes, candidate_pool_size: nil)
     Karst::Access::Result.new(path: "/documents/22/reader", http_method: "GET", outcomes: outcomes,
                               elapsed_ms: outcomes.size.to_f, aborted_reason: nil,
-                              database_isolation: :same_connection_rollback_attempted)
+                              database_isolation: :same_connection_rollback_attempted,
+                              candidate_pool_size: candidate_pool_size)
   end
 
   def enable_browser_identity!
@@ -211,6 +212,26 @@ RSpec.describe Karst::Web::Panel do
 
       expect(body).to include("<h2>Usable principals — 1</h2>", "User #27", "Observed 200 OK")
       expect(body).not_to include("Related state")
+    end
+  end
+
+  describe "candidate pool disclosure" do
+    it "truthfully reports a bounded candidate pool without implying the full universe was searched" do
+      body = described_class.render(
+        params: analyzed_route,
+        access_result: access_result([access_outcome(id: 27, status: 200)], candidate_pool_size: 1_000)
+      ).last.join
+
+      expect(body).to include("1 principals tested", "candidate pool: up to 1,000 most recent principals")
+    end
+
+    it "omits the candidate pool line when the result carries no pool (e.g. an Enumerable source)" do
+      body = described_class.render(
+        params: analyzed_route, access_result: access_result([access_outcome(id: 27, status: 200)])
+      ).last.join
+
+      expect(body).to include("1 principals tested")
+      expect(body).not_to include("candidate pool")
     end
   end
 

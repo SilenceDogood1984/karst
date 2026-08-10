@@ -71,7 +71,13 @@ module Karst
       ALLOWED_SCALAR_TYPES = %i[integer bigint string].freeze
 
       Candidate = Value.define(:principal, :reasons)
-      Result = Value.define(:principals, :candidates, :strategy, :queries)
+
+      # candidate_pool_size is the configured recent-N bound representative
+      # discovery was scoped to (nil for the generic-Enumerable fallback,
+      # which has no query-scoped pool concept) -- callers use it to report
+      # the sampling scope truthfully instead of implying the full principal
+      # universe was searched.
+      Result = Value.define(:principals, :candidates, :strategy, :queries, :candidate_pool_size)
 
       # Deterministic, in-memory predicate plus an Active Record scope for the
       # same criterion. Internal only -- never returned to callers.
@@ -79,20 +85,23 @@ module Karst
       private_constant :Target
 
       # Total SQL queries #call will ever issue for a given limit, across
-      # every query-issuing step (seed selection, scalar-column cardinality
-      # discovery, per-target lookups, and the final fill query). This is a
-      # hard cap enforced at every one of those call sites individually (see
-      # #query_allowed?), not merely an estimate: #call always issues at most
-      # this many queries, regardless of table width or row count. Reaching
-      # the cap simply means #call may return fewer than `limit` principals
-      # rather than exceeding its query budget.
+      # every query-issuing step (bounded-pool derivation, seed selection,
+      # scalar-column cardinality discovery, per-target lookups, and the
+      # final fill query). This is a hard cap enforced at every one of those
+      # call sites individually (see #query_allowed?), not merely an
+      # estimate: #call always issues at most this many queries, regardless
+      # of table width or row count. Reaching the cap simply means #call may
+      # return fewer than `limit` principals rather than exceeding its query
+      # budget.
       def self.query_budget(limit)
-        MAX_SCALAR_DISCOVERY_QUERIES + (limit * 4) + 2
+        1 + MAX_SCALAR_DISCOVERY_QUERIES + (limit * 4) + 2
       end
 
-      def initialize(source:, limit: Karst.config.access_sweep_limit)
+      def initialize(source:, limit: Karst.config.access_sweep_limit,
+                     pool_size: Karst.config.principal_candidate_pool_size)
         @source = source
         @limit = limit
+        @pool_size = pool_size
         @queries = 0
         @query_budget = self.class.query_budget(limit)
       end
@@ -126,35 +135,76 @@ module Karst
       def fallback_sample
         principals = @source.each.lazy.take(@limit).to_a
         candidates = principals.map { |principal| Candidate.new(principal: principal, reasons: []) }
-        Result.new(principals: principals, candidates: candidates, strategy: :first_n, queries: 0)
+        Result.new(principals: principals, candidates: candidates, strategy: :first_n, queries: 0,
+                   candidate_pool_size: nil)
       end
 
       # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
       def representative_sample(relation)
         klass = relation.klass
         primary_key = single_primary_key!(klass)
-        dimensions = build_dimensions(relation, klass)
+        pool = bounded_pool_relation(relation, klass, primary_key)
+        dimensions = build_dimensions(pool, klass)
         selected = {}
         covered = {}
 
-        seed_candidate(relation, primary_key, dimensions, covered, selected)
+        seed_candidate(pool, primary_key, dimensions, covered, selected)
         each_target(dimensions) do |target|
           break if selected.size >= @limit || !query_allowed?
           next if covered.key?(target.key)
 
-          record = fetch_matching(relation, primary_key, target, selected.keys)
+          record = fetch_matching(pool, primary_key, target, selected.keys)
           next unless record
 
           covered[target.key] = true
           selected[record.public_send(primary_key)] = Candidate.new(principal: record, reasons: [target.reason])
         end
-        fill_remaining(relation, primary_key, selected)
+        fill_remaining(pool, primary_key, selected)
 
         candidates = selected.values
         Result.new(principals: candidates.map(&:principal), candidates: candidates,
-                   strategy: :representative, queries: @queries)
+                   strategy: :representative, queries: @queries, candidate_pool_size: @pool_size)
       end
       # rubocop:enable Metrics/AbcSize, Metrics/MethodLength
+
+      # Derives a bounded "most recent @pool_size principals" relation and
+      # fixes it as a literal primary-key list (`WHERE pk IN (1, 2, 3, ...)`)
+      # rather than merely chaining `.limit` on the relation every later step
+      # reuses. Merely chaining `.limit` would not be a true preselected
+      # pool: Active Record merges every `.where`/`.order` clause added
+      # later into the *same* query, so the LIMIT would apply after those
+      # additional conditions rather than before them, letting a dimension
+      # lookup silently reach rows outside the intended pool.
+      #
+      # The pool is resolved with exactly one query here, not re-derived as
+      # a live subquery on every later query: a correlated `pk IN (SELECT pk
+      # FROM ... ORDER BY ... LIMIT n)` subquery would be safe but pays that
+      # ORDER BY/LIMIT cost again on every single query representative
+      # discovery issues, which reintroduces an unbounded-relation-shaped
+      # cost on any column (typically created_at) without a supporting
+      # index -- exactly the scaling failure this pool exists to remove.
+      # Fixing the ids once and inlining them as a literal list (not bind
+      # parameters, via `where("pk IN (?)", ids)`) also sidesteps some
+      # database adapters' bind-parameter-count ceilings at the configured
+      # hard maximum pool size. The ids come only from this process's own
+      # prior query result, never from external input, so literal inlining
+      # (quoted through Active Record's own sanitizer) carries no injection
+      # risk. Every later `.where` on the returned relation is ANDed against
+      # this fixed, already-bounded id list, so no query issued against it
+      # can ever inspect a row outside the pool, regardless of what
+      # conditions representative discovery adds.
+      def bounded_pool_relation(relation, klass, primary_key)
+        return relation.none unless query_allowed?
+
+        recency_ordered = if klass.columns_hash.key?("created_at")
+                            relation.reorder(created_at: :desc)
+                          else
+                            relation.reorder(primary_key => :desc)
+                          end
+        @queries += 1
+        pool_ids = recency_ordered.limit(@pool_size).pluck(primary_key)
+        relation.where("#{primary_key} IN (?)", pool_ids)
+      end
 
       def single_primary_key!(klass)
         primary_key = klass.primary_key
@@ -170,11 +220,21 @@ module Karst
         @queries < @query_budget
       end
 
+      # Every query in representative discovery now runs against the bounded
+      # pool, whose rows sit at the high end of the primary key range (the
+      # pool is "most recent," and recency and primary-key order correlate
+      # in virtually every real schema). Ordering ascending by primary key,
+      # as this and #fetch_matching/#fill_remaining did before the pool
+      # existed, would force exactly the kind of full-table scan the pool
+      # exists to avoid: to find the smallest matching id, the database
+      # walks the primary-key index from its very start, past every
+      # excluded low-id row, before ever reaching the pool. Descending order
+      # instead reaches pool-dense territory on the first rows examined.
       def seed_candidate(relation, primary_key, dimensions, covered, selected)
         return unless query_allowed?
 
         @queries += 1
-        seed = relation.order(primary_key).limit(1).first
+        seed = relation.order(primary_key => :desc).limit(1).first
         return unless seed
 
         selected[seed.public_send(primary_key)] = Candidate.new(
@@ -208,7 +268,7 @@ module Karst
         @queries += 1
         scope = target.scope.call(relation)
         scope = scope.where.not(primary_key => exclude_ids) if exclude_ids.any?
-        scope.order(primary_key).limit(1).first
+        scope.order(primary_key => :desc).limit(1).first
       end
 
       def fill_remaining(relation, primary_key, selected)
@@ -216,7 +276,7 @@ module Karst
         return if remaining <= 0 || !query_allowed?
 
         @queries += 1
-        relation.where.not(primary_key => selected.keys).order(primary_key).limit(remaining).each do |record|
+        relation.where.not(primary_key => selected.keys).order(primary_key => :desc).limit(remaining).each do |record|
           selected[record.public_send(primary_key)] = Candidate.new(principal: record, reasons: [])
         end
       end

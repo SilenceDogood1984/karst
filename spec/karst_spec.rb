@@ -47,6 +47,19 @@ RSpec.describe Karst do
       end
     end
 
+    it "defaults the principal candidate pool to 1,000 and enforces the conservative hard ceiling" do
+      configuration = configuration_class.new
+
+      expect(configuration.principal_candidate_pool_size).to eq(1_000)
+      configuration.principal_candidate_pool_size = 5_000
+      expect(configuration.principal_candidate_pool_size).to eq(5_000)
+      configuration.principal_candidate_pool_size = 500
+      expect(configuration.principal_candidate_pool_size).to eq(500)
+      [0, -1, 10_001, 1.5, "500"].each do |value|
+        expect { configuration.principal_candidate_pool_size = value }.to raise_error(ArgumentError)
+      end
+    end
+
     it "treats only observed 2xx statuses as usable by default and accepts a custom policy" do
       configuration = configuration_class.new
       outcome = Struct.new(:status)
