@@ -49,17 +49,21 @@ RSpec.describe Karst do
   end
 
   describe "process-level buffer" do
-    before do
+    def reset_runtime!
       described_class.unsubscribe!
-      described_class.instance_variable_set(:@config, configuration_class.new)
-      described_class.remove_instance_variable(:@buffer) if described_class.instance_variable_defined?(:@buffer)
-      if described_class.instance_variable_defined?(:@subscription)
-        described_class.remove_instance_variable(:@subscription)
+      configuration = described_class.const_get(:Configuration, false).new
+      described_class.instance_variable_set(:@config, configuration)
+      %i[@buffer @subscription].each do |variable|
+        described_class.remove_instance_variable(variable) if described_class.instance_variable_defined?(variable)
       end
+    end
+
+    before do
+      reset_runtime!
       described_class.config.enabled = true
     end
 
-    after { described_class.unsubscribe! }
+    after { reset_runtime! }
 
     it "is one instance whose capacity is fixed from configuration at first use" do
       described_class.config.buffer_size = 2
