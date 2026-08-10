@@ -110,6 +110,18 @@ Record connection in the in-process integration request; Karst does **not**
 claim isolation for additional databases/connections. SQL notifications are
 also inspected for `INSERT`, `UPDATE`, and `DELETE` evidence.
 
+For Rails applications, that integration session targets a deliberately small
+probe endpoint: `ActionDispatch::Cookies`, the application's configured session
+middleware, `ActionDispatch::Flash`, and the application's routes, with the
+application's `env_config` request defaults. This is sufficient for normal
+controller dispatch, callbacks, cookies, session, and flash on Rails 6.1–8;
+those Rails versions do not require another middleware for those semantics.
+Karst therefore does not recursively call `Rails.application` or copy unrelated
+host middleware. The session uses the route URL host when configured, otherwise
+an exact host allowed by `config.hosts`, and finally Rails' generic development
+host allowance. Host authorization remains enabled for ordinary browser
+requests.
+
 The rollback cannot isolate email, jobs, network requests, files, Redis, other
 processes, or third-party APIs. GET endpoints can still cause those effects.
 Use this experimental workflow only on development data and routes whose

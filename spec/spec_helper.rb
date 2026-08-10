@@ -15,6 +15,11 @@ RSpec.configure do |config|
     next unless defined?(Karst) && Karst.respond_to?(:unsubscribe!)
 
     Karst.unsubscribe!
-    Karst.config.enabled = false
+    configuration = Karst.const_get(:Configuration, false).new
+    configuration.enabled = false
+    Karst.instance_variable_set(:@config, configuration)
+    %i[@buffer @subscription].each do |variable|
+      Karst.remove_instance_variable(variable) if Karst.instance_variable_defined?(variable)
+    end
   end
 end
