@@ -109,8 +109,8 @@ RSpec.describe "bounded access sweep Rails integration" do
                                       application: KarstTestApplication).call
 
     expect(result.outcomes.map(&:status)).to include(403)
-  end 
-  
+  end
+
   it "bypasses non-reentrant host middleware at the route dispatch boundary" do
     principal = KarstAccessPrincipal.find_by!(behavior: "ok")
     calls_before = KarstNonReentrantMiddleware.calls
