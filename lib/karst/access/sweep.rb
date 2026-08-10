@@ -84,8 +84,13 @@ module Karst
           ActiveSupport::Notifications.subscribed(callback, "sql.active_record") do
             Karst::Identity.with(session, principal) do
               session.get(@path)
-              status = session.response.status
-              redirect = clean_redirect(session.response.location) if status >= 300 && status < 400
+              rendered_exception = request_exception(session)
+              if rendered_exception
+                exception_class = rendered_exception.class.name
+              else
+                status = session.response.status
+                redirect = clean_redirect(session.response.location) if status >= 300 && status < 400
+              end
             end
           end
         rescue StandardError => e
@@ -104,6 +109,15 @@ module Karst
           yield
           raise ActiveRecord::Rollback
         end
+      end
+
+      # Rails may either re-raise an application exception or render it through
+      # ShowExceptions, depending on host and Rails-version configuration. The
+      # latter records the original exception in the integration request env.
+      def request_exception(session)
+        return unless session.respond_to?(:request) && session.request
+
+        session.request.get_header("action_dispatch.exception")
       end
 
       def clean_redirect(location)

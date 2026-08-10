@@ -43,11 +43,9 @@ KarstTestApplication.routes.draw do
   get "/documents/:id/edit", to: "karst_access_fixture#document"
 end
 
-# rubocop:disable Metrics/BlockLength
 RSpec.describe "bounded access sweep Rails integration" do
   before do
     allow(Rails).to receive(:env).and_return(ActiveSupport::StringInquirer.new("development"))
-    KarstTestApplication.env_config["action_dispatch.show_exceptions"] = false
     KarstAccessPrincipal.delete_all
     %w[ok redirect forbidden raise].each { |behavior| KarstAccessPrincipal.create!(behavior: behavior) }
     Karst.config.assume_identity = lambda do |session, principal|
@@ -57,7 +55,6 @@ RSpec.describe "bounded access sweep Rails integration" do
   end
 
   after do
-    KarstTestApplication.env_config.delete("action_dispatch.show_exceptions")
     Karst.config.assume_identity = nil
     Karst.config.clear_identity = nil
   end
@@ -75,4 +72,3 @@ RSpec.describe "bounded access sweep Rails integration" do
     expect(KarstAccessPrincipal.order(:id).pluck(:visits)).to eq([0, 0, 0, 0])
   end
 end
-# rubocop:enable Metrics/BlockLength
