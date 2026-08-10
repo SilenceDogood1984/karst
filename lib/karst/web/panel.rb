@@ -27,14 +27,14 @@ module Karst
 
       # rubocop:disable Metrics/ClassLength
       class << self
-        def render(params: {})
-          [200, HEADERS.dup, [document(params)]]
+        def render(params: {}, access_result: nil)
+          [200, HEADERS.dup, [document(params, access_result)]]
         end
 
         private
 
         # rubocop:disable Metrics/MethodLength
-        def document(params)
+        def document(params, access_result)
           controller = string_param(params, "controller")
           action = string_param(params, "action")
           http_method = string_param(params, "method")
@@ -47,6 +47,7 @@ module Karst
             </head><body><h1>Karst</h1>
             #{route_form(controller, action)}
             #{catalog_section(catalog, controller, action, http_method, path)}
+            #{access_section(http_method, path, controller, action, access_result)}
             #{runtime_section}
             </body></html>
           HTML
@@ -75,6 +76,70 @@ module Karst
             <button type="submit">Show observed scenarios</button>
             </form></section>
           HTML
+        end
+
+        # rubocop:disable Metrics/MethodLength
+        def access_section(http_method, path, controller, action, result)
+          return "" if path.empty?
+
+          context = hidden("controller", controller) + hidden("action", action) +
+                    hidden("method", http_method) + hidden("path", path)
+          form = if http_method == "GET"
+                   <<~HTML
+                     <form action="/karst" method="post">#{context}<input type="hidden" name="operation" value="access_sweep">
+                     <button type="submit">Analyze #{escape(Karst.config.access_sweep_limit)} principals</button></form>
+                   HTML
+                 else
+                   "<p>Access analysis is available for GET routes only.</p>"
+                 end
+          "<section><h2>Observed access</h2>#{form}#{access_result(result)}</section>"
+        end
+        # rubocop:enable Metrics/MethodLength
+
+        def hidden(name, value)
+          "<input type=\"hidden\" name=\"#{name}\" value=\"#{escape(value)}\">"
+        end
+
+        # rubocop:disable Metrics/AbcSize
+        def access_result(result)
+          return "" unless result
+          return "<p>Analysis unavailable: #{escape(result.message)}</p>" if result.is_a?(StandardError)
+
+          write_count = result.outcomes.count(&:writes_observed)
+          warning = write_count.positive? ? write_warning(write_count) : ""
+          groups = result.groups.map { |_key, outcomes| outcome_group(outcomes) }.join
+          isolation = "<p><small>Database rollback was attempted on the Active Record base connection; " \
+                      "other connections and non-database effects are not isolated.</small></p>"
+          "<p>#{result.outcomes.size} principals tested · #{escape(result.elapsed_ms / 1000.0)}s</p>" \
+            "#{isolation}#{warning}#{groups}"
+        end
+        # rubocop:enable Metrics/AbcSize
+
+        def write_warning(count)
+          "<p><strong>⚠ Database writes were observed during #{count} probes.</strong></p>"
+        end
+
+        def outcome_group(outcomes)
+          first = outcomes.first
+          title = if first.exception_class
+                    "Exception: #{escape(first.exception_class)}"
+                  elsif first.redirect
+                    "#{escape(first.status)} → #{escape(first.redirect)}"
+                  else
+                    status_title(first.status)
+                  end
+          labels = outcomes.map { |item| outcome_principal(item) }.join
+          "<article class=\"scenario\"><h3>#{title} — #{outcomes.size}</h3><ul>#{labels}</ul></article>"
+        end
+
+        def outcome_principal(item)
+          writes = item.writes_observed ? " — ⚠ #{escape(item.write_count)} database writes observed" : ""
+          "<li>#{escape(item.principal.display_label)}#{writes}</li>"
+        end
+
+        def status_title(status)
+          phrase = Rack::Utils::HTTP_STATUS_CODES[status]
+          phrase ? "#{escape(status)} #{escape(phrase)}" : escape(status)
         end
 
         # rubocop:disable Metrics/CyclomaticComplexity, Metrics/MethodLength

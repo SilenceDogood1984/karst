@@ -35,6 +35,17 @@ RSpec.describe Karst do
         expect { configuration.buffer_size = value }.to raise_error(ArgumentError)
       end
     end
+
+    it "defaults access sweeps to 25 and enforces the conservative hard ceiling" do
+      configuration = configuration_class.new
+
+      expect(configuration.access_sweep_limit).to eq(25)
+      configuration.access_sweep_limit = 100
+      expect(configuration.access_sweep_limit).to eq(100)
+      [0, 101, 1.5, "25"].each do |value|
+        expect { configuration.access_sweep_limit = value }.to raise_error(ArgumentError)
+      end
+    end
   end
 
   describe "process-level buffer" do

@@ -96,5 +96,22 @@ RSpec.describe Karst::Web::Panel do
     expect(body).not_to include(hostile)
     expect(body.scan(CGI.escapeHTML(hostile)).size).to be >= 5
   end
+
+  it "labels rollback as attempted and keeps write evidence inside a response cohort" do
+    descriptor = Karst::Identity::PrincipalDescriptor.new(model_name: "User", id: 1, display_label: "User #1")
+    common = { principal: descriptor, status: 200, redirect: nil, exception_class: nil,
+               elapsed_ms: 1.0, database_rollback_attempted: true }
+    outcomes = [Karst::Access::Outcome.new(**common, writes_observed: false, write_count: 0),
+                Karst::Access::Outcome.new(**common, writes_observed: true, write_count: 2)]
+    result = Karst::Access::Result.new(path: "/pages", http_method: "GET", outcomes: outcomes,
+                                       elapsed_ms: 2.0, aborted_reason: nil,
+                                       database_isolation: :same_connection_rollback_attempted)
+    body = described_class.render(params: route.merge("method" => "GET", "path" => "/pages"),
+                                  access_result: result).last.join
+
+    expect(body.scan("200 OK — 2").size).to eq(1)
+    expect(body).to include("rollback was attempted", "other connections and non-database effects are not isolated",
+                            "2 database writes observed")
+  end
 end
 # rubocop:enable Metrics/BlockLength
