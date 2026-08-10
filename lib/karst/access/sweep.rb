@@ -2,6 +2,7 @@
 
 require "active_support/notifications"
 require "uri"
+require_relative "probe_application"
 require_relative "../identity"
 require_relative "../value"
 
@@ -35,6 +36,7 @@ module Karst
         @principals = principals
         @limit = limit
         @application = application || Rails.application
+        @probe_application = build_probe_application
       end
 
       def call
@@ -74,7 +76,8 @@ module Karst
 
       # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
       def probe(principal)
-        session = ActionDispatch::Integration::Session.new(@application)
+        session = ActionDispatch::Integration::Session.new(@probe_application)
+        configure_host(session)
         started = monotonic
         status = redirect = exception_class = nil
         writes = 0
@@ -109,6 +112,18 @@ module Karst
           yield
           raise ActiveRecord::Rollback
         end
+      end
+
+      def build_probe_application
+        ProbeApplication.for(@application)
+      rescue ProbeApplication::ConstructionError => e
+        raise Unavailable, e.message, cause: e
+      end
+
+      def configure_host(session)
+        return unless @probe_application.respond_to?(:host) && @probe_application.host
+
+        session.host!(@probe_application.host)
       end
 
       # Rails may either re-raise an application exception or render it through
