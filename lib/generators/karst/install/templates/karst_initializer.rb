@@ -25,6 +25,36 @@ Karst.configure do |config|
   # config.principals = -> { User.all }
 
   # ---------------------------------------------------------------------
+  # config.principal_dimensions (optional)
+  # ---------------------------------------------------------------------
+  # Coarse, non-PII observed states worth deliberately representing while
+  # sampling -- not an authorization claim. Karst may report
+  # `role=local_admin`; it never claims that state grants access. Supports
+  # a plain attribute, a boolean predicate, or a callable evaluated over an
+  # already-bounded candidate pool. A dimension named (or reading an
+  # attribute named) like email/name/phone/token/password is rejected --
+  # Karst dimensions are for coarse state, not user identity data.
+  #
+  # config.principal_dimensions = {
+  #   role: :role,
+  #   system_admin: :system_admin?,
+  #   premium: ->(user) { user.premium? }
+  # }
+
+  # ---------------------------------------------------------------------
+  # config.principal_sources (optional, for more than one principal model)
+  # ---------------------------------------------------------------------
+  # Only needed when this application represents identity as more than one
+  # model (e.g. Author and Reader) instead of a single config.principals.
+  # Each source is sampled and resolved independently -- Karst never merges
+  # them into one combined dataset -- and may declare its own dimensions.
+  #
+  # config.principal_sources = {
+  #   authors: { records: -> { Author.all }, dimensions: { premium: :premium? } },
+  #   readers: -> { Reader.all }
+  # }
+
+  # ---------------------------------------------------------------------
   # config.assume_identity / config.clear_identity
   # ---------------------------------------------------------------------
   # Operate on an isolated ActionDispatch::Integration::Session that Karst

@@ -6,6 +6,7 @@ require_relative "identity/warden_adapter"
 module Karst
   # Framework-neutral identity seam for controlled probes. It deliberately
   # does not discover or enumerate principals; callers own that policy.
+  # rubocop:disable Metrics/ModuleLength
   module Identity
     class Error < StandardError; end
     class Unavailable < Error; end
@@ -30,6 +31,7 @@ module Karst
     end
     private_constant :ConfiguredAdapter
 
+    # rubocop:disable Metrics/ClassLength
     class << self
       def principals
         source = Karst.config.principals
@@ -37,6 +39,19 @@ module Karst
         raise ConfigurationError, "config.principals must be callable" unless source.respond_to?(:call)
 
         source.call
+      end
+
+      # The effective, normalized principal population(s): a Hash of Symbol
+      # => Karst::Access::PrincipalSource, covering both a bare
+      # config.principals (wrapped as one implicit :default source) and an
+      # explicit config.principal_sources. Every multi-source-aware caller
+      # (Identity.resolve, PrincipalSelection, the panel) reads this instead
+      # of config.principals directly.
+      def principal_sources
+        sources = Karst.config.principal_sources
+        raise Unavailable, "no principal source is configured" unless sources
+
+        sources
       end
 
       def with(session, principal)
@@ -66,26 +81,28 @@ module Karst
         PrincipalDescriptor.new(model_name: model_name, id: id, display_label: label)
       end
 
-      # Resolves only principals exposed by the configured source. In
-      # particular, this never constantizes a submitted model name or performs
-      # an unrestricted model lookup.
+      # Resolves only principals exposed by a configured source. In
+      # particular, this never constantizes a submitted model name or
+      # performs an unrestricted model lookup.
       #
-      # For an Active Record relation/class source, this resolves through a
-      # scoped primary-key query against that exact relation instead of
-      # enumerating it -- config.principals may cover hundreds of thousands
-      # of rows, and this must stay a single bounded query regardless of
-      # table size. The relation's own WHERE clauses (tenant scoping, soft
-      # deletes, and so on) still apply, so a principal outside the
-      # configured relation is never resolved -- this never escapes the
-      # relation and never performs an unrestricted model lookup. A generic
+      # Tries each configured Karst::Access::PrincipalSource in order and
+      # returns the first match; a model name that does not belong to any
+      # configured source resolves nothing, without ever touching that
+      # source's records. For an Active Record relation/class source, a
+      # matching model name resolves through a scoped primary-key query
+      # against that exact relation instead of enumerating it -- a source
+      # may cover hundreds of thousands of rows, and this must stay a single
+      # bounded query regardless of table size. The relation's own WHERE
+      # clauses (tenant scoping, soft deletes, and so on) still apply, so a
+      # principal outside a configured relation is never resolved. A generic
       # Enumerable source (no scoped-query capability) keeps the original
-      # enumerate-and-compare behavior.
+      # enumerate-and-compare behavior, bounded to that one source.
       def resolve(model_name:, id:)
-        source = principals
-        relation = active_record_relation(source)
-        return resolve_scoped(relation, model_name: model_name, id: id) if relation
-
-        resolve_enumerated(source, model_name: model_name, id: id)
+        principal_sources.each_value do |source|
+          resolved = resolve_within_source(source, model_name: model_name, id: id)
+          return resolved if resolved
+        end
+        nil
       end
 
       def browser_supported?
@@ -107,6 +124,14 @@ module Karst
 
       private
 
+      def resolve_within_source(source, model_name:, id:)
+        records = source.evaluate
+        relation = active_record_relation(records)
+        return resolve_scoped(relation, model_name: model_name, id: id) if relation
+
+        resolve_enumerated(records, model_name: model_name, id: id)
+      end
+
       def active_record_relation(source)
         return source if defined?(ActiveRecord::Relation) && source.is_a?(ActiveRecord::Relation)
         return source.all if defined?(ActiveRecord::Base) && source.is_a?(Class) && source < ActiveRecord::Base
@@ -115,10 +140,10 @@ module Karst
       end
 
       # A model-name mismatch is checked before ever touching the database:
-      # config.principals is trusted to name one authoritative model, so a
-      # request for a different model name is rejected without issuing a
-      # query rather than attempting (and failing) a primary-key lookup
-      # against the wrong table.
+      # each source is trusted to name one authoritative model, so a request
+      # for a different model name is rejected without issuing a query
+      # rather than attempting (and failing) a primary-key lookup against
+      # the wrong table.
       def resolve_scoped(relation, model_name:, id:)
         klass = relation.klass
         return nil unless model_name_for_klass(klass) == model_name.to_s
@@ -168,5 +193,7 @@ module Karst
         principal.id
       end
     end
+    # rubocop:enable Metrics/ClassLength
   end
+  # rubocop:enable Metrics/ModuleLength
 end

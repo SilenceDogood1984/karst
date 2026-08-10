@@ -1,11 +1,14 @@
 # frozen_string_literal: true
 
+require_relative "access/principal_source"
+
 module Karst
   # Process-level settings that control Karst's implemented behavior.
   class Configuration
     attr_accessor :enabled, :principals, :assume_identity, :clear_identity, :principal_label,
                   :assume_browser_identity, :clear_browser_identity
-    attr_reader :buffer_size, :access_sweep_limit, :usable_access_outcome, :principal_candidate_pool_size
+    attr_reader :buffer_size, :access_sweep_limit, :usable_access_outcome, :principal_candidate_pool_size,
+                :principal_dimensions
 
     MAX_ACCESS_SWEEP_LIMIT = 100
 
@@ -16,7 +19,7 @@ module Karst
     # independent of how large the underlying table actually is.
     MAX_PRINCIPAL_CANDIDATE_POOL_SIZE = 10_000
 
-    # rubocop:disable Metrics/MethodLength
+    # rubocop:disable Metrics/MethodLength, Metrics/AbcSize
     def initialize
       @enabled = defined?(Rails) && Rails.respond_to?(:env) ? Rails.env.development? || Rails.env.test? : false
       @buffer_size = 2_000
@@ -29,8 +32,30 @@ module Karst
       @access_sweep_limit = 25
       @usable_access_outcome = ->(outcome) { outcome.status && (200..299).cover?(outcome.status) }
       @principal_candidate_pool_size = 1_000
+      @principal_dimensions = {}
+      @configured_principal_sources = nil
     end
-    # rubocop:enable Metrics/MethodLength
+    # rubocop:enable Metrics/MethodLength, Metrics/AbcSize
+
+    def principal_dimensions=(dimensions)
+      @principal_dimensions = Access::PrincipalDimension.normalize(dimensions)
+    end
+
+    def principal_sources=(sources)
+      @configured_principal_sources = Access::PrincipalSource.normalize(sources)
+    end
+
+    # The effective, normalized principal population(s) Karst may sample
+    # from or resolve into: explicit config.principal_sources when
+    # configured, otherwise a bare config.principals (plus any
+    # config.principal_dimensions) wrapped as one implicit :default source,
+    # or nil when neither is configured. A Hash of Symbol => PrincipalSource.
+    def principal_sources
+      return @configured_principal_sources if @configured_principal_sources
+      return nil unless @principals
+
+      { default: Access::PrincipalSource.new(name: :default, records: @principals, dimensions: @principal_dimensions) }
+    end
 
     def access_sweep_limit=(value)
       unless value.is_a?(Integer) && value.positive? && value <= MAX_ACCESS_SWEEP_LIMIT

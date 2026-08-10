@@ -98,7 +98,10 @@ end
 When both hooks are configured, each usable observed principal has a prominent
 **Test as** button. Other outcomes remain collapsed as raw evidence and do not
 offer that primary action. Karst resolves the submitted descriptor only
-through the configured `principals` source, invokes the hook, and redirects to the exact analyzed
+through a configured principal source (`config.principals`, or
+`config.principal_sources` -- see [Explicit principal sources and
+dimensions](#explicit-principal-sources-and-dimensions) below), invokes the
+hook, and redirects to the exact analyzed
 local path with its query string removed. **Stop testing as** invokes the clear
 hook and therefore clears to whatever identity (normally anonymous) the host
 defines; generic restoration of a previous identity is not attempted.
@@ -193,6 +196,124 @@ compares no outcomes, and its result feeds `Karst::Access::Sweep` exactly like
 any other bounded principal source. Any other Enumerable source falls back to
 the existing bounded-first strategy, unchanged.
 
+### Explicit principal sources and dimensions
+
+`config.principals` and generic schema discovery are a good default, but real
+applications represent identity very differently -- one `User` model with an
+explicit role column, several distinct principal models (`Author`, `Reader`),
+relational roles (`User`/`Membership`/`Organization`), or an authorization
+framework where role-like semantics do not exist as one column at all. Karst
+does not try to invent one universal role model; instead it separates three
+concerns:
+
+- **Principal source** -- "which records may Karst consider at all?"
+- **Principal dimension** -- "which coarse states should Karst deliberately
+  represent while sampling within a source?"
+- **Observed access** (the sweep outcome described above) -- "what actually
+  happened when Karst executed the route?"
+
+A fourth concern, **authorization evidence** ("does this state actually grant
+access?"), is deliberately out of scope for this version. A dimension is
+sampling evidence, not an authorization claim: Karst may report
+`role=local_admin` next to a usable principal; it never states or implies
+that `local_admin` is what let the request through.
+
+#### Dimensions: `config.principal_dimensions`
+
+```ruby
+Karst.configure do |config|
+  config.principals = -> { User.all }
+  config.principal_dimensions = {
+    role: :role,
+    system_admin: :system_admin?,
+    reseller: ->(user) { user.plan == "reseller" }
+  }
+end
+```
+
+Each dimension is a plain attribute (`:role`), a boolean predicate
+(`:system_admin?`), or a callable of one argument. Configured dimensions take
+priority over `PrincipalSampler`'s generic schema discovery and are tried
+first; generic discovery still runs afterward for any column no configured
+dimension already names, so an application with no extra configuration keeps
+today's behavior exactly. Given a pool of 900 `responder`, 50 `local_admin`,
+30 `group_admin`, 15 `reseller`, and 5 `system_admin` accounts and a limit of
+25, Karst deliberately tries to include a representative of every configured
+role value before simply filling the rest with more responders.
+
+A dimension backed by a real column (including Rails' own auto-generated
+`<boolean column>?` predicate method, which returns exactly the column's
+value) is discovered the same bounded way generic dimensions are -- one
+`DISTINCT ... LIMIT` query, never a full scan. A dimension with no backing
+column -- a computed predicate or a callable -- cannot be translated to SQL,
+so it is instead evaluated once, in Ruby, over the same already
+query-bounded candidate pool `PrincipalSampler` derives for large-table
+safety (see above), never per-row against the full table.
+
+A dimension named (or, for a `Symbol`/`String` accessor, reading an
+attribute named) like `email`, `name`, `phone`, `token`, `password`,
+`address`, or `credential` is rejected with `ArgumentError` as soon as it is
+configured. Karst dimensions are for coarse state, not user identity data --
+this cannot be checked for a callable accessor, since its body cannot be
+inspected, so a callable that itself reads PII is a configuration mistake
+Karst cannot catch on your behalf.
+
+#### Multiple principal models: `config.principal_sources`
+
+```ruby
+Karst.configure do |config|
+  config.principal_sources = {
+    authors: { records: -> { Author.all }, dimensions: { premium: :premium? } },
+    readers: -> { Reader.all }
+  }
+end
+```
+
+Each source is a name plus a records callable (evaluated lazily, exactly
+like `config.principals`) and optional dimensions of its own. Sources are
+never materialized together -- Karst never builds `Author.all.to_a +
+Reader.all.to_a` -- each stays independently queryable and keeps its own
+model identity throughout, so `Author #12` and `Reader #12` are never
+confused even though their ids collide. `config.principals` (plus any
+`config.principal_dimensions`) remains fully supported and is normalized
+internally into one implicit `:default` source, so every downstream
+consumer -- sampling, `Identity.resolve`, the panel -- only ever has to
+handle "one or more sources."
+
+`Karst::Access::PrincipalSelection` runs `PrincipalSampler` independently
+per source and allocates the combined candidates within one overall
+`access_sweep_limit`: every non-empty source is guaranteed at least one
+candidate, and remaining room is filled round-robin across sources (each
+contributing its own dimension-covering candidates before plain fill), so
+one source running out never blocks another from filling the rest of the
+budget, and a two-source table never receives 25 candidates each for 50
+total probes. Each Active Record source separately derives its own bounded
+`principal_candidate_pool_size` candidate pool -- a two-source table with a
+pool size of 1,000 samples from up to 1,000 recent rows *per source*, not
+1,000 split across both.
+
+When more than one source is configured, a selected candidate's evidence
+also carries `source=<name>` alongside any dimension reasons, since the
+source name now adds real information; a single (or implicit `:default`)
+source never shows it, since a model name alone already disambiguates.
+
+`Karst::Identity.resolve(model_name:, id:)` tries each configured source in
+order and returns the first match, stopping immediately once one source's
+model name matches -- a later source is never even evaluated. For an Active
+Record source this is still a single scoped primary-key query, never
+enumeration; a submitted model name that matches no configured source
+resolves nothing, and no submitted model name is ever constantized.
+
+The panel's usable-principal cards show a compact secondary line when
+sampling evidence is available, deliberately below the observed outcome and
+above any resource evidence so it augments a usable principal without
+competing with **Test as** or **Related state** for attention:
+
+```
+Sampled for:
+role=local_admin · premium=true
+```
+
 Every principal receives a fresh `ActionDispatch::Integration::Session` and is
 assumed and cleared only through `Karst::Identity`. Each synchronous request is
 wrapped in `ActiveRecord::Base.transaction(requires_new: true)` and deliberately
@@ -256,9 +377,10 @@ This is evidence, not an authorization claim -- it never states or implies *why*
 The panel runs this downstream evidence step for usable outcomes and displays a
 **Related state** block when a direct relationship is available. A missing or
 limited resolution simply omits that block; it does not hide the usable
-principal. Principal descriptors are resolved only through
-`config.principals`, so even a valid model name and database id cannot expand
-Karst's configured principal universe.
+principal. Principal descriptors are resolved only through a configured
+principal source (`config.principals` or `config.principal_sources`), so even
+a valid model name and database id cannot expand Karst's configured principal
+universe.
 
 The sweep itself still performs no route discovery or resource substitution (see above): `ResourceEvidence` is a distinct, downstream, opt-in step that never changes what a sweep executes. Resolving the exact resource from a route path is attempted only through Rails' own route recognition plus its controller-to-model naming convention, and only trusted when every step succeeds unambiguously -- a recognized route with an `:id` segment, a controller name that classifies to a real loaded Active Record model, and a record that actually exists for that id. Anything softer (an unrecognized route, a controller with no conventional model, a missing record, or a principal outside the configured source) is reported back as a `limitation` string rather than guessed at; `Result#to_text` renders it as `Unavailable: <reason>` instead of silently fabricating a relationship. `ResourceEvidence.new(resource:, principal:).call` is available directly when you already hold both actual records and want to skip route resolution entirely.
 
