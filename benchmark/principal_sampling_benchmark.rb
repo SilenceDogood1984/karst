@@ -27,6 +27,20 @@ ROWS = Integer(ENV.fetch("BENCHMARK_ROWS", 500_000))
 POOL_SIZE = Integer(ENV.fetch("BENCHMARK_POOL_SIZE", 1_000))
 LIMIT = Integer(ENV.fetch("BENCHMARK_LIMIT", 25))
 
+# Rows are inserted oldest-first, so index i is also recency order: row 0 is
+# the oldest account, row `ROWS - 1` the newest. `status: 2` is planted only
+# among the oldest sliver of accounts -- a retired legacy value real apps
+# accumulate (a deprecated plan tier, an old signup flow's default) that
+# newer rows never get. That is precisely the shape that makes the fix (and
+# not just the general dataset size) matter: a naive "biggest table wins"
+# benchmark with minority states smeared near the end would let primary-key-
+# descending lookups find them almost immediately either way, hiding the
+# actual cost representative discovery paid before this change -- walking
+# the relation to find a state that exists *only* far from the end.
+# `premium: true` is planted on the single newest row instead, so the
+# bounded pool run still has a minority state it must (and does) find.
+LEGACY_STATUS_CUTOFF = [ROWS / 500, 1].max
+
 ActiveRecord::Base.establish_connection(adapter: "sqlite3", database: ":memory:")
 ActiveRecord::Schema.verbose = false
 ActiveRecord::Schema.define do
@@ -38,6 +52,10 @@ ActiveRecord::Schema.define do
   end
 end
 
+# A standalone, dev-only measurement script: the fixture model and the
+# benchmark-only subclass below exist purely to drive this one comparison
+# and are not part of the library's own architecture.
+# rubocop:disable Style/OneClassPerFile
 class BenchmarkPrincipal < ActiveRecord::Base
 end
 
@@ -51,37 +69,40 @@ class UnboundedPrincipalSampler < Karst::Access::PrincipalSampler
     relation
   end
 end
+# rubocop:enable Style/OneClassPerFile
 
-# Rows are inserted oldest-first, so index i is also recency order: row 0 is
-# the oldest account, row `rows - 1` the newest. `status: 2` is planted only
-# among the oldest sliver of accounts -- a retired legacy value real apps
-# accumulate (a deprecated plan tier, an old signup flow's default) that
-# newer rows never get. That is precisely the shape that makes the fix (and
-# not just the general dataset size) matter: a naive "biggest table wins"
-# benchmark with minority states smeared near the end would let primary-key-
-# descending lookups find them almost immediately either way, hiding the
-# actual cost representative discovery paid before this change -- walking
-# the relation to find a state that exists *only* far from the end.
-# `premium: true` is planted on the single newest row instead, so the
-# bounded pool run still has a minority state it must (and does) find.
-LEGACY_STATUS_CUTOFF = [ROWS / 500, 1].max
+def status_for(index)
+  return 2 if index < LEGACY_STATUS_CUTOFF
+  return 0 if index.even?
+
+  1
+end
+
+def record_for(index, rows, now)
+  {
+    premium: index == rows - 1,
+    status: status_for(index),
+    plan_id: index.even? ? nil : (index % 7),
+    created_at: now - (rows - index).seconds
+  }
+end
 
 def seed!(rows)
   puts "Seeding #{rows} rows (status=2 legacy value present only on the oldest #{LEGACY_STATUS_CUTOFF} rows)..."
   now = Time.now
-  batch_size = 5_000
-  (0...rows).each_slice(batch_size) do |slice|
-    records = slice.map do |i|
-      {
-        premium: i == rows - 1,
-        status: i < LEGACY_STATUS_CUTOFF ? 2 : (i.even? ? 0 : 1),
-        plan_id: i.even? ? nil : (i % 7),
-        created_at: now - (rows - i).seconds
-      }
-    end
-    BenchmarkPrincipal.insert_all(records)
+  (0...rows).each_slice(5_000) do |slice|
+    BenchmarkPrincipal.insert_all(slice.map { |i| record_for(i, rows, now) })
   end
   puts "Seeded #{BenchmarkPrincipal.count} rows.\n\n"
+end
+
+def report(label, queries, elapsed_ms, sampled, strategy)
+  puts "#{label}:"
+  puts "  SQL queries:        #{queries}"
+  puts "  elapsed:            #{elapsed_ms} ms"
+  puts "  principals sampled: #{sampled}"
+  puts "  strategy:           #{strategy}"
+  puts
 end
 
 def measure(label)
@@ -92,13 +113,19 @@ def measure(label)
   ActiveSupport::Notifications.subscribed(callback, "sql.active_record") { result = yield }
   elapsed_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - started) * 1000).round(1)
 
-  puts "#{label}:"
-  puts "  SQL queries:        #{queries}"
-  puts "  elapsed:            #{elapsed_ms} ms"
-  puts "  principals sampled: #{result.principals.size}"
-  puts "  strategy:           #{result.strategy}"
-  puts
+  report(label, queries, elapsed_ms, result.principals.size, result.strategy)
   { queries: queries, elapsed_ms: elapsed_ms, sampled: result.principals.size }
+end
+
+def table_row(label, queries, elapsed_ms, sampled)
+  label.ljust(45) + queries.rjust(10) + elapsed_ms.rjust(12) + sampled.rjust(10)
+end
+
+def print_table(rows)
+  puts table_row("scenario", "queries", "elapsed_ms", "probes")
+  rows.each do |label, data|
+    puts table_row(label, data[:queries].to_s, format("%.1f", data[:elapsed_ms]), data[:sampled].to_s)
+  end
 end
 
 seed!(ROWS)
@@ -128,11 +155,8 @@ end
 puts "== Summary =="
 puts "rows: #{ROWS}, pool_size: #{POOL_SIZE}, limit: #{LIMIT}"
 puts
-puts "%-45s %10s %12s %10s" % %w[scenario queries elapsed_ms probes]
-[["previous (unbounded)", previous], ["bounded pool, no created_at index", current],
- ["bounded pool, with created_at index", indexed]].each do |label, data|
-  puts "%-45s %10d %12.1f %10d" % [label, data[:queries], data[:elapsed_ms], data[:sampled]]
-end
+print_table([["previous (unbounded)", previous], ["bounded pool, no created_at index", current],
+             ["bounded pool, with created_at index", indexed]])
 puts
 puts "query count: bounded to a handful of queries either way for this " \
      "narrow benchmark schema -- the structural guarantee this change adds " \
