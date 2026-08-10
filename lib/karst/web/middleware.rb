@@ -8,6 +8,7 @@ require "rack/utils"
 require "rack/request"
 require "active_support/notifications"
 require_relative "../access/sweep"
+require_relative "../access/principal_sampler"
 
 module Karst
   module Web
@@ -82,8 +83,8 @@ module Karst
       def analyze(env, params)
         return nil unless env["REQUEST_METHOD"] == "POST" && params["operation"] == "access_sweep"
 
-        Access::Sweep.new(path: params["path"], http_method: params["method"],
-                          principals: Identity.principals).call
+        sampled = Access::PrincipalSampler.new(source: Identity.principals).call
+        Access::Sweep.new(path: params["path"], http_method: params["method"], principals: sampled.principals).call
       rescue Access::Error, Identity::Error, ArgumentError => e
         e
       end

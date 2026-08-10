@@ -87,7 +87,7 @@ module Karst
           form = if http_method == "GET"
                    <<~HTML
                      <form action="/karst" method="post">#{context}<input type="hidden" name="operation" value="access_sweep">
-                     <button type="submit">Analyze #{escape(Karst.config.access_sweep_limit)} principals</button></form>
+                     <button type="submit">#{escape(analyze_label)}</button></form>
                    HTML
                  else
                    "<p>Access analysis is available for GET routes only.</p>"
@@ -95,6 +95,19 @@ module Karst
           "<section><h2>Observed access</h2>#{form}#{access_result(result)}</section>"
         end
         # rubocop:enable Metrics/MethodLength
+
+        # Deciding the label only ever type-checks the configured source (see
+        # Access::PrincipalSampler.representative_capable?); it never queries
+        # or enumerates it, so this is safe to compute on every panel render.
+        def analyze_label(limit: Karst.config.access_sweep_limit)
+          source = begin
+            Identity.principals
+          rescue Identity::Error
+            nil
+          end
+          kind = source && Access::PrincipalSampler.representative_capable?(source) ? "representative " : ""
+          "Analyze #{limit} #{kind}principals"
+        end
 
         def hidden(name, value)
           "<input type=\"hidden\" name=\"#{name}\" value=\"#{escape(value)}\">"
