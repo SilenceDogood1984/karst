@@ -198,6 +198,56 @@ RSpec.describe "Karst web middleware" do
   end
 
   describe "route context" do
+    it "recognizes a manual GET path and renders access analysis" do
+      output, status = run_script(rails_env: "development", script: <<~RUBY)
+        #{request_harness}
+        class OrganizationsController < ActionController::Base; end
+        Rails.application.routes.draw { get "/organizations", to: "organizations#index" }
+        response = MOCK.get(
+          "/karst?operation=route_lookup&method=GET&path=%2Forganizations", "REMOTE_ADDR" => "127.0.0.1"
+        )
+        abort "controller/action was not derived" unless response.body.include?("OrganizationsController#index")
+        abort "route context was not retained" unless response.body.include?("GET /organizations")
+        abort "access analysis was not offered" unless response.body.include?("Analyze 25 principals")
+      RUBY
+
+      expect(status).to be_success, output
+    end
+
+    it "retains an exact resource path when recognizing a manual GET route" do
+      output, status = run_script(rails_env: "development", script: <<~RUBY)
+        #{request_harness}
+        class OrganizationsController < ActionController::Base; end
+        Rails.application.routes.draw { get "/organizations/:id", to: "organizations#show" }
+        response = MOCK.get(
+          "/karst?operation=route_lookup&method=GET&path=%2Forganizations%2F22", "REMOTE_ADDR" => "127.0.0.1"
+        )
+        abort "controller/action was not derived" unless response.body.include?("OrganizationsController#show")
+        abort "exact resource path was lost" unless response.body.include?("GET /organizations/22")
+        abort "access analysis was not offered" unless response.body.include?("Analyze 25 principals")
+        abort "wrong sweep path" unless response.body.include?('name="path" value="/organizations/22"')
+      RUBY
+
+      expect(status).to be_success, output
+    end
+
+    it "rejects unsafe paths and clearly reports unrecognized routes" do
+      output, status = run_script(rails_env: "development", script: <<~RUBY)
+        #{request_harness}
+        ["https%3A%2F%2Fexample.com%2Forganizations", "%2F%2Fexample.com%2Forganizations",
+         "%2Forganizations%2F%5B", "%2Fmissing"].each do |path|
+          response = MOCK.get(
+            "/karst?operation=route_lookup&method=GET&path=\#{path}", "REMOTE_ADDR" => "127.0.0.1"
+          )
+          abort "unsafe or unknown route produced analysis" if response.body.include?("Analyze 25 principals")
+          abort "missing route limitation" unless response.body.include?("Karst will not guess the route") ||
+                                                  response.body.include?("valid local application path")
+        end
+      RUBY
+
+      expect(status).to be_success, output
+    end
+
     it "uses explicit query parameters and never attributes /karst to a host controller" do
       output, status = run_script(rails_env: "development", script: <<~RUBY)
         #{request_harness}

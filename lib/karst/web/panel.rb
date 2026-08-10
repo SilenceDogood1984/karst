@@ -105,32 +105,35 @@ module Karst
 
       # rubocop:disable Metrics/ClassLength
       class << self
-        def render(params: {}, access_result: nil, csrf_token: nil, browser_identity_active: false)
-          [200, HEADERS.dup, [document(params, access_result, csrf_token, browser_identity_active)]]
+        def render(params: {}, access_result: nil, csrf_token: nil, browser_identity_active: false,
+                   route_lookup_limitation: nil)
+          [200, HEADERS.dup,
+           [document(params, access_result, csrf_token, browser_identity_active, route_lookup_limitation)]]
         end
 
         private
 
-        def document(params, access_result, csrf_token, browser_identity_active)
+        def document(params, access_result, csrf_token, browser_identity_active, route_lookup_limitation)
           <<~HTML
             <!DOCTYPE html>
             <html lang="en"><head><meta charset="utf-8"><title>Karst</title>
             <style>#{STYLE}</style>
             </head><body>
             <h1>Karst</h1>
-            #{page_body(params, access_result, csrf_token, browser_identity_active)}
+            #{page_body(params, access_result, csrf_token, browser_identity_active, route_lookup_limitation)}
             </body></html>
           HTML
         end
 
-        def page_body(params, access_result, csrf_token, browser_identity_active)
+        def page_body(params, access_result, csrf_token, browser_identity_active, route_lookup_limitation)
           controller = string_param(params, "controller")
           action = string_param(params, "action")
           http_method = string_param(params, "method")
           path = string_param(params, "path")
           "#{testing_banner(path, csrf_token, browser_identity_active)}" \
-            "#{route_header(controller, action, http_method, path)}" \
-            "#{access_section(http_method, path, controller, action, access_result, csrf_token)}" \
+            "#{route_header(controller, action, http_method, path, route_lookup_limitation)}" \
+            "#{access_section(http_method, path, controller, action, access_result, csrf_token,
+                              route_lookup_limitation)}" \
             "#{diagnostics_section(load_catalog, controller, action, http_method)}"
         end
 
@@ -165,10 +168,11 @@ module Karst
 
         # -- Compact route header ----------------------------------------------
 
-        def route_header(controller, action, http_method, path)
+        def route_header(controller, action, http_method, path, limitation)
           has_route = !(controller.empty? && action.empty?)
           identity = has_route ? route_identity(controller, action, http_method, path) : "<p>No route selected yet.</p>"
-          "<header class=\"route\">#{identity}#{route_lookup(controller, action, open: !has_route)}</header>"
+          lookup = route_lookup(controller, action, http_method, path, limitation)
+          "<header class=\"route\">#{identity}#{lookup}</header>"
         end
 
         def route_identity(controller, action, http_method, path)
@@ -185,24 +189,38 @@ module Karst
           http_method.empty? ? "" : "#{escape(http_method)} "
         end
 
-        def route_lookup(controller, action, open:)
+        # The lookup deliberately keeps its primary and secondary forms together
+        # so their labels, values, and disclosure state remain one UI component.
+        # rubocop:disable Metrics/MethodLength
+        def route_lookup(controller, action, http_method, path, limitation)
+          open = controller.empty? && action.empty?
           summary = open ? "Look up a route" : "Look up a different route"
           attr = open ? " open" : ""
+          message = limitation ? "<p class=\"hint\" role=\"alert\">#{escape(limitation)}</p>" : ""
           <<~HTML
             <details class="route-lookup"#{attr}><summary>#{summary}</summary>
+            #{message}
+            <form action="/karst" method="get">
+            <input type="hidden" name="operation" value="route_lookup">
+            <label>Path <input name="path" value="#{escape(path)}" placeholder="/organizations" required></label>
+            <label>Method <input name="method" value="#{escape(http_method.empty? ? 'GET' : http_method)}" placeholder="GET" required></label>
+            <button type="submit">Recognize route</button>
+            </form>
+            <fieldset><legend>Controller/action diagnostics</legend>
             <form action="/karst" method="get">
             <label>Controller <input name="controller" value="#{escape(controller)}" placeholder="Author::ProjectsController"></label>
             <label>Action <input name="action" value="#{escape(action)}" placeholder="index"></label>
             <button type="submit">View route evidence</button>
-            </form></details>
+            </form></fieldset></details>
           HTML
         end
+        # rubocop:enable Metrics/MethodLength
 
         # -- Primary action: access analysis ------------------------------------
 
         # rubocop:disable Metrics/ParameterLists
-        def access_section(http_method, path, controller, action, result, csrf_token)
-          return "" if path.empty?
+        def access_section(http_method, path, controller, action, result, csrf_token, route_lookup_limitation = nil)
+          return "" if path.empty? || route_lookup_limitation
 
           context = hidden("controller", controller) + hidden("action", action) +
                     hidden("method", http_method) + hidden("path", path)
