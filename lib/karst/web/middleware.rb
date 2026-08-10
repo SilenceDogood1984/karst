@@ -4,6 +4,7 @@ require_relative "locality"
 require_relative "panel"
 require_relative "badge"
 require_relative "browser_identity"
+require_relative "route_lookup"
 require_relative "../execution_context"
 require "rack/utils"
 require "rack/request"
@@ -32,6 +33,7 @@ module Karst
     # (which fires nested inside @app.call, on whatever thread or fiber is
     # serving this request) back out to the code injecting the badge, so
     # concurrent Puma requests never cross-contaminate each other's context.
+    # rubocop:disable Metrics/ClassLength
     class Middleware
       OWNED_PATH = "/karst"
       private_constant :OWNED_PATH
@@ -59,11 +61,13 @@ module Karst
         return @app.call(env) unless development? && @locality.local?(env["REMOTE_ADDR"])
 
         params = owned_params(env)
+        lookup = recognize_manual_route(env, params)
+        params = lookup.params if lookup
         browser_identity = BrowserIdentity.new(Rack::Request.new(env))
         identity_response = mutate_browser_identity(env, params, browser_identity)
         return identity_response if identity_response
 
-        Panel.render(params: params, access_result: analyze(env, params),
+        Panel.render(params: params, access_result: analyze(env, params), route_lookup_limitation: lookup&.limitation,
                      csrf_token: browser_token(browser_identity),
                      browser_identity_active: browser_identity_active?(browser_identity))
       end
@@ -87,6 +91,12 @@ module Karst
         return query unless env["REQUEST_METHOD"] == "POST"
 
         query.merge(Rack::Request.new(env).POST)
+      end
+
+      def recognize_manual_route(env, params)
+        return unless env["REQUEST_METHOD"] == "GET" && params["operation"] == "route_lookup"
+
+        RouteLookup.new(path: params["path"], http_method: params["method"]).call
       end
 
       def analyze(env, params)
@@ -169,5 +179,6 @@ module Karst
         end
       end
     end
+    # rubocop:enable Metrics/ClassLength
   end
 end

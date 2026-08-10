@@ -99,6 +99,7 @@ RSpec.describe Karst::Web::Panel do
       body = render(catalog(:ready))
 
       expect(body).to include("No route selected yet.", "Look up a route", '<details class="route-lookup" open>',
+                              'name="path"', 'name="method"', 'value="GET"',
                               'name="controller"', 'name="action"')
     end
 
