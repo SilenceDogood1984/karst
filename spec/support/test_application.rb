@@ -58,6 +58,9 @@ class KarstTestApplication < Rails::Application
   config.eager_load = false
   config.logger = Logger.new(nil)
   config.secret_key_base = "karst-integration-test-secret"
+  # Keep browser HostAuthorization active while giving Karst a host that the
+  # application explicitly permits for integration requests.
+  config.hosts << "karst-probe.example"
   config.active_support.deprecation = :stderr
   config.active_record.database_selector = nil if config.active_record.respond_to?(:database_selector=)
   config.paths["config/database"] = File.expand_path("database.yml", __dir__)

@@ -8,12 +8,17 @@ module Karst
     # initiated the sweep). RouteSet is the stable Rails dispatch boundary: it
     # performs recognition and controller dispatch, but has no host middleware.
     class ProbeApplication
+      class ConstructionError < StandardError; end
+
       # Supplies the same Rails request environment as Rails::Application
       # without calling its compiled middleware stack.
       class Environment
-        def initialize(app, defaults)
+        attr_reader :host
+
+        def initialize(app, defaults, host)
           @app = app
           @defaults = defaults
+          @host = host
         end
 
         def call(env)
@@ -26,15 +31,23 @@ module Karst
         def for(application)
           return application unless rails_application?(application)
 
-          require_dependencies
-          endpoint = application.routes
-          endpoint = ActionDispatch::Flash.new(endpoint) if defined?(ActionDispatch::Flash)
-          endpoint = session_middleware(application).new(endpoint, **session_options(application))
-          endpoint = ActionDispatch::Cookies.new(endpoint)
-          Environment.new(endpoint, application.env_config)
+          build(application)
+        rescue LoadError, StandardError => e
+          raise ConstructionError,
+                "Karst could not build the Rails probe endpoint; check the application's session store configuration",
+                cause: e
         end
 
         private
+
+        def build(application)
+          require_dependencies
+          endpoint = application.routes
+          endpoint = ActionDispatch::Flash.new(endpoint)
+          endpoint = session_middleware(application).new(endpoint, **session_options(application))
+          endpoint = ActionDispatch::Cookies.new(endpoint)
+          Environment.new(endpoint, application.env_config, probe_host(application))
+        end
 
         def require_dependencies
           require "action_dispatch/middleware/cookies"
@@ -52,6 +65,22 @@ module Karst
 
         def session_options(application)
           application.config.session_options.to_h
+        end
+
+        def probe_host(application)
+          candidates = [application.routes.default_url_options[:host]]
+          candidates.concat(Array(application.config.hosts).grep(String))
+          if defined?(ActionDispatch::HostAuthorization::ALLOWED_HOSTS_IN_DEVELOPMENT)
+            candidates.concat(ActionDispatch::HostAuthorization::ALLOWED_HOSTS_IN_DEVELOPMENT.grep(String))
+          end
+          candidates.filter_map { |candidate| safe_host(candidate) }.first
+        end
+
+        def safe_host(candidate)
+          host = candidate.to_s.sub(/\A\./, "")
+          return if host.empty? || host.match?(%r{[\s/:]})
+
+          host
         end
       end
     end
