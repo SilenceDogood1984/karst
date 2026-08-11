@@ -6,8 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Candidate populations leave `Karst::Access::PrincipalSampler` entirely and become a deliberate second search stage owned by `Karst::Access::Search`, run only when the ordinary sample finds nothing usable — so "the sample found nothing; then `system_admins` reached it" is reportable as observed evidence rather than silently folded into an ordinary-looking sample. `PrincipalSampler` and `PrincipalSelection` no longer accept or report populations, and the sampler's query budget drops to exactly one bounded recent-pool query. Configured dimensions still shape the ordinary sample, with generic schema discovery as their fallback.
+- The manual `population_sweep` operation and its "Try another population" panel section are removed, along with `Karst::Access::PopulationSuggestion` (its name-ranking heuristic only existed to order that manual choice). Retries are automatic.
+- Panel copy now says "user" rather than "principal" in the access workflow.
+
 ### Added
 
+- `Karst::Access::Search`: after an ordinary bounded sample observes no usable user, Karst now automatically retries each *approved* candidate population in configuration order, stopping at the first verified success. Bounded by `config.population_retry_limit` records per population (default 3, max 10) and by `config.access_sweep_limit` total extra requests. Every approved population is reported, including the ones deliberately not run.
+- `config.population_retry_limit`.
 - Initial project documentation, contributor tooling, and continuous integration.
 - Configuration and an idempotent, deliberately inert `sql.active_record` subscription lifecycle.
 - Automatic subscription after Rails initialization when Karst is enabled.

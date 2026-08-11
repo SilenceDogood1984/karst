@@ -599,207 +599,37 @@ RSpec.describe Karst::Access::PrincipalSampler do
     end
   end
 
-  describe "configured candidate populations" do
-    def candidate_reasons(result, id)
-      result.candidates.find { |candidate| candidate.principal.id == id }.reasons
-    end
-
-    def scoped_sampler_populations
-      {
-        system_admins: -> { ScopedSamplerPrincipal.system_admins },
-        auditors: -> { ScopedSamplerPrincipal.auditors },
-        responders: -> { ScopedSamplerPrincipal.responders }
-      }
-    end
-
-    it "finds a configured population's principal even when it falls outside the recent-N candidate pool" do
-      ScopedSamplerPrincipal.delete_all
-      old_admin = ScopedSamplerPrincipal.create!(role: "system_admin")
-      50.times { ScopedSamplerPrincipal.create!(role: "responder") }
-
-      populations = { system_admins: -> { ScopedSamplerPrincipal.system_admins } }
-      result = described_class.new(source: ScopedSamplerPrincipal.all, limit: 10, pool_size: 10,
-                                   populations: populations).call
-
-      # old_admin has the lowest id, created before all 50 responders --
-      # well outside the 10-row recent-N pool the responders alone occupy.
-      expect(result.principals.map(&:id)).to include(old_admin.id)
-      expect(candidate_reasons(result, old_admin.id)).to include("population=system_admins")
-    end
-
-    it "prefers a population and does not run generic stratification after it contributes" do
-      WideScopedPrincipal.delete_all
-      # Created first (lowest id): with seed/fill now biased toward the most
-      # recently created rows, these must stay old/excluded from a plain
-      # sweep so the admin's absence below is actually due to MAX_DIMENSIONS
-      # capping column discovery, not merely due to recency.
-      admin = WideScopedPrincipal.create!(is_admin: true)
-      filler_hit = WideScopedPrincipal.create!(filler_0: true) # rubocop:disable Naming/VariableNumber
-      300.times { WideScopedPrincipal.create! }
-
-      without_populations = described_class.new(source: WideScopedPrincipal.all, limit: 25).call
-      expect(without_populations.principals.map(&:id)).not_to include(admin.id)
-
-      populations = { system_admins: -> { WideScopedPrincipal.system_admins } }
-      with_populations = described_class.new(source: WideScopedPrincipal.all, limit: 25, populations: populations).call
-      expect(with_populations.principals.map(&:id)).to include(admin.id)
-      expect(with_populations.principals.map(&:id)).not_to include(filler_hit.id)
-      expect(candidate_reasons(with_populations, admin.id)).to include("population=system_admins")
-    end
-
-    it "gives every configured population a fair chance to contribute, even when one dominates" do
-      ScopedSamplerPrincipal.delete_all
-      300.times { ScopedSamplerPrincipal.create!(role: "responder") }
-      8.times { ScopedSamplerPrincipal.create!(role: "system_admin") }
-      3.times { ScopedSamplerPrincipal.create!(role: "auditor", flagged: true) }
-
-      result = described_class.new(source: ScopedSamplerPrincipal.all, limit: 12,
-                                   populations: scoped_sampler_populations).call
-
-      roles = result.principals.map(&:role)
-      expect(roles).to include("system_admin", "auditor", "responder")
-      expect(result.principals.size).to eq(12)
-      expect(result.populations.map(&:name)).to eq(%i[system_admins auditors responders])
-    end
-
-    it "retains a generic or dimension candidate within the global limit" do
-      ScopedSamplerPrincipal.delete_all
-      20.times { ScopedSamplerPrincipal.create!(role: "responder") }
-      ScopedSamplerPrincipal.create!(role: "outside_populations")
-
-      result = described_class.new(source: ScopedSamplerPrincipal.all, limit: 5,
-                                   populations: scoped_sampler_populations).call
-
-      expect(result.principals.size).to eq(5)
-      expect(result.candidates).to include(satisfy do |candidate|
-        candidate.reasons.none? { |reason| reason.start_with?("population=") }
-      end)
-    end
-
-    it "includes every configured population in the declared query budget" do
-      ScopedSamplerPrincipal.delete_all
-      50.times { ScopedSamplerPrincipal.create!(role: "responder") }
-      populations = 10.times.to_h do |index|
-        [:"population_#{index}", -> { ScopedSamplerPrincipal.where(role: "responder") }]
-      end
-
-      queries = sql_queries do
-        @result = described_class.new(source: ScopedSamplerPrincipal.all, limit: 25,
-                                      populations: populations).call
-      end
-
-      expect(@result.principals.size).to be <= 25
-      expect(queries.size).to be <= described_class.query_budget(25, 10)
-    end
-
-    it "probes a principal belonging to two populations once, preserving both populations' provenance" do
-      ScopedSamplerPrincipal.delete_all
-      dual = ScopedSamplerPrincipal.create!(role: "system_admin", flagged: true)
-      10.times { ScopedSamplerPrincipal.create!(role: "responder") }
-
-      result = described_class.new(source: ScopedSamplerPrincipal.all, limit: 5,
-                                   populations: scoped_sampler_populations).call
-
-      expect(result.principals.map(&:id).tally[dual.id]).to eq(1)
-      expect(candidate_reasons(result, dual.id)).to include("population=system_admins", "population=auditors")
-    end
-
-    it "skips a population whose callable raises, without raising, still sampling the valid ones" do
-      ScopedSamplerPrincipal.delete_all
-      admin = ScopedSamplerPrincipal.create!(role: "system_admin")
-
-      populations = { system_admins: -> { ScopedSamplerPrincipal.system_admins }, broken: -> { raise "boom" } }
-      result = described_class.new(source: ScopedSamplerPrincipal.all, limit: 5, populations: populations).call
-
-      expect(result.principals.map(&:id)).to include(admin.id)
-      expect(result.populations.map(&:name)).to eq([:system_admins])
-    end
-
-    it "skips a population whose callable returns another model's relation, without raising" do
-      ScopedSamplerPrincipal.delete_all
-      OtherScopedPrincipal.delete_all
-      admin = ScopedSamplerPrincipal.create!(role: "system_admin")
-
-      populations = { system_admins: -> { ScopedSamplerPrincipal.system_admins },
-                      cross_model: -> { OtherScopedPrincipal.all } }
-      result = described_class.new(source: ScopedSamplerPrincipal.all, limit: 5, populations: populations).call
-
-      expect(result.principals.map(&:id)).to include(admin.id)
-      expect(result.populations.map(&:name)).to eq([:system_admins])
-    end
-
-    it "contributes nothing, without raising, for a population with no currently matching rows" do
-      ScopedSamplerPrincipal.delete_all
-      ScopedSamplerPrincipal.create!(role: "responder")
-
-      populations = { system_admins: -> { ScopedSamplerPrincipal.system_admins } }
-      result = described_class.new(source: ScopedSamplerPrincipal.all, limit: 5, populations: populations).call
-
-      expect(result.populations.first).to have_attributes(name: :system_admins, records: [])
-    end
-
-    it "leaves explicit schema-heuristic dimension sampling working exactly as before" do
+  # Candidate populations deliberately have no surface here any more: they
+  # are Karst::Access::Search's second stage (see spec/access/search_spec.rb).
+  # What this file still pins is that removing them did not weaken ordinary
+  # sampling, and that generic schema guessing stays a fallback rather than a
+  # supplement.
+  describe "generic stratification as a fallback" do
+    it "still surfaces a minority schema state when no dimension is configured" do
       SamplerPrincipal.delete_all
       295.times { |i| SamplerPrincipal.create!(premium: false, status: :active, tenant_id: i) }
       premium = SamplerPrincipal.create!(premium: true, status: :active, tenant_id: 900)
 
-      result = described_class.new(source: SamplerPrincipal.all, limit: 25, populations: {}).call
+      result = described_class.new(source: SamplerPrincipal.all, limit: 25).call
 
       expect(result.principals.map(&:id)).to include(premium.id)
     end
 
-    it "ignores configured populations entirely for a generic Enumerable source" do
-      principals = (1..10).map { |id| Struct::SamplerFallbackPrincipal.new(id) }
-      populations = { system_admins: -> { ScopedSamplerPrincipal.system_admins } }
+    it "does not add generic schema guesses on top of configured dimensions" do
+      SamplerPrincipal.delete_all
+      10.times { SamplerPrincipal.create!(premium: false, status: :active, tenant_id: 1) }
+      10.times { SamplerPrincipal.create!(premium: true, status: :canceled, tenant_id: 2) }
+      dimensions = Karst::Access::PrincipalDimension.normalize(plan: :status)
 
-      result = described_class.new(source: principals, limit: 5, populations: populations).call
+      result = described_class.new(source: SamplerPrincipal.all, limit: 25, dimensions: dimensions).call
 
-      expect(result.strategy).to eq(:first_n)
-      expect(result.populations).to eq([])
+      reasons = result.candidates.flat_map(&:reasons).uniq
+      expect(reasons).to all(start_with("plan="))
     end
 
-    it "keeps a dominant population's query volume flat and never exceeds the configured limit" do
-      ScopedSamplerPrincipal.delete_all
-      1200.times { ScopedSamplerPrincipal.create!(role: "responder") }
-      2.times { ScopedSamplerPrincipal.create!(role: "system_admin") }
-
-      queries = sql_queries do
-        @result = described_class.new(source: ScopedSamplerPrincipal.all, limit: 10,
-                                      populations: scoped_sampler_populations).call
-      end
-      selects = queries.grep(/\A\s*SELECT/i)
-
-      expect(@result.principals.size).to eq(10)
-      expect(selects).not_to be_empty
-      expect(selects.grep(/COUNT/i)).to be_empty
-      expect(selects).to all(match(/LIMIT/i))
-    end
-
-    it "keeps a configured population bound to the exact source its callable queries, across two sources" do
-      ScopedSamplerPrincipal.delete_all
-      OtherScopedPrincipal.delete_all
-      admin = ScopedSamplerPrincipal.create!(role: "system_admin")
-      owner = OtherScopedPrincipal.create!(role: "owner")
-      10.times { ScopedSamplerPrincipal.create!(role: "responder") }
-
-      first = described_class.new(source: ScopedSamplerPrincipal.all, limit: 5,
-                                  populations: { system_admins: -> { ScopedSamplerPrincipal.system_admins } }).call
-      second = described_class.new(source: OtherScopedPrincipal.all, limit: 5,
-                                   populations: { system_admins: -> { OtherScopedPrincipal.system_admins } }).call
-
-      expect(first.principals.map(&:id)).to include(admin.id)
-      expect(first.principals).to all(be_a(ScopedSamplerPrincipal))
-      expect(second.principals.map(&:id)).to include(owner.id)
-      expect(second.principals).to all(be_a(OtherScopedPrincipal))
-    end
-
-    it "never considers a candidate population unless one is explicitly configured" do
-      ScopedSamplerPrincipal.delete_all
-      ScopedSamplerPrincipal.create!(role: "system_admin")
-
-      result = described_class.new(source: ScopedSamplerPrincipal.all, limit: 5).call
-
-      expect(result.populations).to eq([])
+    it "accepts no populations argument at all" do
+      expect { described_class.new(source: SamplerPrincipal.all, populations: {}) }
+        .to raise_error(ArgumentError, /unknown keyword: :?populations/)
     end
   end
 end

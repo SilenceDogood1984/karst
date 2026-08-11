@@ -64,9 +64,12 @@ module Karst
         .evidence{display:flex;gap:1rem;flex-wrap:wrap;font-size:.9rem}
         .label{font-size:.72rem;font-weight:700;text-transform:uppercase;color:#666}
         .failed,.pending{border-left:4px solid #b3261e}
-        section.guided-retry{margin:1rem 0;border:1px solid #ddd;border-radius:.5rem;padding:.9rem 1rem}
-        .retry-group{margin:.5rem 0}
-        .retry-form{display:inline-block;margin:.25rem .5rem .25rem 0}
+        section.populations{margin:1rem 0}
+        .population-attempt{padding:.35rem 0;font-size:.92rem;border-bottom:1px solid #eee}
+        .population-attempt:last-child{border-bottom:0}
+        .population-attempt .name{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-weight:600}
+        .population-attempt.hit .name{color:#0f5132}
+        .population-attempt.untried{color:#777}
         small{color:#666}
         .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
         @media (max-width:480px){
@@ -85,6 +88,9 @@ module Karst
           button.primary{background:#e4e4e6;border-color:#e4e4e6;color:#16171a}
           button.primary:hover{background:#c9c9cc}
           .usable-principal{border-color:#33343a}
+          .population-attempt{border-color:#2c2d31}
+          .population-attempt.hit .name{color:#7fd8a4}
+          .population-attempt.untried{color:#8a8a90}
           .usable-principal button[type=submit]{background:#2e7d52;border-color:#2e7d52;color:#0b1a12}
           .related-state{background:#1c1d20;border-color:#3a3b3e}
           details{border-color:#2c2d31}
@@ -92,10 +98,20 @@ module Karst
           .testing-banner{background:#3a2f0d;border-color:#6b5423;color:#f0e4c0}
           .hint{color:#d8a63d}
           .failed,.pending{border-left-color:#e5534b}
-          section.guided-retry{border-color:#33343a}
         }
       CSS
       private_constant :STYLE
+
+      # Population-attempt states with no observed result of their own to
+      # describe (see Karst::Access::Search). The three that do -- :usable,
+      # :no_match, :unresolved -- render from their own evidence instead.
+      STATIC_ATTEMPT_STATES = {
+        empty: "no matching records",
+        already_tried: "every candidate was already tested above",
+        skipped: "not tried — a usable user was already found",
+        budget_exhausted: "not tried — the retry request budget was reached"
+      }.freeze
+      private_constant :STATIC_ATTEMPT_STATES
 
       # rubocop:disable Metrics/ClassLength
       class << self
@@ -200,7 +216,7 @@ module Karst
                    "<p>Access analysis is available for GET routes only.</p>"
                  end
           heading = "<h2 class=\"sr-only\">Access analysis</h2>"
-          "<section class=\"access\">#{heading}#{body}#{access_result(result, csrf_token, context)}</section>"
+          "<section class=\"access\">#{heading}#{body}#{access_result(result, csrf_token)}</section>"
         end
         # rubocop:enable Metrics/ParameterLists
 
@@ -247,62 +263,80 @@ module Karst
           "<input type=\"hidden\" name=\"#{name}\" value=\"#{escape(value)}\">"
         end
 
-        # rubocop:disable Metrics/AbcSize
-        def access_result(result, csrf_token, context)
+        def access_result(result, csrf_token)
           return "" unless result
           return "<p>Analysis unavailable: #{escape(result.message)}</p>" if result.is_a?(StandardError)
 
           return scenario_result(result, csrf_token) if result.respond_to?(:scenario_name)
 
-          write_count = result.outcomes.count(&:writes_observed)
+          search_result(result, csrf_token)
+        end
+
+        # Renders one Karst::Access::Search::Result: the ordinary sample and
+        # any automatic candidate-population retries as a single answer, so
+        # a usable user found through a population reads exactly like one
+        # found in the sample -- there is no second workflow to enter.
+        def search_result(result, csrf_token)
+          outcomes = result.all_outcomes
+          usable, other = outcomes.partition { |outcome| usable_outcome?(outcome) }
+          write_count = outcomes.count(&:writes_observed)
           warning = write_count.positive? ? write_warning(write_count) : ""
-          usable, other = result.outcomes.partition { |outcome| usable_outcome?(outcome) }
-          usable_section = usable_outcomes(usable, result, csrf_token)
-          retry_section = guided_retry_section(result, usable, context)
-          other_section = other_outcomes(other, result.path)
-          "#{access_meta(result)}#{warning}#{usable_section}#{retry_section}#{other_section}"
-        end
-        # rubocop:enable Metrics/AbcSize
-
-        # -- Guided retry against an approved population -----------------------
-
-        # Only offered once a sweep actually ran and found nothing usable --
-        # never claims the suggested population *will* work, only that it is
-        # an already-approved candidate worth trying next (see README
-        # "Guided retry"). Population selection here is always restricted to
-        # config.principal_populations/config.principal_sources[...]
-        # .populations -- never a merely *discovered*, unapproved candidate.
-        def guided_retry_section(result, usable, context)
-          return "" if result.outcomes.empty? || usable.any?
-
-          approved = approved_population_names
-          return no_populations_hint if approved.empty?
-
-          halted = dominant_halted_callback(result.outcomes)
-          ranked = Access::PopulationSuggestion.rank(observed: halted, population_names: approved)
-          <<~HTML
-            <section class="guided-retry"><h2>Try another population</h2>
-            #{halted_note(halted)}
-            #{retry_group('Suggested populations', ranked[:suggested], context)}
-            #{retry_group('Other approved populations', ranked[:other], context)}
-            </section>
-          HTML
+          "#{search_meta(result)}#{sample_summary(result)}#{warning}" \
+            "#{usable_outcomes(usable, result, csrf_token)}#{populations_section(result)}" \
+            "#{other_outcomes(other, result.path)}"
         end
 
-        def no_populations_hint
-          "<p class=\"hint\">No approved candidate populations are configured yet.</p>"
+        # -- Automatic candidate-population retries ----------------------------
+
+        # Every approved population appears here, including the ones
+        # deliberately not run -- "not tried" is reported honestly rather
+        # than left to look like a failure. Only configured populations ever
+        # reach this list; a name merely discovered at /karst/populations is
+        # never executed automatically.
+        def populations_section(result)
+          return "" if result.attempts.empty?
+
+          rows = result.attempts.map { |attempt| population_attempt(attempt) }.join
+          "<section class=\"populations\"><h2>Candidate populations</h2>#{rows}</section>"
         end
 
-        def halted_note(halted)
-          return "" unless halted
-
-          "<p class=\"meta\">Observed halt: <code>#{escape(halted)}</code></p>"
+        def population_attempt(attempt)
+          "<div class=\"population-attempt #{attempt_class(attempt)}\">" \
+            "<span class=\"name\">#{escape(attempt.name)}</span> — #{attempt_state(attempt)}</div>"
         end
 
-        def approved_population_names
-          Identity.principal_sources.values.flat_map { |source| source.populations.keys }.uniq
-        rescue Identity::Error
-          []
+        def attempt_class(attempt)
+          case attempt.state
+          when :usable then "hit"
+          when :skipped, :budget_exhausted then "untried"
+          else ""
+          end
+        end
+
+        def attempt_state(attempt)
+          case attempt.state
+          when :usable then population_hit(attempt)
+          when :no_match then population_miss(attempt)
+          when :unresolved then population_unresolved(attempt)
+          else STATIC_ATTEMPT_STATES.fetch(attempt.state, "not tried")
+          end
+        end
+
+        def population_hit(attempt)
+          outcome = attempt.result.outcomes.find { |item| usable_outcome?(item) }
+          "#{escape(outcome.principal.display_label)} → #{outcome_title(outcome)} ✓"
+        end
+
+        def population_miss(attempt)
+          outcomes = attempt.result.outcomes
+          halt = dominant_halted_callback(outcomes)
+          note = halt ? " · halted at <code>#{escape(halt)}</code>" : ""
+          "#{escape(outcomes.size)} #{users(outcomes.size)} tried — none usable#{note}"
+        end
+
+        def population_unresolved(attempt)
+          detail = attempt.error ? " (#{escape(attempt.error)})" : ""
+          "could not be resolved#{detail}"
         end
 
         def dominant_halted_callback(outcomes)
@@ -313,23 +347,8 @@ module Karst
           tally.max_by { |_callback, count| count }.first
         end
 
-        def retry_group(title, suggestions, context)
-          return "" if suggestions.empty?
-
-          items = suggestions.map { |suggestion| retry_button(suggestion, context) }.join
-          "<div class=\"retry-group\"><p class=\"label\">#{escape(title)}</p>#{items}</div>"
-        end
-
-        def retry_button(suggestion, context)
-          fields = context + hidden("operation", "population_sweep") + hidden("population", suggestion.name)
-          "<form class=\"retry-form\" action=\"/karst\" method=\"post\">#{fields}" \
-            "<button type=\"submit\">#{escape(suggestion.name)}</button>#{match_reason(suggestion)}</form>"
-        end
-
-        def match_reason(suggestion)
-          return "" if suggestion.matched_tokens.empty?
-
-          " <small>(name match: #{escape(suggestion.matched_tokens.join(', '))})</small>"
+        def users(count)
+          count == 1 ? "user" : "users"
         end
 
         def scenario_result(result, csrf_token)
@@ -356,16 +375,43 @@ module Karst
         end
         # rubocop:enable Layout/LineLength, Metrics/AbcSize
 
-        def access_meta(result)
-          seconds = escape(result.elapsed_ms / 1000.0)
-          "<p class=\"meta\">#{result.outcomes.size} users tested#{candidate_pool_note(result)} · " \
-            "#{seconds}s · database rollback was attempted; other connections and non-database effects are not " \
-            "isolated.</p>"
+        def search_meta(result)
+          tested = result.all_outcomes.size
+          seconds = escape(total_seconds(result))
+          "<p class=\"meta\">#{escape(tested)} #{users(tested)} tested#{candidate_pool_note(result.initial)}" \
+            "#{population_note(result)} · #{seconds}s · database rollback was attempted; other connections and " \
+            "non-database effects are not isolated.</p>"
+        end
+
+        def total_seconds(result)
+          total = result.initial.elapsed_ms + result.attempted.sum { |attempt| attempt.result.elapsed_ms }
+          (total / 1000.0).round(2)
+        end
+
+        def population_note(result)
+          attempted = result.attempted
+          return "" if attempted.empty?
+
+          count = result.population_request_count
+          " · including #{escape(count)} #{users(count)} from #{escape(attempted.size)} " \
+            "candidate population#{'s' unless attempted.size == 1}"
+        end
+
+        # The ordinary sample's own result stays visible even when a
+        # population later succeeded: "nothing recent worked, and here is
+        # what stopped them" is the evidence that explains why a population
+        # was tried at all.
+        def sample_summary(result)
+          outcomes = result.initial.outcomes
+          return "" if outcomes.empty? || outcomes.any? { |outcome| usable_outcome?(outcome) }
+
+          halt = dominant_halted_callback(outcomes)
+          note = halt ? " · halted at <code>#{escape(halt)}</code>" : ""
+          "<p class=\"meta\">Sample: #{escape(outcomes.size)} recent #{users(outcomes.size)}, none usable#{note}</p>"
         end
 
         # A bounded candidate pool is reported explicitly rather than left
-        # implicit, so this never reads as "the entire principal universe was
-        # searched."
+        # implicit, so this never reads as "every user was searched."
         def candidate_pool_note(result)
           size = result.candidate_pool_size
           return "" unless size

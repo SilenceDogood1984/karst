@@ -205,7 +205,8 @@ rejected.
 When `config.principals` returns an Active Record relation or model class, the
 panel's Analyze button runs `Karst::Access::PrincipalSampler` ahead of the
 sweep instead of taking whatever rows happen to sort first. It first uses
-configured candidate populations as application-authored semantic hints. When no population contributes a candidate, it falls back to covering
+configured dimensions as application-authored semantic hints. When none is
+configured, it falls back to covering
 distinct *observed database states* within the bounded recent-user pool --
 boolean columns, `enum` columns, presence/absence of a nullable foreign key,
 and low-cardinality scalar columns. Discovery happens in memory only after the
@@ -223,11 +224,14 @@ cardinality alone cannot be what keeps such a column out, since a *nullable*
 one would otherwise reach presence/absence sampling without ever going through
 the cardinality check.
 
-Query volume is one bounded recent-pool query plus at most one bounded query per
-configured population, independent of table size.
-`Karst::Access::PrincipalSampler.query_budget(limit, population_count)` states
-that bound explicitly. Population resolution never uses `COUNT`, and schema
-fallback never issues discovery queries. An Active Record source with a
+Query volume is exactly one bounded recent-pool query, independent of table
+size; `Karst::Access::PrincipalSampler.query_budget` states that bound
+explicitly. Every stratification decision after that is made in memory over
+the pool, so schema fallback issues no discovery queries at all. Candidate
+populations are not sampled here -- they are
+[a second search stage](#automatic-population-retry) owned by
+`Karst::Access::Search`, and cost one bounded query each only if the ordinary
+sample found nothing usable. An Active Record source with a
 composite or missing primary key
 raises `Karst::Access::PrincipalSampler::UnsupportedPrimaryKey` (a
 `Karst::Access::Error`) rather than failing obscurely mid-query; pass an
@@ -242,8 +246,10 @@ the existing bounded-first strategy, unchanged.
 ### Candidate populations, principal sources, and compatibility dimensions
 
 Candidate populations are the preferred way to describe principals worth
-trying. Generic schema discovery remains a zero-configuration fallback, while
-legacy explicit dimensions remain supported for compatibility. Real
+trying, and are searched automatically after an ordinary sample fails.
+Configured dimensions shape that ordinary sample; generic schema discovery
+remains a zero-configuration fallback used only when no dimension is
+configured. Real
 applications represent identity very differently -- one `User` model with an
 explicit role column, several distinct principal models (`Author`, `Reader`),
 relational roles (`User`/`Membership`/`Organization`), or an authorization
@@ -329,7 +335,10 @@ schema discovery and configured dimensions, which are scoped to the bounded
 recent-N `principal_candidate_pool_size` pool, is queried against the full
 configured relation, so a population that matters but is not recent (a
 `system_admins` account created years ago) is never invisible just because
-it fell out of the pool:
+it fell out of the pool. Populations are not mixed into the ordinary
+sample; they are a deliberate second stage that runs only when the sample
+found nothing usable (see
+[Automatic population retry](#automatic-population-retry)):
 
 ```ruby
 Karst.configure do |config|
@@ -363,11 +372,12 @@ callable that raises, that requires an argument, or that returns something
 else entirely (another model's relation, a plain value) is silently
 skipped rather than raised: a mistake in configuration degrades the
 candidate pool, it does not break the sweep. Every configured population
-costs at most one `LIMIT`-bounded query, split fairly across however many
-populations are configured (a population matching 8 rows and one matching
-300,000 rows each get a proportional share of `access_sweep_limit`, so the
-larger population can never crowd out the smaller one) -- never a `COUNT`,
+costs at most one `LIMIT`-bounded query, bounded by
+`config.population_retry_limit` (plus a small allowance so already-tested
+users cannot consume that budget, itself hard-capped) -- never a `COUNT`,
 and never full materialization, regardless of the population's real size.
+Populations are tried one at a time, in configuration order, and only until
+one succeeds, so no population can crowd out another.
 Karst evaluates the callable and materializes its bounded relation inside a
 rollback-only transaction on the source model's Active Record connection. It
 observes the same `INSERT`, `UPDATE`, and `DELETE` SQL evidence as an access
@@ -379,12 +389,10 @@ therefore execution evidence, not a claim that the callable is side-effect
 free.
 When the configured relation already specifies its own order, Karst keeps
 it; only when the relation has no order of its own does Karst add a
-deterministic primary-key fallback so results stay reproducible. A
-principal matching more than one configured population is still probed
-only once; its provenance preserves every population that matched
-(`population=system_admins`, `population=auditors`), not just the first
-one found -- shown next to any dimension reasons on the same **Sampled
-for** line:
+deterministic primary-key fallback so results stay reproducible. A user
+already tested in the ordinary sample, or in an earlier population, is
+never probed again; its provenance records the population it was reached
+through -- shown on the **Sampled for** line:
 
 ```
 Sampled for:
@@ -401,17 +409,55 @@ config.principal_sources = {
 }
 ```
 
-`Karst::Access::PrincipalSampler::Result#populations` lists every
-population that resolved successfully for a given call (including one that
-currently matches zero rows), letting the panel show which candidate
-populations are available and offer a retry against one specifically -- see
-"Discovering and curating candidate populations" below.
-
 This is deliberately generic under the hood
 (`Karst::Access::CandidatePopulation`: source, name, bounded records,
 provenance label) so the same mechanism can later resolve populations over
 non-principal models -- `Subscription.renewable`, `Import.with_sheets` --
-without a rewrite. This release wires it into principal sampling only.
+without a rewrite. This release wires it into principal search only.
+
+#### Automatic population retry
+
+Analyzing a route runs one search (`Karst::Access::Search`), in two stages.
+The ordinary bounded sample runs first. Only if it observes no usable
+outcome does Karst automatically try each **approved** population, in
+configuration order, stopping at the first verified success:
+
+```
+GET /admin/imports
+
+25 users tested · including 1 user from 1 candidate population · 2.4s
+Sample: 25 recent users, none usable · halted at authorize_admin
+
+Usable users — 1
+  User #27   Observed 200 OK      [ Test as ]
+  Sampled for: population=system_admins
+
+Candidate populations
+  system_admins — User #27 → 200 OK ✓
+  auditors      — not tried — a usable user was already found
+  responders    — not tried — a usable user was already found
+```
+
+A population qualifies for automatic execution only by being **configured**
+-- `config.principal_populations`, or a `config.principal_sources[...]`
+`:populations` entry. A name merely *discovered* at `/karst/populations` is
+never executed automatically; discovery only produces a snippet for you to
+paste.
+
+The retry is bounded twice over: at most `config.population_retry_limit`
+records per population (default 3, maximum 10), and at most
+`config.access_sweep_limit` extra requests in total across every population,
+so enabling populations can never make an analysis cost more than roughly
+twice an ordinary sweep. Each population costs one additional `LIMIT`-bounded
+query -- never a `COUNT`, never full materialization. A user already tested
+in the sample or an earlier population is never probed twice.
+
+When no population produces a usable user, every one of them is still
+reported, honestly and separately: `no matching records`, `could not be
+resolved`, `every candidate was already tested above`, or the observed
+outcomes it did produce (including any halted callback). A population that
+matches nothing, returns the wrong shape, or raises is reported that way
+rather than aborting the analysis.
 
 #### Compatibility: `config.principal_dimensions`
 
@@ -428,10 +474,11 @@ end
 
 Each dimension is a plain attribute (`:role`), a boolean predicate
 (`:system_admin?`), or a callable of one argument. Configured dimensions remain
-supported and are evaluated over the bounded recent-user pool. New configurations should prefer candidate populations;
-dimensions are retained for compatibility rather than as Karst's primary
-semantic search mechanism. Generic discovery runs only when configured
-populations contribute no candidates. Given a pool of 900 `responder`, 50
+supported and are evaluated over the bounded recent-user pool. They shape
+which users the *ordinary sample* covers; candidate populations are what
+Karst searches when that sample finds nothing usable. Generic schema
+discovery runs only when no dimension is configured -- it never supplements
+the ones that are. Given a pool of 900 `responder`, 50
 `local_admin`,
 30 `group_admin`, 15 `reseller`, and 5 `system_admin` accounts and a limit of
 25, Karst deliberately tries to include a representative of every configured
@@ -499,19 +546,9 @@ method name), so the same UI can support curating *artifact* populations
 (`Subscription.renewable`) later without a rewrite; this release only wires
 selections into principal sampling.
 
-**Guided retry.** When the main `/karst` panel's most recent analysis found
-no usable outcome, and at least one population is already approved
-(configured, not merely discovered), it offers **Try another population**:
-one button per approved population, running a fresh bounded sweep against
-only that population's own records -- never the global representative
-sample, and never more than one population at a time. If the analysis
-observed a halted controller callback (e.g. `authorize_admin`), Karst
-optionally ranks the approved populations by a small, transparent name-token
-heuristic (`Karst::Access::PopulationSuggestion` -- simple substring
-overlap, no AI/NLP) and labels the match (`name match: admin`) -- every
-approved population is still shown, ranked or not, and Karst never claims
-the suggested population *causes* or *will* produce a different outcome.
-Only running the retry proves that.
+**Automatic retry.** Approved populations are tried automatically -- see
+[Automatic population retry](#automatic-population-retry) below. There is no
+separate button to press.
 
 Every principal receives a fresh `ActionDispatch::Integration::Session` and is
 assumed and cleared only through `Karst::Identity`. Each synchronous request is
@@ -592,12 +629,15 @@ Karst.configure do |config|
   config.enabled = true
   config.buffer_size = 2_000
   config.access_sweep_limit = 25
+  config.population_retry_limit = 3
 end
 ```
 
 Karst is enabled by default in Rails development and test environments and disabled in other Rails environments. It defaults to disabled outside Rails.
 
 When enabled, Karst subscribes automatically after the Rails application initializes. `Karst.subscribe!` and `Karst.unsubscribe!` provide idempotent manual control, primarily for tests. `Karst.subscribed?` reports whether Karst currently owns a subscription.
+
+`population_retry_limit` bounds how many records a single configured candidate population may contribute to an automatic retry. It must be an Integer between 1 and 10 and defaults to 3. The total number of extra requests every population may add is bounded separately by `access_sweep_limit`.
 
 `buffer_size` must be a positive Integer and defaults to 2,000. It is read when `Karst.buffer` is first created; changing configuration afterward does not resize or replace that process-level buffer.
 
