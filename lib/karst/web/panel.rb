@@ -416,7 +416,7 @@ module Karst
         # -- Other observed outcomes (collapsed) ---------------------------------
 
         def other_outcomes(outcomes, path)
-          groups = outcomes.group_by { |item| [item.status, item.redirect, item.exception_class] }
+          groups = outcomes.group_by { |item| [item.status, item.redirect, item.exception_class, item.halted_callback] }
                            .map { |_key, grouped| outcome_group(grouped, path, nil) }.join
           "<details><summary>Other observed outcomes — #{outcomes.size}</summary>#{groups}</details>"
         end
@@ -425,7 +425,14 @@ module Karst
           first = outcomes.first
           title = outcome_title(first)
           labels = outcomes.map { |item| outcome_principal(item, path, csrf_token) }.join
-          "<article class=\"scenario\"><h3>#{title} — #{outcomes.size}</h3><ul>#{labels}</ul></article>"
+          halt = halted_callback(first)
+          "<article class=\"scenario\"><h3>#{title} — #{outcomes.size}</h3>#{halt}<ul>#{labels}</ul></article>"
+        end
+
+        def halted_callback(outcome)
+          return "" unless outcome.halted_callback
+
+          "<p>Halted callback: #{escape(outcome.halted_callback)}</p>"
         end
 
         def outcome_title(outcome, prefix: "")

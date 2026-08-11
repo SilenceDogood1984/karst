@@ -20,6 +20,7 @@ class KarstAccessFixtureController < ActionController::Base
   self.request_hosts = []
 
   before_action :mark_controller_execution, only: :document
+  before_action :halt_for_access_behavior, only: :document
   before_action { self.class.request_hosts << request.host }
 
   def login
@@ -32,24 +33,28 @@ class KarstAccessFixtureController < ActionController::Base
     head :no_content
   end
 
-  # rubocop:disable Metrics/AbcSize
   def document
     principal = KarstAccessPrincipal.find_by(id: session[:karst_principal_id])
     return head(:unauthorized) unless principal
 
-    principal.update!(visits: principal.visits + 1) if params[:id] == "write"
-    return redirect_to("/login?secret=hidden") if principal.behavior == "redirect"
-    return head(:forbidden) if principal.behavior == "forbidden"
     raise "fixture detail must not escape" if principal.behavior == "raise"
 
     render plain: "#{session[:before_action]}:#{principal.behavior}"
   end
-  # rubocop:enable Metrics/AbcSize
 
   private
 
   def mark_controller_execution
     session[:before_action] = "before_action_ran"
+    principal = KarstAccessPrincipal.find_by(id: session[:karst_principal_id])
+    principal&.update!(visits: principal.visits + 1) if params[:id] == "write"
+  end
+
+  def halt_for_access_behavior
+    behavior = KarstAccessPrincipal.find_by(id: session[:karst_principal_id])&.behavior
+    return redirect_to("/login?secret=hidden") if behavior == "redirect"
+
+    head(:forbidden) if behavior == "forbidden"
   end
 end
 
@@ -86,6 +91,8 @@ RSpec.describe "bounded access sweep Rails integration" do
     expect(result.outcomes.map(&:status)).to eq([200, 302, 403, nil])
     expect(result.outcomes[1].redirect).to eq("http://karst-probe.example/login")
     expect(result.outcomes[3].exception_class).to eq("RuntimeError")
+    expect(result.outcomes.map(&:halted_callback)).to eq([nil, :halt_for_access_behavior,
+                                                          :halt_for_access_behavior, nil])
     expect(result.outcomes.map(&:writes_observed)).to all(be(true))
     expect(KarstAccessPrincipal.order(:id).pluck(:visits)).to eq([0, 0, 0, 0])
   end
