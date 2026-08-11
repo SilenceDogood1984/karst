@@ -111,7 +111,7 @@ RSpec.describe "Karst page-local badge" do
   end
 
   describe "/karst itself" do
-    it "is never recursively badged, and shows page identity when reached via a badge-shaped link" do
+    it "is never recursively badged, and shows only URL identity when reached via a badge-shaped link" do
       output, status = run_script(script: <<~RUBY)
         #{mock_setup}
         panel = MOCK.get("/karst", "REMOTE_ADDR" => "127.0.0.1")
@@ -122,7 +122,7 @@ RSpec.describe "Karst page-local badge" do
           "REMOTE_ADDR" => "127.0.0.1"
         )
         abort "expected method+path context" unless linked.body.include?("GET /badge_pages/1")
-        abort "expected controller#action identity" unless linked.body.include?("BadgePagesController#show")
+        abort "controller/action identity leaked into the panel" if linked.body.include?("BadgePagesController#show")
       RUBY
 
       expect(status).to be_success, output
@@ -197,7 +197,7 @@ RSpec.describe "Karst page-local badge" do
       expect(status).to be_success, output
     end
 
-    it "derives the badge count from a real Catalog artifact, and the panel filters scenarios the same way" do
+    it "derives the badge count from a real Catalog artifact without exposing it in the panel" do
       output, status = run_script(script: <<~RUBY)
         #{mock_setup}
         require "karst/spec/reporter"
@@ -228,18 +228,12 @@ RSpec.describe "Karst page-local badge" do
         end
 
         panel = MOCK.get(
-          "/karst?controller=BadgePagesController&action=show&method=GET",
+          "/karst?controller=BadgePagesController&action=show&method=GET&path=%2Fbadge_pages%2F1",
           "REMOTE_ADDR" => "127.0.0.1"
         )
-        abort "expected the panel to list the observed scenario" unless panel.body.include?("shows the badge fixture route")
-
-        wrong_method = MOCK.get(
-          "/karst?controller=BadgePagesController&action=show&method=POST",
-          "REMOTE_ADDR" => "127.0.0.1"
-        )
-        if wrong_method.body.include?("shows the badge fixture route")
-          abort "expected the panel to filter by http method, matching the badge's own count"
-        end
+        abort "expected method+path context" unless panel.body.include?("GET /badge_pages/1")
+        abort "catalog evidence leaked into the panel" if panel.body.include?("shows the badge fixture route")
+        abort "spec evidence leaked into the panel" if panel.body.include?("Spec evidence")
       RUBY
 
       expect(status).to be_success, output
