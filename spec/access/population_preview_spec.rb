@@ -109,6 +109,13 @@ RSpec.describe Karst::Access::PopulationPreview do
       expect(PreviewUser.unauthorized_calls).to eq(0)
     end
 
+    it "reports when a discovered scope no longer exists" do
+      result = call(method_name: "removed_scope", candidates: [:removed_scope])
+
+      expect(result.resolved).to be(false)
+      expect(result.error).to include("no longer exists")
+    end
+
     it "rejects an unknown model name without raising" do
       result = described_class.call(model_name: "NoSuchModel", method_name: "admins",
                                     discovery_result: discovery_result([:admins]))

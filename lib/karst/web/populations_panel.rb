@@ -8,7 +8,7 @@ module Karst
   module Web
     # Read-only-except-for-selection HTML presentation of
     # Karst::Access::PopulationDiscovery: browse application models and
-    # their discovered candidate populations without being buried by
+    # their discovered candidate scopes without being buried by
     # hundreds of them, curate a selection, preview one bounded candidate at
     # a time, and copy a generated config snippet. Never mutates the host
     # application's files -- see Karst::Access::PopulationConfigSnippet.
@@ -135,15 +135,15 @@ module Karst
         def document(discovery, selected, snippet, preview, nonce)
           <<~HTML
             <!DOCTYPE html>
-            <html lang="en"><head><meta charset="utf-8"><title>Karst — Candidate populations</title>
+            <html lang="en"><head><meta charset="utf-8"><title>Karst — Candidate scopes</title>
             <style>#{STYLE}</style>
             </head><body>
             <h1>Karst</h1>
             <p><a href="/karst">&larr; Back to route evidence</a></p>
-            <h2>Candidate populations</h2>
-            <p class="hint">Discovered candidates are a hint about where a useful principal or artifact subset
-            might live -- never a claim that a name is a real scope, that it returns anything, or that it
-            grants access. Only running an actual sweep against a route proves behavior.</p>
+            <h2>Candidate scopes</h2>
+            <p class="hint">Discovery includes zero-argument scopes declared directly in application model source.
+            Scopes contributed by concerns may not appear. A discovered scope is not approved configuration and
+            does not grant access; only running an actual sweep against a route proves behavior.</p>
             #{load_warning(discovery)}
             <form method="post" action="/karst/populations">
             #{search_box}
@@ -166,7 +166,7 @@ module Karst
         def search_box
           <<~HTML
             <div class="search-box">
-            <label>Search models or populations
+            <label>Search scopes or models
             <input type="search" id="karst-population-search" placeholder="e.g. admin, User, subscription">
             </label>
             </div>
@@ -196,7 +196,7 @@ module Karst
         def model_groups_section(discovery, selected, preview)
           groups = discovery.model_groups.reject { |group| group.candidate_names.empty? }
           body = if groups.empty?
-                   "<p>No candidate populations were discovered.</p>"
+                   "<p>No candidate scopes were discovered.</p>"
                  else
                    groups.map { |group| model_group(group, selected, preview) }.join
                  end
@@ -217,7 +217,7 @@ module Karst
 
         def model_summary(group)
           count = group.candidate_names.size
-          "#{escape(group.model_name)} <span class=\"count\">#{count} candidate#{'s' unless count == 1}</span>" \
+          "#{escape(group.model_name)} <span class=\"count\">#{count} scope#{'s' unless count == 1}</span>" \
             "#{principal_badge(group)}"
         end
 

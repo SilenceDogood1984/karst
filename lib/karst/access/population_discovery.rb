@@ -1,62 +1,19 @@
 # frozen_string_literal: true
 
+require "ripper"
 require_relative "../value"
 
 module Karst
   module Access
-    # Explicit, non-executing discovery of application-authored candidate
-    # populations: which application Active Record models exist, and which
-    # of their own public class methods are *shaped* like a zero-argument,
-    # relation-producing scope. This is a hint about where a developer might
-    # look next -- never a claim that a discovered name is a real named
-    # scope, returns anything useful, or means anything about authorization.
-    # See Karst::Access::CandidatePopulation for why Active Record exposes
-    # no reliable registry that would distinguish a real named scope from an
-    # ordinary handwritten class method; discovery inherits that same
-    # limitation and stays honest about it rather than pretending certainty.
-    #
-    # Discovery never executes a discovered method, never issues a query,
-    # and never infers behavior -- it only introspects already-loaded Ruby
-    # class metadata (singleton methods, arity). Turning a discovered name
-    # into evidence about whether it actually returns a usable relation is a
-    # separate, explicit step (see Karst::Access::PopulationPreview).
-    #
-    # Intended to run only from an explicit developer action -- the
-    # `karst:populations` rake task, or loading /karst/populations -- never
-    # automatically on every ordinary /karst request.
+    # Finds zero-argument Rails scope declarations by parsing model source.
+    # Ripper is part of Ruby's standard library (including Ruby 2.7), so this
+    # does not raise Karst's minimum Ruby version or add a parser dependency.
+    # Discovery never calls a scope or any other model method.
     class PopulationDiscovery
-      # Framework/internal Active Record models excluded from candidacy --
-      # not something a developer authored, and not useful as a principal or
-      # artifact population.
       FRAMEWORK_NAMESPACES = %w[ActiveRecord ActiveStorage ActionText ActionMailbox].freeze
-
-      # Method-name shapes that are conventionally not relation-returning
-      # finders (mutators, boolean predicates, writers) -- excluded to keep
-      # the discovered list honest about what it actually is: a heuristic,
-      # not a guarantee. A false negative here (skipping a real scope with
-      # an unusual name) is an acceptable, disclosed tradeoff; discovery
-      # never claims this list is complete, only that everything on it is
-      # at least *shaped* like something callable with no arguments.
-      EXCLUDED_SUFFIXES = %w[! ? =].freeze
-
-      # Bounds how many candidate names a single unusually wide model (one
-      # with many of its own class methods) can contribute. This is a
-      # metadata cap only -- discovery issues no query at all, so it does
-      # not depend on row count the way PrincipalSampler's dimension caps
-      # do.
-      MAX_CANDIDATES_PER_MODEL = 100
 
       Candidate = Value.define(:model_name, :method_name, :principal_source)
 
-      # candidate_names is a sorted Array of Symbol method names.
-      # principal_source is the Symbol name of the configured
-      # config.principal_sources entry whose records evaluate to this exact
-      # model class, or nil when no configured principal source matches --
-      # see Karst::Access::PrincipalSource#record_klass. This is metadata
-      # only, computed by re-evaluating already-configured source callables
-      # (never a query); it does not change which candidates are
-      # discovered, only how the UI labels/routes them (see README
-      # "Principal vs artifact populations").
       ModelGroup = Value.define(:model_name, :candidate_names, :principal_source) do
         def candidates
           candidate_names.map do |method_name|
@@ -65,11 +22,6 @@ module Karst
         end
       end
 
-      # load_warning is a plain human-readable String (never raised) when
-      # eager-loading the application to enumerate its models failed
-      # partway through -- discovery still reports whatever models were
-      # already loaded rather than failing outright, but says so honestly
-      # instead of silently under-reporting.
       Result = Value.define(:model_groups, :load_warning) do
         def candidates
           model_groups.flat_map(&:candidates)
@@ -83,22 +35,15 @@ module Karst
       private
 
       def model_groups
-        candidate_models.map do |klass|
-          ModelGroup.new(model_name: klass.name, candidate_names: candidate_method_names(klass),
+        candidate_models.filter_map do |klass|
+          names = scope_names(klass)
+          next if names.empty?
+
+          ModelGroup.new(model_name: klass.name, candidate_names: names,
                          principal_source: principal_source_for(klass))
         end.sort_by(&:model_name)
       end
 
-      # Rails may not have autoloaded every model file yet (Zeitwerk loads
-      # lazily on first reference) -- eager_load! is the only reliable way
-      # to see the full application model set, and calling it here is safe
-      # specifically because discovery is always one explicit, developer-
-      # triggered action (a rake task, or navigating to /karst/populations),
-      # never something invoked on every ordinary /karst page render. A
-      # load failure aborts eager_load! itself but not discovery: whatever
-      # loaded before the failure is still reported, alongside an honest
-      # warning, rather than a silently incomplete list presented as
-      # complete.
       def eager_load_application!
         return unless defined?(Rails) && Rails.respond_to?(:application) && Rails.application
 
@@ -112,9 +57,7 @@ module Karst
         @candidate_models ||= begin
           eager_load_application!
           if defined?(ActiveRecord::Base)
-            ActiveRecord::Base.descendants.select do |klass|
-              application_model?(klass)
-            end.uniq
+            ActiveRecord::Base.descendants.select { |klass| application_model?(klass) }.uniq
           else
             []
           end
@@ -129,51 +72,17 @@ module Karst
         FRAMEWORK_NAMESPACES.any? { |namespace| klass.name == namespace || klass.name.start_with?("#{namespace}::") }
       end
 
-      def candidate_method_names(klass)
-        own_public_class_methods(klass).select do |name|
-          candidate_shape?(klass, name)
-        end.sort.first(MAX_CANDIDATES_PER_MODEL)
-      end
+      def scope_names(klass)
+        file, = Object.const_source_location(klass.name)
+        return [] unless file && File.file?(file)
 
-      # Only methods defined directly on this exact class's singleton class
-      # -- inherited methods (including Karst's own configured
-      # config.principal_populations callables, which are not methods at
-      # all) never appear here. A class method contributed by an
-      # ActiveSupport::Concern's `class_methods do ... end` block is added
-      # via `extend`, not defined directly, so it is not seen either; this
-      # is a known, disclosed gap (see class comment), not a silent one.
-      def own_public_class_methods(klass)
-        klass.singleton_class.public_instance_methods(false) - base_class_methods
-      end
-
-      def base_class_methods
-        @base_class_methods ||= ActiveRecord::Base.singleton_class.public_instance_methods(false)
-      end
-
-      def candidate_shape?(klass, name)
-        label = name.to_s
-        return false if label.start_with?("_")
-        return false if EXCLUDED_SUFFIXES.any? { |suffix| label.end_with?(suffix) }
-
-        zero_arity?(klass, name)
-      end
-
-      # arity <= 0 covers both "exactly zero parameters" (0) and "zero
-      # required parameters, plus optional/splat/keyword ones" (negative) --
-      # both shapes are callable with no arguments, which is the only shape
-      # a population callable (`-> { Model.method_name }`) can ever invoke.
-      # A method requiring at least one argument (positive arity) cannot be
-      # called this way and is excluded.
-      def zero_arity?(klass, name)
-        klass.method(name).arity <= 0
+        SourceScopes.new(File.read(file), klass.name).call
       rescue StandardError
-        false
+        []
       end
 
       def principal_source_for(klass)
-        principal_source_klasses.each do |name, source_klass|
-          return name if source_klass == klass
-        end
+        principal_source_klasses.each { |name, source_klass| return name if source_klass == klass }
         nil
       end
 
@@ -184,6 +93,146 @@ module Karst
           memo[name] = klass if klass
         end
       end
+
+      # A deliberately small Ripper AST reader. It recognizes only literal
+      # names and the two callable forms accepted here: -> {} and lambda {}.
+      # rubocop:disable Metrics/ClassLength
+      class SourceScopes
+        def initialize(source, model_name)
+          @tree = Ripper.sexp(source)
+          @model_name = model_name
+        end
+
+        def call
+          return [] unless @tree
+
+          find_classes(@tree, []).uniq.sort
+        end
+
+        private
+
+        # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
+        def find_classes(node, namespace)
+          return [] unless node.is_a?(Array)
+
+          case node[0]
+          when :module
+            name = constant_name(node[1])
+            find_classes(node[2], qualify(namespace, name))
+          when :class
+            name = constant_name(node[1])
+            full_name = qualify(namespace, name)
+            direct = full_name.join("::") == @model_name ? scopes_in_body(node[3]) : []
+            direct + find_classes(node[3], full_name)
+          else
+            node.flat_map { |child| find_classes(child, namespace) }
+          end
+        end
+        # rubocop:enable Metrics/AbcSize, Metrics/MethodLength
+
+        def qualify(namespace, name)
+          return namespace unless name
+          return name.split("::") if name.include?("::")
+
+          namespace + [name]
+        end
+
+        def constant_name(node)
+          return unless node.is_a?(Array)
+          return node[1] if node[0] == :@const
+          return constant_name(node[1]) if %i[const_ref top_const_ref].include?(node[0])
+
+          [constant_name(node[1]), constant_name(node[2])].compact.join("::") if node[0] == :const_path_ref
+        end
+
+        def scopes_in_body(body)
+          statements = body && body[0] == :bodystmt ? body[1] : []
+          Array(statements).filter_map { |statement| scope_name(statement) }
+        end
+
+        def scope_name(node)
+          arguments = scope_arguments(node)
+          return unless arguments && arguments.length >= 2
+          return unless zero_argument_callable?(arguments[1])
+
+          literal_name(arguments[0])
+        end
+
+        def scope_arguments(node)
+          return unless node.is_a?(Array)
+
+          return unless scope_call?(node)
+
+          argument_list(node[2])
+        end
+
+        def scope_call?(node)
+          (node[0] == :command && identifier(node[1]) == "scope") ||
+            (node[0] == :method_add_arg && fcall_name(node[1]) == "scope")
+        end
+
+        def argument_list(node)
+          node = node[1] if node && node[0] == :arg_paren
+          node && node[0] == :args_add_block ? node[1] : nil
+        end
+
+        def fcall_name(node)
+          node = node[1] if node && node[0] == :method_add_arg
+          identifier(node[1]) if node && node[0] == :fcall
+        end
+
+        def identifier(node)
+          node[1] if node && %i[@ident @op].include?(node[0])
+        end
+
+        def literal_name(node)
+          return unless node
+
+          case node[0]
+          when :symbol_literal then simple_symbol(node)
+          when :dyna_symbol, :string_literal then static_string(node[1])&.to_sym
+          end
+        end
+
+        def simple_symbol(node)
+          token = node.dig(1, 1)
+          token[1].to_sym if token && token[0].to_s.start_with?("@")
+        end
+
+        def static_string(node)
+          return unless node && node[0] == :string_content
+
+          tokens = node.drop(1)
+          return unless tokens.all? { |token| token[0] == :@tstring_content }
+
+          tokens.map { |token| token[1] }.join
+        end
+
+        def zero_argument_callable?(node)
+          if node && node[0] == :lambda
+            empty_params?(node[1])
+          elsif lambda_block?(node)
+            block = node[2]
+            empty_params?(block[1])
+          else
+            false
+          end
+        end
+
+        def lambda_block?(node)
+          node && node[0] == :method_add_block && fcall_name(node[1]) == "lambda" &&
+            %i[brace_block do_block].include?(node[2]&.first)
+        end
+
+        def empty_params?(node)
+          return true if node.nil?
+
+          node = node[1] if node[0] == :paren
+          node && node[0] == :params && node.drop(1).all?(&:nil?)
+        end
+      end
+      # rubocop:enable Metrics/ClassLength
+      private_constant :SourceScopes
     end
   end
 end

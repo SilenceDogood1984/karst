@@ -452,21 +452,18 @@ without a rewrite. This release wires it into principal sampling only.
 Writing `config.principal_populations` by hand works well once you know
 which scopes matter. On a large application -- dozens or hundreds of
 models, many with several scopes -- finding them by reading source is
-tedious, and Karst has no reliable way to ask Rails "list every named scope"
-(see above). `Karst::Access::PopulationDiscovery` instead offers an
-explicit, conservative *discovery* step: it lists every application Active
-Record model (excluding abstract classes and Rails/framework-internal
-models such as `ActiveRecord::SchemaMigration` or `ActiveStorage::*`) and,
-for each, every public class method defined directly on that model whose
-shape -- callable with no arguments, not named like a mutator/predicate/writer
-(`destroy_all!`, `admin?`, `role=`) -- makes it *possibly* a named scope.
-This is a heuristic, not a certainty: Active Record exposes no registry
-that would let Karst know for sure, so a same-shaped ordinary class method
-can appear too, and a scope contributed by an `ActiveSupport::Concern`'s
-`class_methods do ... end` block (added via `extend`, not defined directly)
-is missed. Discovery never executes a discovered method, never issues a
-query, and never runs automatically on an ordinary `/karst` request -- only
-when explicitly triggered.
+tedious. `Karst::Access::PopulationDiscovery` offers an explicit,
+conservative discovery step: it parses application model source with Ruby's
+standard-library `Ripper` AST parser and lists statically named Rails `scope`
+declarations whose lambda has no parameters. Ordinary class methods and
+dynamic scope names are never candidates, and optional, splat, or keyword
+parameters are conservatively excluded. Ripper was chosen instead of Prism
+because it ships with every supported Ruby version, including Ruby 2.7.
+
+Discovery currently includes scopes declared directly on application models.
+Scopes contributed by concerns may not appear. It never executes a scope or
+other model method, never issues a query, and never runs automatically on an
+ordinary `/karst` request -- only when explicitly triggered.
 
 Two ways to trigger it:
 
@@ -474,13 +471,13 @@ Two ways to trigger it:
 bin/rails karst:populations
 ```
 
-prints every discovered model and its candidate method names to the
+prints every discovered model and its candidate scope names to the
 terminal. Or visit `/karst/populations` (linked from the main `/karst`
 panel) for a browsable, curatable page: models are grouped and collapsed by
 default (`<details>`, no frontend framework -- a little vanilla JS only
 powers client-side search/filter), so an application with 150 models and
-500 candidate populations never renders as one giant checkbox dump.
-Checking a candidate and clicking **Preview** runs a separate, explicit,
+500 candidate scopes never renders as one giant checkbox dump.
+Checking a scope and clicking **Preview** runs a separate, explicit,
 `LIMIT 3`-bounded query (never a `COUNT`, never full materialization) to
 show a handful of matching records -- still just a hint, never a claim that
 the population grants access.

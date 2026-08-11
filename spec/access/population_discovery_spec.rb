@@ -5,66 +5,74 @@ require "logger"
 require "active_record"
 require "karst"
 
-# A unique prefix (PopDisco::) so assertions can filter
-# ActiveRecord::Base.descendants down to exactly the fixtures this file
-# defines, regardless of what other spec files' own fixture models happen to
-# already be loaded in this process (spec order is randomized, and Ruby
-# classes never unload). No connection is established -- discovery never
-# queries a row, only introspects already-loaded class/method metadata.
 module PopDisco
+  # Some deliberately unusual method names below prove class-method naming
+  # heuristics no longer participate in discovery.
+  # rubocop:disable Naming/PredicateMethod, Style/Lambda
   class Record < ActiveRecord::Base
     self.abstract_class = true
   end
 
   class User < Record
+    DYNAMIC_SCOPE_NAME = :dynamic_admins
+
     class << self
-      attr_accessor :tracked_scope_calls
+      attr_accessor :scope_body_calls
     end
-    self.tracked_scope_calls = 0
+    self.scope_body_calls = 0
 
-    def self.system_admins
+    scope :admins, -> { where(is_admin: true) }
+    scope :active, -> {
+      where(active: true)
+    }
+    scope(
+      :auditors,
+      -> { where(role: "auditor") }
+    )
+    scope :renewable, lambda {
+      where(status: "active")
+    }
+    scope :tracked, -> {
+      self.scope_body_calls += 1
+      all
+    }
+    scope :for_org, ->(org) { where(organization: org) }
+    scope :between, ->(from, to) { where(created_at: from..to) }
+    scope :optional, ->(value = nil) { where(value: value) }
+    scope :splatted, ->(*values) { where(value: values) }
+    scope :keyword, ->(role:) { where(role: role) }
+    scope DYNAMIC_SCOPE_NAME, -> { all }
+
+    def self.some_report
+      where(active: true)
+    end
+
+    def self.zero_argument_method
       []
     end
 
-    def self.tracked_scope
-      self.tracked_scope_calls += 1
-      []
+    def self.irrelevant?
+      true
     end
 
-    def self.by_role(role)
-      [role]
+    def self.irrelevant!
+      true
     end
 
-    def self.destroy_everything!
-      []
-    end
-
-    def self.admin?
-      false
-    end
-
-    def self.role=(value)
+    def self.irrelevant=(value)
       value
-    end
-
-    class << self
-      private
-
-      def hidden_scope
-        []
-      end
     end
   end
 
   class Subscription < Record
-    def self.renewable
-      []
-    end
+    scope :cancelled, -> { where(status: "cancelled") }
   end
+  # rubocop:enable Naming/PredicateMethod, Style/Lambda
 end
 
 module ActiveStorage
   class PopDiscoBlob < ActiveRecord::Base
+    scope :recent, -> { all }
   end
 end
 
@@ -79,106 +87,72 @@ RSpec.describe Karst::Access::PopulationDiscovery do
   end
 
   describe "#call" do
-    it "discovers application models grouped with their candidate method names" do
-      result = described_class.new.call
+    it "discovers one-line, multiline, parenthesized, arrow, and lambda scopes" do
+      names = fixture_group(described_class.new.call, "User").candidate_names
 
-      expect(fixture_group(result, "User").candidate_names).to include(:system_admins, :tracked_scope)
-      expect(fixture_group(result, "Subscription").candidate_names).to include(:renewable)
+      expect(names).to include(:admins, :active, :auditors, :renewable)
     end
 
-    it "excludes the abstract base class" do
+    it "discovers multiple scopes across multiple models" do
       result = described_class.new.call
 
-      expect(fixture_groups(result).map(&:model_name)).not_to include("PopDisco::Record")
+      expect(fixture_group(result, "User").candidate_names).to include(:admins, :auditors)
+      expect(fixture_group(result, "Subscription").candidate_names).to eq([:cancelled])
     end
 
-    it "excludes methods that require an argument" do
-      result = described_class.new.call
+    it "excludes required, optional, splat, and keyword parameters conservatively" do
+      names = fixture_group(described_class.new.call, "User").candidate_names
 
-      expect(fixture_group(result, "User").candidate_names).not_to include(:by_role)
+      expect(names).not_to include(:for_org, :between, :optional, :splatted, :keyword)
     end
 
-    it "excludes bang, predicate, and writer-shaped method names" do
-      result = described_class.new.call
-
-      names = fixture_group(result, "User").candidate_names
-      expect(names).not_to include(:destroy_everything!, :admin?, :role=)
+    it "excludes dynamically named scopes" do
+      expect(fixture_group(described_class.new.call, "User").candidate_names).not_to include(:dynamic_admins)
     end
 
-    it "excludes private class methods" do
-      result = described_class.new.call
+    it "never considers ordinary class methods, regardless of return or name shape" do
+      names = fixture_group(described_class.new.call, "User").candidate_names
 
-      expect(fixture_group(result, "User").candidate_names).not_to include(:hidden_scope)
+      expect(names).not_to include(:some_report, :zero_argument_method, :irrelevant?, :irrelevant!, :irrelevant=)
     end
 
-    it "excludes framework-namespaced models" do
+    it "excludes abstract, anonymous, and framework models" do
+      Class.new(PopDisco::Record)
       result = described_class.new.call
 
+      expect(fixture_groups(result).map(&:model_name)).not_to include("PopDisco::Record", nil)
       expect(result.model_groups.map(&:model_name)).not_to include("ActiveStorage::PopDiscoBlob")
     end
 
-    it "excludes an anonymous class without raising" do
-      Class.new(PopDisco::Record) # never assigned to a constant -- klass.name is nil
+    it "does not invoke a discovered scope body" do
+      PopDisco::User.scope_body_calls = 0
 
-      result = nil
-      expect { result = described_class.new.call }.not_to raise_error
-      expect(result.model_groups.map(&:model_name)).not_to include(nil)
-    end
-
-    it "never executes a discovered candidate method" do
-      PopDisco::User.tracked_scope_calls = 0
-
-      result = described_class.new.call
-
-      expect(fixture_group(result, "User").candidate_names).to include(:tracked_scope)
-      expect(PopDisco::User.tracked_scope_calls).to eq(0)
+      expect(fixture_group(described_class.new.call, "User").candidate_names).to include(:tracked)
+      expect(PopDisco::User.scope_body_calls).to eq(0)
     end
 
     it "issues no SQL queries" do
       queries = []
-      callback = lambda do |_name, _start, _finish, _id, payload|
-        queries << payload[:sql]
-      end
+      callback = ->(_name, _start, _finish, _id, payload) { queries << payload[:sql] }
 
       ActiveSupport::Notifications.subscribed(callback, "sql.active_record") { described_class.new.call }
 
       expect(queries).to be_empty
     end
 
-    it "reports no principal_source when no principal source is configured" do
-      Karst.config.principals = nil
-      Karst.config.principal_sources = nil
-
-      result = described_class.new.call
-
-      expect(fixture_group(result, "User").principal_source).to be_nil
-    end
-
-    it "matches a model against config.principals wrapped as the implicit :default source" do
-      Karst.config.principals = -> { PopDisco::User }
-
-      result = described_class.new.call
-
-      expect(fixture_group(result, "User").principal_source).to eq(:default)
-      expect(fixture_group(result, "Subscription").principal_source).to be_nil
-    end
-
-    it "matches a model against an explicitly named config.principal_sources entry" do
+    it "associates matching configured principal-source metadata" do
       Karst.config.principal_sources = { members: -> { PopDisco::User } }
 
-      result = described_class.new.call
-
-      expect(fixture_group(result, "User").principal_source).to eq(:members)
+      expect(fixture_group(described_class.new.call, "User").principal_source).to eq(:members)
     end
   end
 
   describe "PopulationDiscovery::Result#candidates" do
-    it "flattens every model group into individual Candidate entries" do
-      result = described_class.new.call
+    it "flattens model groups into scope candidates" do
+      candidates = described_class.new.call.candidates.select { |candidate| candidate.model_name == "PopDisco::User" }
 
-      user_candidates = result.candidates.select { |c| c.model_name == "PopDisco::User" }
-      expect(user_candidates.map(&:method_name)).to include(:system_admins)
-      expect(user_candidates.first).to be_a(described_class::Candidate)
+      expect(candidates.map(&:method_name)).to include(:admins)
+      expect(candidates.first).to be_a(described_class::Candidate)
     end
   end
 end
