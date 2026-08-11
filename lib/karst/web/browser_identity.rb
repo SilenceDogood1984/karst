@@ -27,19 +27,26 @@ module Karst
 
       def assume(params)
         verify_token!(params["csrf_token"])
+        target = return_path(params["path"])
         principal = Identity.resolve(model_name: params["principal_type"], id: params["principal_id"])
         raise Identity::Unavailable, "principal is not in the configured source" unless principal
 
         Identity.assume_browser(@request, principal)
+        # Authentication hooks may clear or replace the host session. Rebuild
+        # Karst's control state only after that transition, and invalidate the
+        # token which authorized it rather than carrying pre-assumption state
+        # into the assumed identity.
         session[ACTIVE_KEY] = true
-        return_path(params["path"])
+        rotate_token!
+        target
       end
 
       def clear(params)
         verify_token!(params["csrf_token"])
+        target = return_path(params["path"])
         Identity.clear_browser(@request)
         session.delete(ACTIVE_KEY)
-        return_path(params["path"])
+        target
       end
 
       private
@@ -55,6 +62,10 @@ module Karst
         valid = expected && submitted && expected.bytesize == submitted.bytesize &&
                 ActiveSupport::SecurityUtils.secure_compare(expected, submitted)
         raise Identity::Unavailable, "invalid Karst CSRF token" unless valid
+      end
+
+      def rotate_token!
+        session[TOKEN_KEY] = SecureRandom.hex(32)
       end
 
       def return_path(value)

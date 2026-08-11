@@ -44,7 +44,9 @@ module Karst
       @assume_browser_identity = nil
       @clear_browser_identity = nil
       @access_sweep_limit = 25
-      @usable_access_outcome = ->(outcome) { outcome.status && (200..299).cover?(outcome.status) }
+      @usable_access_outcome = lambda do |outcome|
+        outcome.status == 200 && outcome.exception_class.nil? && outcome.halted_callback.nil?
+      end
       @principal_candidate_pool_size = 1_000
       @population_retry_limit = 3
       @principal_dimensions = {}

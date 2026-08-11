@@ -5,6 +5,30 @@ require "karst"
 
 # rubocop:disable Metrics/BlockLength
 RSpec.describe "Karst::Configuration#principal_populations" do
+  describe "default usable access outcome" do
+    subject(:usable) { Karst.config.usable_access_outcome }
+
+    def outcome(status:, exception_class: nil, halted_callback: nil)
+      Struct.new(:status, :exception_class, :halted_callback)
+            .new(status, exception_class, halted_callback)
+    end
+
+    it "requires exactly 200 without an exception or halted callback" do
+      expect(usable.call(outcome(status: 200))).to be(true)
+      expect(usable.call(outcome(status: 204))).to be(false)
+      expect(usable.call(outcome(status: 200, halted_callback: :authorize_admin))).to be(false)
+      expect(usable.call(outcome(status: 204, halted_callback: :redirect_if_suspended))).to be(false)
+      expect(usable.call(outcome(status: 302))).to be(false)
+      expect(usable.call(outcome(status: 200, exception_class: "RuntimeError"))).to be(false)
+    end
+
+    it "remains replaceable with an application-specific policy" do
+      Karst.config.usable_access_outcome = ->(observed) { observed.status == 204 }
+
+      expect(Karst.config.usable_access_outcome.call(outcome(status: 204))).to be(true)
+    end
+  end
+
   it "defaults to an empty Hash, considering no candidate populations at all" do
     expect(Karst.config.principal_populations).to eq({})
   end
