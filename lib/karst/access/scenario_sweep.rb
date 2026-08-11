@@ -11,6 +11,7 @@ module Karst
                                    :sampling_reasons, :expected, :body_marker_observed, :match)
     ScenarioResult = Value.define(:scenario_name, :outcomes, :elapsed_ms, :combination_limit,
                                   :artifact_candidate_limit, :stopped_on_match, :candidate_pool_size)
+    class ScenarioDefinitionError < Error; end
 
     # Executes the deliberately small principal x artifact primitive. The
     # global combination cap is checked before every request and may stop at
@@ -29,18 +30,13 @@ module Karst
         started = monotonic
         outcomes = []
         stopped = false
-        bounded_principals.each do |principal|
-          artifacts.each do |artifact|
-            break if outcomes.size >= @scenario.combination_limit
-
-            observed = probe(principal, artifact)
-            outcomes << observed
-            if observed.match && @scenario.stop_on_match
-              stopped = true
-              break
-            end
+        combinations.each do |principal, artifact|
+          observed = probe(principal, artifact)
+          outcomes << observed
+          if observed.match && @scenario.stop_on_match
+            stopped = true
+            break
           end
-          break if stopped || outcomes.size >= @scenario.combination_limit
         end
         ScenarioResult.new(scenario_name: @scenario.name, outcomes: outcomes.freeze, elapsed_ms: elapsed(started),
                            combination_limit: @scenario.combination_limit,
@@ -60,8 +56,35 @@ module Karst
         @artifacts ||= @scenario.artifact_source.candidates
       end
 
+      # Walk Cartesian-product diagonals. This is intentionally simple: a
+      # small global budget reaches both axes instead of being consumed by all
+      # artifacts for the first principal (or vice versa).
+      def combinations
+        principals = bounded_principals
+        Enumerator.new do |items|
+          (principals.size + artifacts.size - 1).times do |diagonal|
+            principals.each_index do |principal_index|
+              artifact_index = diagonal - principal_index
+              next unless artifact_index >= 0 && artifact_index < artifacts.size
+
+              items << [principals[principal_index], artifacts[artifact_index]]
+            end
+          end
+        end.lazy.take(@scenario.combination_limit)
+      end
+
       def probe(principal, artifact)
-        path = @scenario.path.call(artifact)
+        path = scenario_path(artifact)
+        probe_request(principal, artifact, path)
+      end
+
+      def scenario_path(artifact)
+        @scenario.path.call(artifact)
+      rescue StandardError => e
+        raise ScenarioDefinitionError, "access scenario #{@scenario.name.inspect} path failed: #{e.class}: #{e.message}"
+      end
+
+      def probe_request(principal, artifact, path)
         marker = @scenario.expectation[:body_includes]
         base = Sweep.new(path: path, principals: [principal], limit: 1, application: @application,
                          sampling_reasons: @sampling_reasons, body_includes: marker).call.outcomes.first
@@ -69,7 +92,7 @@ module Karst
         scenario_outcome(base, artifact, path, marker_observed, matches?(base, marker_observed))
       rescue StandardError => e
         descriptor = Karst::Identity.describe(principal)
-        ScenarioOutcome.new(principal: descriptor, artifact: describe(artifact), path: safe_path(path), status: nil,
+        ScenarioOutcome.new(principal: descriptor, artifact: describe(artifact), path: path.to_s, status: nil,
                             redirect: nil, exception_class: e.class.name, writes_observed: false, write_count: 0,
                             elapsed_ms: 0.0, database_rollback_attempted: false, sampling_reasons: [].freeze,
                             expected: @scenario.expectation, body_marker_observed: nil, match: false)
@@ -99,10 +122,6 @@ module Karst
         id = record.respond_to?(:id) ? record.id : nil
         label = id.nil? ? model : "#{model} ##{id}"
         ArtifactDescriptor.new(model_name: model, id: id, display_label: label)
-      end
-
-      def safe_path(path)
-        path&.to_s
       end
 
       def monotonic

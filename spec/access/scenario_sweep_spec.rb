@@ -98,14 +98,26 @@ RSpec.describe Karst::Access::ScenarioSweep do
     expect(result.outcomes.size).to eq(1)
   end
 
-  it "records request and path-generation exceptions as mismatch observations" do
+  it "fairly exercises both axes before a smaller combination budget is exhausted" do
+    configured = scenario([ScenarioArtifact.new("a"), ScenarioArtifact.new("b"), ScenarioArtifact.new("c")],
+                          expect: { status: 500 }, combination_limit: 4, stop_on_match: false)
+    result = described_class.new(scenario: configured,
+                                 principals: [ScenarioPrincipal.new(1), ScenarioPrincipal.new(2),
+                                              ScenarioPrincipal.new(3)], application: Object.new).call
+
+    expect(result.outcomes.map { |outcome| outcome.principal.id }.uniq.size).to be > 1
+    expect(result.outcomes.map { |outcome| outcome.artifact.id }.uniq).to contain_exactly("a", "b", "c")
+  end
+
+  it "records request exceptions but surfaces path-generation failures as scenario errors" do
     request_error = described_class.new(scenario: scenario([ScenarioArtifact.new("raise")], expect: { status: 200 }),
                                         principals: [ScenarioPrincipal.new(1)], application: Object.new).call.outcomes.first
-    path_error = described_class.new(scenario: scenario([ScenarioArtifact.new(1)], expect: { status: 200 },
-                                                                                   path: ->(_item) { raise KeyError }),
-                                     principals: [ScenarioPrincipal.new(1)], application: Object.new).call.outcomes.first
     expect(request_error).to have_attributes(exception_class: "RuntimeError", match: false)
-    expect(path_error).to have_attributes(exception_class: "KeyError", match: false)
+
+    broken = scenario([ScenarioArtifact.new(1)], expect: { status: 200 }, path: ->(_item) { raise KeyError, "bad path" })
+    expect do
+      described_class.new(scenario: broken, principals: [ScenarioPrincipal.new(1)], application: Object.new).call
+    end.to raise_error(Karst::Access::ScenarioDefinitionError, /:import.*KeyError: bad path/)
   end
 
   it "limits a relation before materializing it" do
