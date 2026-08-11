@@ -154,49 +154,6 @@ RSpec.describe "Karst web middleware" do
     end
   end
 
-  describe "capture state" do
-    it "represents enabled capture with an active subscription" do
-      output, status = run_script(rails_env: "development", script: <<~RUBY)
-        #{request_harness}
-        Karst.config.enabled = true
-        Karst.subscribe!
-        response = MOCK.get("/karst", "REMOTE_ADDR" => "127.0.0.1")
-        abort "expected enabled capture wording" unless response.body.include?("Capture: enabled")
-        abort "expected active subscription wording" unless response.body.include?("Subscription: active")
-      RUBY
-
-      expect(status).to be_success, output
-    end
-
-    it "represents disabled capture with no subscription" do
-      output, status = run_script(rails_env: "development", script: <<~RUBY)
-        #{request_harness}
-        Karst.unsubscribe!
-        Karst.config.enabled = false
-        response = MOCK.get("/karst", "REMOTE_ADDR" => "127.0.0.1")
-        abort "expected disabled capture wording" unless response.body.include?("Capture: disabled")
-        abort "expected inactive subscription wording" unless response.body.include?("Subscription: inactive")
-      RUBY
-
-      expect(status).to be_success, output
-    end
-
-    it "represents enabled capture that is not yet subscribed, distinct from an empty Window" do
-      output, status = run_script(rails_env: "development", script: <<~RUBY)
-        #{request_harness}
-        Karst.unsubscribe!
-        Karst.config.enabled = true
-        response = MOCK.get("/karst", "REMOTE_ADDR" => "127.0.0.1")
-        abort "expected enabled capture wording" unless response.body.include?("Capture: enabled")
-        abort "expected inactive subscription wording" unless response.body.include?("Subscription: inactive")
-        abort "capture state must not live on Sql::Window" if Karst::Sql::Window.members.include?(:enabled)
-        abort "capture state must not live on Sql::Window" if Karst::Sql::Window.members.include?(:subscribed)
-      RUBY
-
-      expect(status).to be_success, output
-    end
-  end
-
   describe "route context" do
     it "recognizes a manual GET path and renders access analysis" do
       output, status = run_script(rails_env: "development", script: <<~RUBY)
@@ -206,9 +163,9 @@ RSpec.describe "Karst web middleware" do
         response = MOCK.get(
           "/karst?operation=route_lookup&method=GET&path=%2Forganizations", "REMOTE_ADDR" => "127.0.0.1"
         )
-        abort "controller/action was not derived" unless response.body.include?("OrganizationsController#index")
+        abort "controller/action leaked into the UI" if response.body.include?("OrganizationsController#index")
         abort "route context was not retained" unless response.body.include?("GET /organizations")
-        abort "access analysis was not offered" unless response.body.include?("Analyze 25 principals")
+        abort "access analysis was not offered" unless response.body.include?("Who can use this?")
       RUBY
 
       expect(status).to be_success, output
@@ -222,9 +179,9 @@ RSpec.describe "Karst web middleware" do
         response = MOCK.get(
           "/karst?operation=route_lookup&method=GET&path=%2Forganizations%2F22", "REMOTE_ADDR" => "127.0.0.1"
         )
-        abort "controller/action was not derived" unless response.body.include?("OrganizationsController#show")
+        abort "controller/action leaked into the UI" if response.body.include?("OrganizationsController#show")
         abort "exact resource path was lost" unless response.body.include?("GET /organizations/22")
-        abort "access analysis was not offered" unless response.body.include?("Analyze 25 principals")
+        abort "access analysis was not offered" unless response.body.include?("Who can use this?")
         abort "wrong sweep path" unless response.body.include?('name="path" value="/organizations/22"')
       RUBY
 
@@ -239,7 +196,7 @@ RSpec.describe "Karst web middleware" do
           response = MOCK.get(
             "/karst?operation=route_lookup&method=GET&path=\#{path}", "REMOTE_ADDR" => "127.0.0.1"
           )
-          abort "unsafe or unknown route produced analysis" if response.body.include?("Analyze 25 principals")
+          abort "unsafe or unknown route produced analysis" if response.body.include?("Who can use this?")
           abort "missing route limitation" unless response.body.include?("Karst will not guess the route") ||
                                                   response.body.include?("valid local application path")
         end
@@ -253,7 +210,8 @@ RSpec.describe "Karst web middleware" do
         #{request_harness}
         response = MOCK.get("/karst", "REMOTE_ADDR" => "127.0.0.1")
         abort "falsely attributed panel route" if response.body.include?("Karst::Web::Panel#index")
-        abort "expected route selector" unless response.body.include?('name="controller"')
+        abort "expected URL selector" unless response.body.include?('name="path"')
+        abort "controller/action controls remain" if response.body.include?('<label>Controller')
 
         selected = MOCK.get("/karst?controller=PostsController&amp;action=index", "REMOTE_ADDR" => "127.0.0.1")
         abort "query changed host routing" unless selected.status == 200
@@ -313,7 +271,7 @@ RSpec.describe "Karst web middleware" do
         #{sweep_spy}
         remote_address = "127.0.0.1"
         response = #{analyze_request}
-        abort "expected panel response" unless response.body.include?("0 principals tested")
+        abort "expected panel response" unless response.body.include?("0 users tested")
         abort "expected exactly one sweep" unless $karst_sweep_calls == 1
       RUBY
 
@@ -388,12 +346,8 @@ RSpec.describe "Karst web middleware" do
     it "escapes a runtime-derived hostile value instead of rendering it as markup" do
       output, status = run_script(rails_env: "development", script: <<~RUBY)
         #{request_harness}
-        hostile = "<script>alert(1)</script>"
-        Karst.define_singleton_method(:window) do
-          Karst::Sql::Window.new(shapes: [], declined: [], event_count: hostile, capacity: 2_000, saturated: false)
-        end
-
-        response = MOCK.get("/karst", "REMOTE_ADDR" => "127.0.0.1")
+        hostile = "/<script>alert(1)</script>"
+        response = MOCK.get("/karst?method=GET&path=\#{Rack::Utils.escape(hostile)}", "REMOTE_ADDR" => "127.0.0.1")
         abort "hostile value rendered unescaped" if response.body.include?(hostile)
         abort "expected the escaped form" unless response.body.include?(CGI.escapeHTML(hostile))
       RUBY

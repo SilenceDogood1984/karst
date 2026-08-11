@@ -203,13 +203,13 @@ RSpec.describe "bounded access sweep Rails integration" do
     expect(response.body).not_to include("Candidate scopes", "Available models")
   end
 
-  it "links to /karst/populations from the main panel's access analysis section" do
+  it "does not promote population configuration from the main access analysis section" do
     stack = Karst::Web::Middleware.new(KarstTestApplication)
     mock = Rack::MockRequest.new(stack)
 
     response = mock.get("/karst?method=GET&path=%2Fdocuments%2Fread%2Fedit", "REMOTE_ADDR" => "127.0.0.1")
 
-    expect(response.body).to include('href="/karst/populations"')
+    expect(response.body).not_to include('href="/karst/populations"')
   end
 
   it "runs a guided population_sweep bounded to exactly one approved population, respecting access_sweep_limit" do
@@ -229,7 +229,7 @@ RSpec.describe "bounded access sweep Rails integration" do
     expect(response.status).to eq(200)
     # Bounded to exactly the flagged population (1 record), not the 25-wide
     # default access_sweep_limit or the 201-row full principal universe.
-    expect(response.body).to include("1 principals tested", "KarstAccessPrincipal ##{minority.id}",
+    expect(response.body).to include("1 users tested", "KarstAccessPrincipal ##{minority.id}",
                                      "Halted callback: halt_for_access_behavior")
   ensure
     Karst.config.principals = nil
