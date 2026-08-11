@@ -8,101 +8,31 @@ require_relative "candidate_population"
 
 module Karst
   module Access
-    # Selects a small, bounded, deterministic set of candidate principals from
-    # a large Active Record scope, biased toward covering distinct observed
-    # database-state dimensions (booleans, enums, nullable-FK presence,
-    # low-cardinality scalars) rather than the first N rows encountered. This
-    # is schema-state diversity, not behavioral diversity -- the sampler never
-    # executes a route, so it has no evidence about how any of these states
-    # actually behave; that evidence only exists once Access::Sweep runs.
-    #
-    # This class only selects candidates -- it never executes a route, never
-    # compares outcomes, and never inspects PII. Its result is fed to
-    # Karst::Access::Sweep exactly like any other bounded principal source.
-    #
-    # For a generic Enumerable (not an Active Record relation/class), it falls
-    # back to the same bounded-first strategy Sweep itself already used.
+    # Selects a small candidate set without ever scanning the full principal
+    # relation. Application-authored populations are the semantic mechanism;
+    # schema-derived states are a best-effort fallback over a bounded recent
+    # pool. This class only selects candidates. Access::Sweep remains the sole
+    # source of behavioral evidence.
     # rubocop:disable Metrics/ClassLength
     class PrincipalSampler
-      # Raised when the Active Record source has no single, simple primary
-      # key column (a composite primary key, or none at all). Sampling relies
-      # on ordering and excluding by one primary-key column throughout; rather
-      # than fail confusingly deep inside a query chain, this fails fast at
-      # the boundary with an actionable message. A plain Enumerable/Array
-      # principal source (including an already-materialized `relation.to_a`)
-      # is unaffected -- it never reaches this path.
       class UnsupportedPrimaryKey < Error; end
 
-      # A column is considered a candidate for stratification only when the
-      # number of distinct values observed does not exceed this cutoff.
-      # Chosen conservatively: enough to represent a handful of workflow
-      # states (a status enum, a small set of plans/tiers) while remaining
-      # cheap to discover with a single bounded query and remaining useless
-      # for anything resembling a tenant/account identifier at real scale.
       CARDINALITY_CUTOFF = 10
-
-      # Caps how many columns are ever considered as stratification
-      # dimensions, and how many of those require a discovery query (plain
-      # scalar columns; enums/booleans/nullable-FK presence are free -- their
-      # possible values are known from schema/model metadata, not a query).
-      # Both caps exist purely to bound query volume on wide tables; they do
-      # not depend on row count.
       MAX_DIMENSIONS = 8
-      MAX_SCALAR_DISCOVERY_QUERIES = 8
-
-      # Foreign-key-shaped columns (ending in "_id") whose name suggests a
-      # tenant/account boundary are excluded from candidacy outright, not
-      # just when non-nullable. A *nullable* tenant-style foreign key would
-      # otherwise reach #nullable_foreign_key_targets, which samples
-      # presence/absence without ever running the cardinality check below --
-      # so cardinality alone cannot be the thing keeping a high-cardinality
-      # tenant/account identifier out of the sampler; this name-based
-      # exclusion is what actually guarantees it, regardless of nullability.
       TENANCY_FK_TOKENS = %w[tenant account organization org company workspace team customer client shop].freeze
-
       ALLOWED_SCALAR_TYPES = %i[integer bigint string].freeze
 
       Candidate = Value.define(:principal, :reasons)
-
-      # candidate_pool_size is the configured recent-N bound representative
-      # discovery was scoped to (nil for the generic-Enumerable fallback,
-      # which has no query-scoped pool concept) -- callers use it to report
-      # the sampling scope truthfully instead of implying the full principal
-      # universe was searched. `populations` lists every configured
-      # candidate population that resolved successfully for this call
-      # (including one that currently matches zero rows) -- enough metadata
-      # for a future UI to show "Candidate populations available" and let a
-      # developer retry against one specifically, without this class
-      # needing to grow an interactive selector itself.
       Result = Value.define(:principals, :candidates, :strategy, :queries, :candidate_pool_size, :populations)
+      DimensionValue = Struct.new(:reason, :matcher, keyword_init: true)
+      private_constant :DimensionValue
 
-      # Deterministic, in-memory predicate plus an Active Record scope for the
-      # same criterion. Internal only -- never returned to callers.
-      Target = Struct.new(:key, :reason, :matcher, :scope, keyword_init: true)
-      private_constant :Target
-
-      # Total SQL queries #call will ever issue for a given limit, across
-      # every query-issuing step (bounded-pool derivation, seed selection,
-      # scalar-column cardinality discovery, per-target lookups, and the
-      # final fill query). This is a hard cap enforced at every one of those
-      # call sites individually (see #query_allowed?), not merely an
-      # estimate: #call always issues at most this many queries, regardless
-      # of table width or row count. Reaching the cap simply means #call may
-      # return fewer than `limit` principals rather than exceeding its query
-      # budget. Candidate populations add at most one bounded query apiece;
-      # the optional count keeps the declared budget truthful for the whole
-      # sampling call rather than only generic discovery.
-      def self.query_budget(limit, population_count = 0)
-        1 + MAX_SCALAR_DISCOVERY_QUERIES + (limit * 4) + 2 + population_count
+      # One bounded recent-pool query plus at most one bounded query for each
+      # configured population. Discovery itself is in memory over that pool.
+      def self.query_budget(_limit, population_count = 0)
+        1 + population_count
       end
 
-      # dimensions is a Hash of Symbol => PrincipalDimension (see
-      # Karst::Access::PrincipalDimension), already validated/normalized by
-      # the caller (Configuration or PrincipalSource) -- PrincipalSampler
-      # never accepts raw accessor values directly. populations is a Hash of
-      # Symbol => zero-argument callable (see
-      # Karst::Access::CandidatePopulation), similarly pre-normalized by the
-      # caller.
       def initialize(source:, limit: Karst.config.access_sweep_limit,
                      pool_size: Karst.config.principal_candidate_pool_size, dimensions: {}, populations: {})
         @source = source
@@ -121,8 +51,6 @@ module Karst
         representative_sample(relation)
       end
 
-      # No query, no enumeration: a pure type check used by the panel to
-      # decide which label to show before any sweep runs.
       def self.representative_capable?(source)
         return true if defined?(ActiveRecord::Relation) && source.is_a?(ActiveRecord::Relation)
 
@@ -135,9 +63,8 @@ module Karst
 
       def active_record_relation
         return @source if defined?(ActiveRecord::Relation) && @source.is_a?(ActiveRecord::Relation)
-        return @source.all if defined?(ActiveRecord::Base) && @source.is_a?(Class) && @source < ActiveRecord::Base
 
-        nil
+        @source.all if defined?(ActiveRecord::Base) && @source.is_a?(Class) && @source < ActiveRecord::Base
       end
 
       def fallback_sample
@@ -147,34 +74,20 @@ module Karst
                    candidate_pool_size: nil, populations: [])
       end
 
-      # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
+      # rubocop:disable Metrics/MethodLength
       def representative_sample(relation)
         klass = relation.klass
         primary_key = single_primary_key!(klass)
-        # Each configured population costs at most one bounded query,
-        # issued against the full configured relation -- never the
-        # recent-N pool below, since the whole point of a configured
-        # population is to reach a meaningful state the *recent*
-        # population may not represent at all. Their bounded query
-        # allowance is included in the instance budget at initialization.
         populations = resolve_populations(klass)
-        pool = bounded_pool_relation(relation, klass, primary_key)
-        dimensions = build_dimensions(pool, klass)
+        pool = recent_pool(relation, klass, primary_key)
         selected = {}
-        covered = {}
 
         apply_populations(populations, primary_key, selected)
-        seed_candidate(pool, primary_key, dimensions, covered, selected)
-        each_target(dimensions) do |target|
-          break if selected.size >= @limit || !query_allowed?
-          next if covered.key?(target.key)
-
-          record = fetch_matching(pool, primary_key, target, selected.keys)
-          next unless record
-
-          covered[target.key] = true
-          selected[record.public_send(primary_key)] = Candidate.new(principal: record, reasons: [target.reason])
-        end
+        dimensions = configured_dimensions(pool)
+        # Generic schema guesses are useful only when application-authored
+        # populations produced no semantic candidates.
+        dimensions.concat(generic_dimensions(pool, klass)) if selected.empty?
+        apply_dimensions(pool, primary_key, dimensions, selected)
         fill_remaining(pool, primary_key, selected)
 
         candidates = selected.values
@@ -182,45 +95,14 @@ module Karst
                    strategy: :representative, queries: @queries, candidate_pool_size: @pool_size,
                    populations: populations)
       end
-      # rubocop:enable Metrics/AbcSize, Metrics/MethodLength
 
-      # Derives a bounded "most recent @pool_size principals" relation and
-      # fixes it as a literal primary-key list (`WHERE pk IN (1, 2, 3, ...)`)
-      # rather than merely chaining `.limit` on the relation every later step
-      # reuses. Merely chaining `.limit` would not be a true preselected
-      # pool: Active Record merges every `.where`/`.order` clause added
-      # later into the *same* query, so the LIMIT would apply after those
-      # additional conditions rather than before them, letting a dimension
-      # lookup silently reach rows outside the intended pool.
-      #
-      # The pool is resolved with exactly one query here, not re-derived as
-      # a live subquery on every later query: a correlated `pk IN (SELECT pk
-      # FROM ... ORDER BY ... LIMIT n)` subquery would be safe but pays that
-      # ORDER BY/LIMIT cost again on every single query representative
-      # discovery issues, which reintroduces an unbounded-relation-shaped
-      # cost on any column (typically created_at) without a supporting
-      # index -- exactly the scaling failure this pool exists to remove.
-      # Fixing the ids once and inlining them as a literal list (not bind
-      # parameters, via `where("pk IN (?)", ids)`) also sidesteps some
-      # database adapters' bind-parameter-count ceilings at the configured
-      # hard maximum pool size. The ids come only from this process's own
-      # prior query result, never from external input, so literal inlining
-      # (quoted through Active Record's own sanitizer) carries no injection
-      # risk. Every later `.where` on the returned relation is ANDed against
-      # this fixed, already-bounded id list, so no query issued against it
-      # can ever inspect a row outside the pool, regardless of what
-      # conditions representative discovery adds.
-      def bounded_pool_relation(relation, klass, primary_key)
-        return relation.none unless query_allowed?
+      # rubocop:enable Metrics/MethodLength
+      def recent_pool(relation, klass, primary_key)
+        return [] unless query_allowed?
 
-        recency_ordered = if klass.columns_hash.key?("created_at")
-                            relation.reorder(created_at: :desc)
-                          else
-                            relation.reorder(primary_key => :desc)
-                          end
+        order = klass.columns_hash.key?("created_at") ? { created_at: :desc } : { primary_key => :desc }
         @queries += 1
-        pool_ids = recency_ordered.limit(@pool_size).pluck(primary_key)
-        relation.where("#{primary_key} IN (?)", pool_ids)
+        relation.reorder(order).limit(@pool_size).to_a
       end
 
       def single_primary_key!(klass)
@@ -237,85 +119,6 @@ module Karst
         @queries < @query_budget
       end
 
-      # Every query in representative discovery now runs against the bounded
-      # pool, whose rows sit at the high end of the primary key range (the
-      # pool is "most recent," and recency and primary-key order correlate
-      # in virtually every real schema). Ordering ascending by primary key,
-      # as this and #fetch_matching/#fill_remaining did before the pool
-      # existed, would force exactly the kind of full-table scan the pool
-      # exists to avoid: to find the smallest matching id, the database
-      # walks the primary-key index from its very start, past every
-      # excluded low-id row, before ever reaching the pool. Descending order
-      # instead reaches pool-dense territory on the first rows examined.
-      #
-      # A configured population may already have selected this exact seed
-      # row (the most-recent principal can easily also be, say, a system
-      # admin); merging here preserves that provenance instead of silently
-      # discarding it, and never probes the same principal twice for it.
-      def seed_candidate(relation, primary_key, dimensions, covered, selected)
-        return unless query_allowed?
-
-        @queries += 1
-        seed = relation.order(primary_key => :desc).limit(1).first
-        return unless seed
-
-        id = seed.public_send(primary_key)
-        reasons = cover_matching(seed, dimensions, covered)
-        existing = selected[id]
-        selected[id] = Candidate.new(principal: seed, reasons: (existing ? existing.reasons + reasons : reasons).uniq)
-      end
-
-      def cover_matching(seed, dimensions, covered)
-        matched = dimensions.flatten.select { |target| target.matcher.call(seed) }
-        matched.each { |target| covered[target.key] = true }
-        matched.map(&:reason)
-      end
-
-      def each_target(dimensions)
-        queues = dimensions.map(&:dup)
-        loop do
-          progressed = false
-          queues.each do |queue|
-            next if queue.empty?
-
-            yield queue.shift
-            progressed = true
-          end
-          break unless progressed
-        end
-      end
-
-      def fetch_matching(relation, primary_key, target, exclude_ids)
-        return nil unless query_allowed?
-
-        @queries += 1
-        scope = target.scope.call(relation)
-        scope = scope.where.not(primary_key => exclude_ids) if exclude_ids.any?
-        scope.order(primary_key => :desc).limit(1).first
-      end
-
-      def fill_remaining(relation, primary_key, selected)
-        remaining = @limit - selected.size
-        return if remaining <= 0 || !query_allowed?
-
-        @queries += 1
-        relation.where.not(primary_key => selected.keys).order(primary_key => :desc).limit(remaining).each do |record|
-          selected[record.public_send(primary_key)] = Candidate.new(principal: record, reasons: [])
-        end
-      end
-
-      # Resolves every configured name => callable population, fairly
-      # sharing @limit across however many populations there are so one
-      # very large population (responders: 300,000) cannot crowd out a
-      # much smaller one (system_admins: 8) within the same global sweep
-      # budget. Costs at most one query per configured population,
-      # regardless of that population's underlying row count, and never
-      # exceeds the instance's own query budget. Each callable is
-      # validated against this exact klass, so two PrincipalSampler
-      # instances over two different klasses never share or leak each
-      # other's populations -- a callable returning a different model's
-      # relation is rejected by CandidatePopulation.resolve's same-model
-      # check.
       def resolve_populations(klass)
         return [] if @populations.empty?
 
@@ -330,25 +133,15 @@ module Karst
         end
       end
 
-      # Merges every resolved population's records into `selected`,
-      # interleaved round-robin across populations (not simply concatenated)
-      # so truncation at @limit still gives every population a fair chance
-      # to contribute rather than exhausting the first population's share
-      # before ever reaching the next. A principal present in more than one
-      # population is probed once but keeps every matching population's
-      # provenance (e.g. both "population=system_admins" and
-      # "population=auditors").
       def apply_populations(populations, primary_key, selected)
-        return if populations.empty?
-
-        reasons_by_id = population_reasons_by_id(populations, primary_key)
+        reasons = population_reasons(populations, primary_key)
         interleave(populations.map(&:records)).each do |record|
           break if selected.size >= population_candidate_limit
 
           id = record.public_send(primary_key)
           next if selected.key?(id)
 
-          selected[id] = Candidate.new(principal: record, reasons: reasons_by_id[id])
+          selected[id] = Candidate.new(principal: record, reasons: reasons[id])
         end
       end
 
@@ -356,229 +149,138 @@ module Karst
         @limit > 1 ? @limit - 1 : @limit
       end
 
-      def population_reasons_by_id(populations, primary_key)
-        reasons_by_id = Hash.new { |hash, id| hash[id] = [] }
-        populations.each do |population|
-          population.records.each do |record|
-            reasons_by_id[record.public_send(primary_key)] << population.provenance
-          end
+      def population_reasons(populations, primary_key)
+        populations.each_with_object(Hash.new { |hash, id| hash[id] = [] }) do |population, reasons|
+          population.records.each { |record| reasons[record.public_send(primary_key)] << population.provenance }
         end
-        reasons_by_id
       end
 
       def interleave(groups)
         width = groups.map(&:size).max || 0
-        Array.new(width) { |i| groups.filter_map { |group| group[i] } }.flatten(1)
+        Array.new(width) { |index| groups.filter_map { |group| group[index] } }.flatten(1)
       end
 
-      # Returns an Array of dimensions, each an Array of Target -- the shape
-      # #each_target round-robins over to interleave coverage across
-      # dimensions rather than exhausting one dimension before the next.
-      # Configured dimensions (see #configured_dimension_targets) always go
-      # first and are never capped by MAX_DIMENSIONS -- an application that
-      # explicitly named a dimension gets it, full stop; MAX_DIMENSIONS only
-      # bounds how much *generic* schema discovery fills in around them.
-      def build_dimensions(relation, klass)
-        @scalar_discovery_budget = MAX_SCALAR_DISCOVERY_QUERIES
-        dimensions = configured_dimension_targets(relation, klass)
-        configured_columns = @dimensions.values.filter_map { |dimension| dimension.column_for(klass)&.name }
-        add_generic_dimensions(relation, klass, dimensions, configured_columns)
-        dimensions
-      end
+      def configured_dimensions(pool)
+        @dimensions.values.filter_map do |dimension|
+          values = pool.group_by { |record| dimension.value_for(record) }
+          next unless useful_values?(values)
 
-      def add_generic_dimensions(relation, klass, dimensions, configured_columns)
-        candidate_columns(klass).each do |column|
-          break if dimensions.size >= MAX_DIMENSIONS || !query_allowed?
-          next if configured_columns.include?(column.name)
-
-          targets = dimension_targets(relation, column, klass)
-          dimensions << targets if targets && targets.size > 1
+          values.sort_by { |value, _| value.to_s }.map do |value, _|
+            dimension_value("#{dimension.name}=#{dimension.format_value(value)}") do |record|
+              dimension.value_for(record) == value
+            end
+          end
         end
       end
 
-      def dimension_targets(relation, column, klass)
-        enum_targets(column, klass) || boolean_targets(column) || nullable_foreign_key_targets(column, klass) ||
-          scalar_dimension_targets(relation, column)
-      end
+      def generic_dimensions(pool, klass)
+        candidate_columns(klass).first(MAX_DIMENSIONS).filter_map do |column|
+          values = generic_values(pool, klass, column)
+          next unless values
 
-      # Builds one Target group per configured PrincipalDimension (see
-      # Karst::Access::PrincipalDimension), in configured order. A dimension
-      # backed by a real column (an enum, boolean, or plain scalar) is
-      # discovered the same bounded way generic schema dimensions are -- a
-      # single `DISTINCT ... LIMIT` query, never a full scan. A dimension
-      # that is not a real column (a predicate method, or a callable) cannot
-      # be translated to SQL, so it is instead evaluated once, in Ruby, over
-      # the already query-bounded `relation` (the recent-N candidate pool
-      # #representative_sample derived) -- never per-row against the full
-      # table -- via #configured_pool_targets.
-      def configured_dimension_targets(relation, klass)
-        return [] if @dimensions.empty?
-
-        @pool_records = nil
-        results = []
-        @dimensions.each_value do |dimension|
-          break unless query_allowed?
-
-          targets = configured_targets_for(relation, klass, dimension)
-          results << targets if targets && targets.size > 1
+          values
         end
-        results
       end
 
-      def configured_targets_for(relation, klass, dimension)
-        column = dimension.column_for(klass)
-        return configured_column_targets(relation, column, klass, dimension) if column
-
-        @pool_records ||= materialize_pool(relation)
-        configured_pool_targets(dimension, @pool_records, klass.primary_key)
+      # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity
+      def generic_values(pool, klass, column)
+        if enum_mapping(klass, column)
+          enum_mapping(klass, column).keys.sort.map do |value|
+            equality_value(column, value, value)
+          end
+        elsif column.type == :boolean
+          [true, false].map { |value| equality_value(column, value, value.inspect) }
+        elsif nullable_foreign_key?(klass, column)
+          [true, false].map { |present| foreign_key_value(column, present) }
+        elsif ALLOWED_SCALAR_TYPES.include?(column.type)
+          scalar_values(pool, column)
+        end
       end
 
-      def materialize_pool(relation)
-        return [] unless query_allowed?
+      # rubocop:enable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity
+      def scalar_values(pool, column)
+        values = pool.map { |record| record.public_send(column.name) }.uniq
+        return unless values.size.between?(2, CARDINALITY_CUTOFF)
 
-        @queries += 1
-        relation.to_a
+        values.sort_by(&:to_s).map { |value| equality_value(column, value, value.inspect) }
       end
 
-      def configured_column_targets(relation, column, klass, dimension)
-        configured_enum_targets(column, klass, dimension) || configured_boolean_targets(column, dimension) ||
-          configured_scalar_targets(relation, column, dimension)
+      # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity
+      def apply_dimensions(pool, primary_key, dimensions, selected)
+        queues = dimensions.map(&:dup)
+        loop do
+          progressed = false
+          queues.each do |queue|
+            value = queue.shift
+            next unless value
+
+            progressed = true
+            record = pool.find { |candidate| value.matcher.call(candidate) }
+            next unless record
+
+            id = record.public_send(primary_key)
+            existing = selected[id]
+            reasons = existing ? (existing.reasons + [value.reason]).uniq : [value.reason]
+            selected[id] = Candidate.new(principal: record, reasons: reasons)
+            break if selected.size >= @limit
+          end
+          break if selected.size >= @limit || !progressed
+        end
       end
 
-      def configured_enum_targets(column, klass, dimension)
-        return nil unless klass.respond_to?(:defined_enums)
+      # rubocop:enable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity
+      def fill_remaining(pool, primary_key, selected)
+        pool.each do |record|
+          break if selected.size >= @limit
 
-        mapping = klass.defined_enums[column.name]
-        return nil unless mapping
-
-        mapping.keys.sort.map { |key| configured_equality_target(dimension, column, key) }
-      end
-
-      def configured_boolean_targets(column, dimension)
-        return nil unless column.type == :boolean
-
-        [true, false].map { |value| configured_equality_target(dimension, column, value) }
-      end
-
-      def configured_scalar_targets(relation, column, dimension)
-        return nil unless query_allowed?
-
-        @queries += 1
-        values = relation.distinct.limit(CARDINALITY_CUTOFF + 1).pluck(column.name)
-        return nil if values.size > CARDINALITY_CUTOFF || values.size <= 1
-
-        values.sort_by(&:to_s).map { |value| configured_equality_target(dimension, column, value) }
-      end
-
-      def configured_equality_target(dimension, column, value)
-        Target.new(
-          key: "dimension:#{dimension.name}=#{value}", reason: "#{dimension.name}=#{dimension.format_value(value)}",
-          matcher: ->(record) { record.public_send(column.name) == value },
-          scope: ->(rel) { rel.where(column.name => value) }
-        )
-      end
-
-      # A predicate/callable dimension has no SQL scope, so its Target scope
-      # instead narrows to the exact primary keys observed (within the
-      # already-bounded pool) to hold that value -- still a single bounded,
-      # deterministic query per target through the ordinary #fetch_matching
-      # path, never a second unbounded scan.
-      def configured_pool_targets(dimension, pool_records, primary_key)
-        grouped = pool_records.group_by { |record| dimension.value_for(record) }
-        return nil if grouped.size <= 1 || grouped.size > CARDINALITY_CUTOFF
-
-        grouped.sort_by { |value, _records| value.to_s }
-               .map { |value, records| configured_pool_target(dimension, primary_key, value, records) }
-      end
-
-      def configured_pool_target(dimension, primary_key, value, records)
-        ids = records.map { |record| record.public_send(primary_key) }
-        Target.new(
-          key: "dimension:#{dimension.name}=#{value}", reason: "#{dimension.name}=#{dimension.format_value(value)}",
-          matcher: ->(record) { dimension.value_for(record) == value },
-          scope: ->(rel) { rel.where(primary_key => ids) }
-        )
-      end
-
-      def scalar_dimension_targets(relation, column)
-        return nil unless ALLOWED_SCALAR_TYPES.include?(column.type) && @scalar_discovery_budget.positive? &&
-                          query_allowed?
-
-        @scalar_discovery_budget -= 1
-        scalar_targets(relation, column)
+          id = record.public_send(primary_key)
+          selected[id] ||= Candidate.new(principal: record, reasons: [])
+        end
       end
 
       def candidate_columns(klass)
         klass.columns_hash.values.reject do |column|
-          column.name == klass.primary_key || sensitive_name?(column.name) || encrypted_attribute?(klass, column) ||
-            tenancy_foreign_key?(column)
+          column.name == klass.primary_key || SensitiveAttributeNames.match?(column.name) ||
+            encrypted_attribute?(klass, column) || tenancy_foreign_key?(column)
         end
-      end
-
-      def sensitive_name?(column_name)
-        SensitiveAttributeNames.match?(column_name)
-      end
-
-      # See TENANCY_FK_TOKENS: this is what actually keeps a high-cardinality
-      # tenant/account foreign key out of candidacy, independent of whether
-      # the column happens to be nullable (and therefore would otherwise
-      # reach the cardinality-check-free presence/absence path).
-      def tenancy_foreign_key?(column)
-        return false unless column.name.end_with?("_id")
-
-        column.name.to_s.downcase.split("_").any? { |token| TENANCY_FK_TOKENS.include?(token) }
       end
 
       def encrypted_attribute?(klass, column)
         klass.respond_to?(:encrypted_attributes) && klass.encrypted_attributes&.include?(column.name.to_sym)
       end
 
-      def enum_targets(column, klass)
-        return nil unless klass.respond_to?(:defined_enums)
-
-        mapping = klass.defined_enums[column.name]
-        return nil unless mapping
-
-        mapping.keys.sort.map { |key| equality_target(column, key, label: key) }
+      def tenancy_foreign_key?(column)
+        column.name.end_with?("_id") &&
+          column.name.downcase.split("_").any? { |token| TENANCY_FK_TOKENS.include?(token) }
       end
 
-      def boolean_targets(column)
-        return nil unless column.type == :boolean
-
-        [true, false].map { |value| equality_target(column, value) }
+      def nullable_foreign_key?(klass, column)
+        column.name.end_with?("_id") && column.name != klass.primary_key && column.null
       end
 
-      def nullable_foreign_key_targets(column, klass)
-        return nil unless column.name.end_with?("_id") && column.name != klass.primary_key && column.null
-
-        [foreign_key_target(column, true), foreign_key_target(column, false)]
+      def enum_mapping(klass, column)
+        klass.defined_enums[column.name] if klass.respond_to?(:defined_enums)
       end
 
-      def foreign_key_target(column, present)
+      def equality_value(column, value, label)
+        dimension_value("#{column.name}=#{label}") do |record|
+          record.public_send(column.name) == value
+        end
+      end
+
+      def foreign_key_value(column, present)
         label = present ? "present" : "absent"
-        Target.new(
-          key: "#{column.name}:#{label}", reason: "#{column.name} #{label}",
-          matcher: ->(record) { record.public_send(column.name).nil? != present },
-          scope: ->(rel) { present ? rel.where.not(column.name => nil) : rel.where(column.name => nil) }
-        )
+        dimension_value("#{column.name} #{label}") do |record|
+          record.public_send(column.name).nil? != present
+        end
       end
 
-      def scalar_targets(relation, column)
-        @queries += 1
-        values = relation.distinct.limit(CARDINALITY_CUTOFF + 1).pluck(column.name)
-        return nil if values.size > CARDINALITY_CUTOFF || values.size <= 1
-
-        values.sort_by(&:to_s).map { |value| equality_target(column, value) }
+      def dimension_value(reason, &matcher)
+        DimensionValue.new(reason: reason, matcher: matcher)
       end
 
-      # Shared shape for enum/boolean/scalar dimensions: a Target whose
-      # matcher and scope both reduce to a plain column equality check.
-      # Nullable-FK presence is the one dimension kind that is not an
-      # equality check, so it builds its own Target (#foreign_key_target).
-      def equality_target(column, value, label: value.inspect)
-        Target.new(key: "#{column.name}=#{value}", reason: "#{column.name}=#{label}",
-                   matcher: ->(record) { record.public_send(column.name) == value },
-                   scope: ->(rel) { rel.where(column.name => value) })
+      def useful_values?(values)
+        values.size.between?(2, CARDINALITY_CUTOFF)
       end
     end
     # rubocop:enable Metrics/ClassLength

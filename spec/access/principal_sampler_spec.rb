@@ -354,17 +354,14 @@ RSpec.describe Karst::Access::PrincipalSampler do
       result.candidates.find { |candidate| candidate.principal.id == id }.reasons
     end
 
-    it "derives the pool with exactly one query, then fixes it as a literal id list every later query is " \
-       "scoped to -- never a live subquery re-evaluated (and re-scanning the full table) on every query" do
+    it "materializes the bounded recent pool with exactly one query and performs fallback discovery in memory" do
       120.times { |i| SamplerPrincipal.create!(premium: false, status: :active, tenant_id: i, created_at: Time.now) }
 
       queries = sql_queries { described_class.new(source: SamplerPrincipal.all, limit: 5, pool_size: 30).call }
       selects = queries.grep(/\ASELECT/i)
-      pool_derivation, rest = selects.partition { |sql| sql.match?(/ORDER BY .*LIMIT \?\z/i) && !sql.include?("IN (") }
-
-      expect(pool_derivation.size).to eq(1)
-      expect(rest).not_to be_empty
-      expect(rest).to all(match(/\bid IN \(\d/))
+      expect(selects.size).to eq(1)
+      expect(selects.first).to match(/ORDER BY .*LIMIT \?\z/i)
+      expect(selects.first).not_to include(" IN (SELECT ")
     end
 
     it "orders the pool by created_at desc when the column exists, otherwise by primary key desc" do
@@ -630,7 +627,7 @@ RSpec.describe Karst::Access::PrincipalSampler do
       expect(candidate_reasons(result, old_admin.id)).to include("population=system_admins")
     end
 
-    it "surfaces a principal a wide table's own dimension discovery structurally cannot reach" do
+    it "prefers a population and does not run generic stratification after it contributes" do
       WideScopedPrincipal.delete_all
       # Created first (lowest id): with seed/fill now biased toward the most
       # recently created rows, these must stay old/excluded from a plain
@@ -645,7 +642,8 @@ RSpec.describe Karst::Access::PrincipalSampler do
 
       populations = { system_admins: -> { WideScopedPrincipal.system_admins } }
       with_populations = described_class.new(source: WideScopedPrincipal.all, limit: 25, populations: populations).call
-      expect(with_populations.principals.map(&:id)).to include(admin.id, filler_hit.id)
+      expect(with_populations.principals.map(&:id)).to include(admin.id)
+      expect(with_populations.principals.map(&:id)).not_to include(filler_hit.id)
       expect(candidate_reasons(with_populations, admin.id)).to include("population=system_admins")
     end
 
