@@ -22,7 +22,7 @@ module Karst
     # fill). One source running out never blocks another from filling the
     # rest of the budget.
     class PrincipalSelection
-      Result = Value.define(:principals, :candidates, :queries, :candidate_pool_size, :populations)
+      Result = Value.define(:principals, :candidates, :queries, :candidate_pool_size)
 
       def initialize(sources:, limit: Karst.config.access_sweep_limit,
                      pool_size: Karst.config.principal_candidate_pool_size)
@@ -43,7 +43,7 @@ module Karst
       def sample_each_source
         @sources.each_with_object({}) do |(name, source), memo|
           memo[name] = PrincipalSampler.new(source: source.evaluate, limit: @limit, pool_size: @pool_size,
-                                            dimensions: source.dimensions, populations: source.populations).call
+                                            dimensions: source.dimensions).call
         end
       end
 
@@ -70,8 +70,7 @@ module Karst
 
         Result.new(
           principals: candidates.map(&:principal), candidates: candidates,
-          queries: per_source.values.sum(&:queries), candidate_pool_size: combined_pool_size(per_source),
-          populations: per_source.values.flat_map(&:populations)
+          queries: per_source.values.sum(&:queries), candidate_pool_size: combined_pool_size(per_source)
         )
       end
 
@@ -85,7 +84,7 @@ module Karst
       end
 
       def empty_result
-        Result.new(principals: [], candidates: [], queries: 0, candidate_pool_size: nil, populations: [])
+        Result.new(principals: [], candidates: [], queries: 0, candidate_pool_size: nil)
       end
     end
   end

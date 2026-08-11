@@ -164,27 +164,30 @@ RSpec.describe Karst::Access::PrincipalSelection do
       expect(result.queries).to be > 0
     end
 
-    it "carries each source's configured populations through independently, without leaking across sources" do
+    # Populations are Karst::Access::Search's second stage. Selection must
+    # not resolve or contribute them, or a population would silently become
+    # part of an ordinary-looking sample and could never be reported as what
+    # it took to reach the behavior.
+    it "never resolves a configured population, even when every source declares one" do
       6.times { SelectionAuthor.create!(premium: false) }
-      admin_author = SelectionAuthor.create!(premium: false)
       6.times { SelectionReader.create!(role: "responder") }
-      owner_reader = SelectionReader.create!(role: "owner")
+      resolved = []
       sources = {
         authors: Karst::Access::PrincipalSource.new(
           name: :authors, records: -> { SelectionAuthor.all },
-          populations: { admins: -> { SelectionAuthor.where(id: admin_author.id) } }
+          populations: { admins: -> { resolved << :authors and SelectionAuthor.all } }
         ),
         readers: Karst::Access::PrincipalSource.new(
           name: :readers, records: -> { SelectionReader.all },
-          populations: { admins: -> { SelectionReader.where(id: owner_reader.id) } }
+          populations: { admins: -> { resolved << :readers and SelectionReader.all } }
         )
       }
 
       result = described_class.new(sources: sources, limit: 10).call
 
-      expect(result.principals.map(&:id)).to include(admin_author.id, owner_reader.id)
-      expect(result.populations.map(&:source)).to contain_exactly(SelectionAuthor, SelectionReader)
-      expect(result.candidates.flat_map(&:reasons)).to include("population=admins")
+      expect(resolved).to be_empty
+      expect(result.candidates.flat_map(&:reasons)).not_to include(a_string_starting_with("population="))
+      expect(result).not_to respond_to(:populations)
     end
 
     it "carries each source's configured dimensions through independently" do

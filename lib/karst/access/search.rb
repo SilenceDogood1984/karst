@@ -2,7 +2,6 @@
 
 require_relative "../value"
 require_relative "sweep"
-require_relative "principal_source"
 require_relative "principal_selection"
 require_relative "candidate_population"
 
@@ -40,6 +39,12 @@ module Karst
       #   :unresolved       the callable did not yield usable records
       #   :skipped          not tried -- a usable user was already found
       #   :budget_exhausted not tried -- the retry request budget was reached
+      #
+      # Hard ceiling on the LIMIT any single population resolution may use,
+      # independent of how many users have already been tested. See
+      # #resolve_limit.
+      MAX_RESOLUTION_LIMIT = 50
+
       PopulationAttempt = Value.define(:name, :source_name, :state, :result, :error) do
         def ran?
           !result.nil?
@@ -90,28 +95,15 @@ module Karst
 
       private
 
+      # PrincipalSampler is population-free by construction, so stage one
+      # cannot silently consume a population no matter what is configured;
+      # this class is the only thing that ever resolves or probes one.
       def initial_sweep
-        sampled = PrincipalSelection.new(sources: sample_sources).call
+        sampled = PrincipalSelection.new(sources: @sources).call
         record_tried(sampled.principals)
         Sweep.new(path: @path, http_method: @http_method, principals: sampled.principals,
                   application: @application, candidate_pool_size: sampled.candidate_pool_size,
                   sampling_reasons: sampling_reasons(sampled)).call
-      end
-
-      # The ordinary sample deliberately runs *without* candidate
-      # populations, even though PrincipalSampler is able to fold them in
-      # directly. A population that is silently mixed into the first sample
-      # can never be reported as "this is what it took to reach the
-      # behavior" -- it just quietly becomes part of an ordinary-looking
-      # result. Keeping populations out of stage one and letting this class
-      # own them in stage two is what makes the two-stage evidence
-      # ("25 recent users, none usable -> system_admins -> User #27 -> 200")
-      # true as stated. Dimensions still apply to the sample; only
-      # populations move.
-      def sample_sources
-        @sources.transform_values do |source|
-          PrincipalSource.new(name: source.name, records: source.records, dimensions: source.dimensions)
-        end
       end
 
       def sampling_reasons(sampled)
@@ -193,10 +185,18 @@ module Karst
       # deduplication cannot produce a false ":already_tried": if a
       # population holds at least (cap + already-tried) rows, at most
       # already-tried of them can be duplicates, so at least `cap` fresh
-      # ones survive. Still one bounded query, and still small -- the
-      # already-tried set is itself capped by access_sweep_limit twice over.
+      # ones survive.
+      #
+      # MAX_RESOLUTION_LIMIT caps that explicitly rather than leaving it to
+      # an indirect argument about how large the already-tried set can get.
+      # Without the cap the limit is (cap + already-tried), and already-tried
+      # grows with both the initial sample and every prior population, so a
+      # late population would be resolved with a needlessly large LIMIT. The
+      # cap costs only the guarantee above, and only for a population whose
+      # rows are almost entirely duplicates -- which reports
+      # ":already_tried", still an honest answer.
       def resolve_limit
-        per_population_limit + @tried_keys.size
+        [per_population_limit + @tried_keys.size, MAX_RESOLUTION_LIMIT].min
       end
 
       def per_population_limit

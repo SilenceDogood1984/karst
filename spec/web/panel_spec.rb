@@ -241,7 +241,7 @@ RSpec.describe Karst::Web::Panel do
                                     access_result: access_result(sample, attempts: attempts)).last.join
 
       expect(body).to include("Candidate populations", "system_admins", "User #27 → 200 OK ✓",
-                              "<h2>Usable users — 1</h2>")
+                              "<h2>Users who can use this URL — 1</h2>")
       expect(body).to include("Sample: 1 recent user, none usable · halted at <code>authorize_admin</code>")
       expect(body).to include("auditors", "not tried — a usable user was already found")
     end
@@ -261,7 +261,7 @@ RSpec.describe Karst::Web::Panel do
       expect(body).to include("could not be resolved (did not resolve to a usable relation)")
       expect(body).to include("every candidate was already tested above")
       expect(body).to include("not tried — the retry request budget was reached")
-      expect(body).to include("<h2>Usable users — 0</h2>")
+      expect(body).to include("<h2>Users who can use this URL — 0</h2>")
     end
 
     it "counts population requests in the analysis meta without implying they were sampled" do

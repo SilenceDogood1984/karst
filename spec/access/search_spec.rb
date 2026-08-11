@@ -315,6 +315,36 @@ RSpec.describe Karst::Access::Search do
     expect(result.all_outcomes.size).to eq(2)
   end
 
+  # The reconciliation invariant: PrincipalSampler is population-free, so
+  # stage one can never quietly include a population record and pass it off
+  # as an ordinary sample.
+  it "keeps configured populations out of the ordinary sample entirely" do
+    plain = create_user(role: "plain")
+    admin = create_user(role: "admin")
+
+    result = search({ system_admins: -> { SearchUser.where(role: "admin") } })
+
+    expect(result.initial.outcomes.map { |outcome| outcome.principal.id }).to eq([plain.id])
+    expect(result.initial.outcomes.flat_map(&:sampling_reasons)).to be_empty
+    expect(result.attempts.first.result.outcomes.map { |outcome| outcome.principal.id }).to eq([admin.id])
+  end
+
+  it "caps a single population resolution limit regardless of how many users were already tested" do
+    Karst.config.access_sweep_limit = 25
+    30.times { create_user(role: "plain") }
+    create_user(role: "admin")
+    limits = []
+    allow(Karst::Access::CandidatePopulation).to receive(:resolve).and_wrap_original do |original, **kwargs|
+      limits << kwargs[:limit]
+      original.call(**kwargs)
+    end
+
+    search({ system_admins: -> { SearchUser.where(role: "admin") } })
+
+    expect(limits).not_to be_empty
+    expect(limits.max).to be <= described_class::MAX_RESOLUTION_LIMIT
+  end
+
   it "resolves populations in configuration order, not by name" do
     create_user(role: "plain")
     zeta = create_user(role: "zeta")

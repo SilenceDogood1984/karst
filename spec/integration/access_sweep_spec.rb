@@ -157,28 +157,35 @@ RSpec.describe "bounded access sweep Rails integration" do
     Karst.config.principals = nil
   end
 
-  it "honors config.principal_populations end-to-end (via config.principal_sources), surfacing a minority " \
-     "population's principal past a dominant population outside the recent candidate pool, within the same " \
-     "global sweep limit" do
+  it "reaches a population's user that falls outside the recent candidate pool, end-to-end through Search" do
     KarstAccessPrincipal.delete_all
-    minority = KarstAccessPrincipal.create!(behavior: "forbidden")
-    300.times { KarstAccessPrincipal.create!(behavior: "ok") }
+    # Created first, so it is the oldest row and cannot appear in a pool of
+    # the 20 most recent -- exactly the case generic sampling cannot reach.
+    outside_pool = KarstAccessPrincipal.create!(behavior: "ok")
+    300.times { KarstAccessPrincipal.create!(behavior: "forbidden") }
     Karst.config.principal_candidate_pool_size = 20
+    Karst.config.access_sweep_limit = 3
     Karst.config.principals = -> { KarstAccessPrincipal.all }
-    Karst.config.principal_populations = { flagged: -> { KarstAccessPrincipal.flagged } }
+    Karst.config.principal_populations = { working: -> { KarstAccessPrincipal.where(behavior: "ok") } }
 
-    sampled = Karst::Access::PrincipalSelection.new(sources: Karst::Identity.principal_sources, limit: 25).call
-    expect(sampled.principals.size).to be <= 25
-    expect(sampled.principals.map(&:id)).to include(minority.id)
-    expect(sampled.populations.map(&:name)).to eq([:flagged])
-    expect(sampled.candidates.find { |c| c.principal.id == minority.id }.reasons).to include("population=flagged")
+    result = Karst::Access::Search.new(path: "/documents/read/edit", sources: Karst::Identity.principal_sources,
+                                       application: KarstTestApplication).call
 
-    result = Karst::Access::Sweep.new(path: "/documents/read/edit", principals: sampled.principals,
-                                      application: KarstTestApplication).call
+    # Stage one: only recent users, none usable, and never the population's.
+    expect(result.initial.outcomes.map(&:status).uniq).to eq([403])
+    expect(result.initial.outcomes.map { |outcome| outcome.principal.id }).not_to include(outside_pool.id)
 
-    expect(result.outcomes.map(&:status)).to include(403)
+    # Stage two: the configured population queries the full relation.
+    attempt = result.attempts.first
+    expect(attempt.state).to eq(:usable)
+    expect(attempt.result.outcomes.map { |outcome| outcome.principal.id }).to eq([outside_pool.id])
+    expect(attempt.result.outcomes.flat_map(&:sampling_reasons)).to eq(["population=working"])
+
+    # config.principals remains the complete allowed universe.
+    expect(Karst::Identity.resolve(model_name: "KarstAccessPrincipal", id: outside_pool.id)).to eq(outside_pool)
   ensure
     Karst.config.principal_candidate_pool_size = 1_000
+    Karst.config.access_sweep_limit = 25
     Karst.config.principals = nil
     Karst.config.principal_populations = nil
   end
@@ -235,7 +242,7 @@ RSpec.describe "bounded access sweep Rails integration" do
                                      "halted at <code>halt_for_access_behavior</code>")
     expect(response.body).to include("Candidate populations", "working",
                                      "KarstAccessPrincipal ##{usable.id} → 200 OK ✓")
-    expect(response.body).to include("<h2>Usable users — 1</h2>")
+    expect(response.body).to include("<h2>Users who can use this URL — 1</h2>")
   ensure
     Karst.config.principals = nil
     Karst.config.principal_populations = nil
@@ -253,7 +260,7 @@ RSpec.describe "bounded access sweep Rails integration" do
     response = access_sweep_response
 
     expect(response.status).to eq(200)
-    expect(response.body).to include("<h2>Usable users — 0</h2>")
+    expect(response.body).to include("<h2>Users who can use this URL — 0</h2>")
     expect(response.body).to include("redirected", "1 user tried — none usable")
     expect(response.body).to include("missing", "no matching records")
   ensure
@@ -271,7 +278,7 @@ RSpec.describe "bounded access sweep Rails integration" do
     response = access_sweep_response
 
     expect(response.status).to eq(200)
-    expect(response.body).to include("<h2>Usable users — 1</h2>")
+    expect(response.body).to include("<h2>Users who can use this URL — 1</h2>")
     expect(response.body).not_to include("Candidate populations", "KarstAccessPrincipal ##{flagged.id}")
   ensure
     Karst.config.principals = nil
@@ -290,7 +297,7 @@ RSpec.describe "bounded access sweep Rails integration" do
     # KarstAccessPrincipal.flagged is discoverable at /karst/populations, and
     # a usable "ok" record exists, but nothing unconfigured is ever run.
     expect(response.status).to eq(200)
-    expect(response.body).to include("<h2>Usable users — 0</h2>")
+    expect(response.body).to include("<h2>Users who can use this URL — 0</h2>")
     expect(response.body).not_to include("Candidate populations")
   ensure
     Karst.config.principals = nil

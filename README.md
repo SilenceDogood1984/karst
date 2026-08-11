@@ -205,7 +205,8 @@ rejected.
 When `config.principals` returns an Active Record relation or model class, the
 panel's Analyze button runs `Karst::Access::PrincipalSampler` ahead of the
 sweep instead of taking whatever rows happen to sort first. It first uses
-configured candidate populations as application-authored semantic hints. When no population contributes a candidate, it falls back to covering
+configured dimensions as application-authored semantic hints. When none is
+configured, it falls back to covering
 distinct *observed database states* within the bounded recent-user pool --
 boolean columns, `enum` columns, presence/absence of a nullable foreign key,
 and low-cardinality scalar columns. Discovery happens in memory only after the
@@ -223,11 +224,14 @@ cardinality alone cannot be what keeps such a column out, since a *nullable*
 one would otherwise reach presence/absence sampling without ever going through
 the cardinality check.
 
-Query volume is one bounded recent-pool query plus at most one bounded query per
-configured population, independent of table size.
-`Karst::Access::PrincipalSampler.query_budget(limit, population_count)` states
-that bound explicitly. Population resolution never uses `COUNT`, and schema
-fallback never issues discovery queries. An Active Record source with a
+Query volume is exactly one bounded recent-pool query, independent of table
+size; `Karst::Access::PrincipalSampler.query_budget` states that bound
+explicitly. Every stratification decision after that is made in memory over
+the pool, so schema fallback issues no discovery queries at all. Candidate
+populations are not sampled here -- they are
+[a second search stage](#automatic-population-retry) owned by
+`Karst::Access::Search`, and cost one bounded query each only if the ordinary
+sample found nothing usable. An Active Record source with a
 composite or missing primary key
 raises `Karst::Access::PrincipalSampler::UnsupportedPrimaryKey` (a
 `Karst::Access::Error`) rather than failing obscurely mid-query; pass an
@@ -242,8 +246,10 @@ the existing bounded-first strategy, unchanged.
 ### Candidate populations, principal sources, and compatibility dimensions
 
 Candidate populations are the preferred way to describe principals worth
-trying. Generic schema discovery remains a zero-configuration fallback, while
-legacy explicit dimensions remain supported for compatibility. Real
+trying, and are searched automatically after an ordinary sample fails.
+Configured dimensions shape that ordinary sample; generic schema discovery
+remains a zero-configuration fallback used only when no dimension is
+configured. Real
 applications represent identity very differently -- one `User` model with an
 explicit role column, several distinct principal models (`Author`, `Reader`),
 relational roles (`User`/`Membership`/`Organization`), or an authorization
@@ -366,11 +372,12 @@ callable that raises, that requires an argument, or that returns something
 else entirely (another model's relation, a plain value) is silently
 skipped rather than raised: a mistake in configuration degrades the
 candidate pool, it does not break the sweep. Every configured population
-costs at most one `LIMIT`-bounded query, split fairly across however many
-populations are configured (a population matching 8 rows and one matching
-300,000 rows each get a proportional share of `access_sweep_limit`, so the
-larger population can never crowd out the smaller one) -- never a `COUNT`,
+costs at most one `LIMIT`-bounded query, bounded by
+`config.population_retry_limit` (plus a small allowance so already-tested
+users cannot consume that budget, itself hard-capped) -- never a `COUNT`,
 and never full materialization, regardless of the population's real size.
+Populations are tried one at a time, in configuration order, and only until
+one succeeds, so no population can crowd out another.
 Karst evaluates the callable and materializes its bounded relation inside a
 rollback-only transaction on the source model's Active Record connection. It
 observes the same `INSERT`, `UPDATE`, and `DELETE` SQL evidence as an access
@@ -382,12 +389,10 @@ therefore execution evidence, not a claim that the callable is side-effect
 free.
 When the configured relation already specifies its own order, Karst keeps
 it; only when the relation has no order of its own does Karst add a
-deterministic primary-key fallback so results stay reproducible. A
-principal matching more than one configured population is still probed
-only once; its provenance preserves every population that matched
-(`population=system_admins`, `population=auditors`), not just the first
-one found -- shown next to any dimension reasons on the same **Sampled
-for** line:
+deterministic primary-key fallback so results stay reproducible. A user
+already tested in the ordinary sample, or in an earlier population, is
+never probed again; its provenance records the population it was reached
+through -- shown on the **Sampled for** line:
 
 ```
 Sampled for:
@@ -469,10 +474,11 @@ end
 
 Each dimension is a plain attribute (`:role`), a boolean predicate
 (`:system_admin?`), or a callable of one argument. Configured dimensions remain
-supported and are evaluated over the bounded recent-user pool. New configurations should prefer candidate populations;
-dimensions are retained for compatibility rather than as Karst's primary
-semantic search mechanism. Generic discovery runs only when configured
-populations contribute no candidates. Given a pool of 900 `responder`, 50
+supported and are evaluated over the bounded recent-user pool. They shape
+which users the *ordinary sample* covers; candidate populations are what
+Karst searches when that sample finds nothing usable. Generic schema
+discovery runs only when no dimension is configured -- it never supplements
+the ones that are. Given a pool of 900 `responder`, 50
 `local_admin`,
 30 `group_admin`, 15 `reseller`, and 5 `system_admin` accounts and a limit of
 25, Karst deliberately tries to include a representative of every configured

@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
-- Candidate populations are no longer folded into the ordinary representative sample. They are now a deliberate second stage that runs only when the sample finds nothing usable, so "the sample found nothing; this population reached it" is reportable as observed evidence rather than being invisible. Configured dimensions still apply to the sample unchanged.
+- Candidate populations leave `Karst::Access::PrincipalSampler` entirely and become a deliberate second search stage owned by `Karst::Access::Search`, run only when the ordinary sample finds nothing usable — so "the sample found nothing; then `system_admins` reached it" is reportable as observed evidence rather than silently folded into an ordinary-looking sample. `PrincipalSampler` and `PrincipalSelection` no longer accept or report populations, and the sampler's query budget drops to exactly one bounded recent-pool query. Configured dimensions still shape the ordinary sample, with generic schema discovery as their fallback.
 - The manual `population_sweep` operation and its "Try another population" panel section are removed, along with `Karst::Access::PopulationSuggestion` (its name-ranking heuristic only existed to order that manual choice). Retries are automatic.
 - Panel copy now says "user" rather than "principal" in the access workflow.
 
