@@ -120,6 +120,16 @@ RSpec.describe Karst::Access::ScenarioSweep do
     end.to raise_error(Karst::Access::ScenarioDefinitionError, /:import.*KeyError: bad path/)
   end
 
+  it "does not turn probe configuration failures into observed request exceptions" do
+    configured = scenario([ScenarioArtifact.new("ok")], expect: { status: 200 })
+    allow(Karst::Access::Sweep).to receive(:new).and_raise(ArgumentError, "invalid probe configuration")
+
+    expect do
+      described_class.new(scenario: configured, principals: [ScenarioPrincipal.new(1)],
+                          application: Object.new).call
+    end.to raise_error(ArgumentError, "invalid probe configuration")
+  end
+
   it "limits a relation before materializing it" do
     relation = double("relation")
     expect(relation).to receive(:limit).with(2).and_return([ScenarioArtifact.new(1), ScenarioArtifact.new(2)])

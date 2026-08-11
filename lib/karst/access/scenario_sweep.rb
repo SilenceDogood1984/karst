@@ -90,12 +90,6 @@ module Karst
                          sampling_reasons: @sampling_reasons, body_includes: marker).call.outcomes.first
         marker_observed = base.body_marker_observed
         scenario_outcome(base, artifact, path, marker_observed, matches?(base, marker_observed))
-      rescue StandardError => e
-        descriptor = Karst::Identity.describe(principal)
-        ScenarioOutcome.new(principal: descriptor, artifact: describe(artifact), path: path.to_s, status: nil,
-                            redirect: nil, exception_class: e.class.name, writes_observed: false, write_count: 0,
-                            elapsed_ms: 0.0, database_rollback_attempted: false, sampling_reasons: [].freeze,
-                            expected: @scenario.expectation, body_marker_observed: nil, match: false)
       end
 
       def scenario_outcome(base, artifact, path, marker_observed, match)

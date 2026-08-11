@@ -89,11 +89,11 @@ module Karst
       # estimate: #call always issues at most this many queries, regardless
       # of table width or row count. Reaching the cap simply means #call may
       # return fewer than `limit` principals rather than exceeding its query
-      # budget. Configured candidate populations are additive on top of this
-      # (see #representative_sample) since their cost scales with how many
-      # populations are configured, not with `limit`.
-      def self.query_budget(limit)
-        1 + MAX_SCALAR_DISCOVERY_QUERIES + (limit * 4) + 2
+      # budget. Candidate populations add at most one bounded query apiece;
+      # the optional count keeps the declared budget truthful for the whole
+      # sampling call rather than only generic discovery.
+      def self.query_budget(limit, population_count = 0)
+        1 + MAX_SCALAR_DISCOVERY_QUERIES + (limit * 4) + 2 + population_count
       end
 
       # dimensions is a Hash of Symbol => PrincipalDimension (see
@@ -111,7 +111,7 @@ module Karst
         @dimensions = dimensions
         @populations = populations
         @queries = 0
-        @query_budget = self.class.query_budget(limit)
+        @query_budget = self.class.query_budget(limit, populations.size)
       end
 
       def call
@@ -155,12 +155,8 @@ module Karst
         # issued against the full configured relation -- never the
         # recent-N pool below, since the whole point of a configured
         # population is to reach a meaningful state the *recent*
-        # population may not represent at all. Population resolution
-        # grows the query budget rather than eating into the
-        # dimension-discovery budget the rest of this method already
-        # relies on -- the number of configured populations affects
-        # candidate quality, never the global request budget.
-        @query_budget += @populations.size
+        # population may not represent at all. Their bounded query
+        # allowance is included in the instance budget at initialization.
         populations = resolve_populations(klass)
         pool = bounded_pool_relation(relation, klass, primary_key)
         dimensions = build_dimensions(pool, klass)
@@ -347,13 +343,17 @@ module Karst
 
         reasons_by_id = population_reasons_by_id(populations, primary_key)
         interleave(populations.map(&:records)).each do |record|
-          break if selected.size >= @limit
+          break if selected.size >= population_candidate_limit
 
           id = record.public_send(primary_key)
           next if selected.key?(id)
 
           selected[id] = Candidate.new(principal: record, reasons: reasons_by_id[id])
         end
+      end
+
+      def population_candidate_limit
+        @limit > 1 ? @limit - 1 : @limit
       end
 
       def population_reasons_by_id(populations, primary_key)
