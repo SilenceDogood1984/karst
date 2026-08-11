@@ -42,15 +42,37 @@ Karst.configure do |config|
   # }
 
   # ---------------------------------------------------------------------
+  # config.principal_populations (optional)
+  # ---------------------------------------------------------------------
+  # Application-authored candidate populations for the model config.principals
+  # resolves to -- a Hash of name => zero-argument callable, each expected
+  # to return an ActiveRecord::Relation scoped to that same model, for
+  # example a named scope such as `scope :system_admins, -> { where(is_admin:
+  # true) }`. This only tells Karst "these records are worth trying"; it
+  # never implies that a population grants access or explains any observed
+  # outcome. Karst does not verify that a callable came from Rails' own
+  # `scope` macro specifically -- only that calling it returns a same-model
+  # relation -- and a callable that raises, requires an argument, or
+  # returns something else is skipped rather than raised.
+  #
+  # config.principal_populations = {
+  #   system_admins: -> { User.system_admins },
+  #   auditors: -> { User.auditors },
+  #   responders: -> { User.responders }
+  # }
+
+  # ---------------------------------------------------------------------
   # config.principal_sources (optional, for more than one principal model)
   # ---------------------------------------------------------------------
   # Only needed when this application represents identity as more than one
   # model (e.g. Author and Reader) instead of a single config.principals.
   # Each source is sampled and resolved independently -- Karst never merges
-  # them into one combined dataset -- and may declare its own dimensions.
+  # them into one combined dataset -- and may declare its own dimensions
+  # and populations.
   #
   # config.principal_sources = {
-  #   authors: { records: -> { Author.all }, dimensions: { premium: :premium? } },
+  #   authors: { records: -> { Author.all }, dimensions: { premium: :premium? },
+  #              populations: { admins: -> { Author.admins } } },
   #   readers: -> { Reader.all }
   # }
 

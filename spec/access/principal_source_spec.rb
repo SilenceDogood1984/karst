@@ -21,6 +21,22 @@ RSpec.describe Karst::Access::PrincipalSource do
       expect(source.dimensions[:premium]).to be_a(Karst::Access::PrincipalDimension)
     end
 
+    it "defaults to no populations" do
+      source = described_class.new(name: :authors, records: -> { [] })
+      expect(source.populations).to eq({})
+    end
+
+    it "keeps a populations Hash of Symbol => callable as-is" do
+      admins = -> { [] }
+      source = described_class.new(name: :authors, records: -> { [] }, populations: { admins: admins })
+      expect(source.populations).to eq(admins: admins)
+    end
+
+    it "rejects a populations value that is not a Hash of Symbol => callable" do
+      expect { described_class.new(name: :authors, records: -> { [] }, populations: { admins: "not callable" }) }
+        .to raise_error(ArgumentError, /populations must be a Hash of Symbol => callable/)
+    end
+
     it "symbolizes the name" do
       source = described_class.new(name: "authors", records: -> { [] })
       expect(source.name).to eq(:authors)
@@ -63,6 +79,14 @@ RSpec.describe Karst::Access::PrincipalSource do
       )
 
       expect(normalized[:authors].dimensions).to have_key(:premium)
+    end
+
+    it "accepts a Hash spec with :records and :populations" do
+      normalized = described_class.normalize(
+        authors: { records: -> { [] }, populations: { admins: -> { [] } } }
+      )
+
+      expect(normalized[:authors].populations).to have_key(:admins)
     end
 
     it "accepts string keys within a Hash spec" do

@@ -4,6 +4,7 @@ require_relative "../value"
 require_relative "sweep"
 require_relative "principal_dimension"
 require_relative "sensitive_attribute_names"
+require_relative "candidate_population"
 
 module Karst
   module Access
@@ -67,8 +68,13 @@ module Karst
       # discovery was scoped to (nil for the generic-Enumerable fallback,
       # which has no query-scoped pool concept) -- callers use it to report
       # the sampling scope truthfully instead of implying the full principal
-      # universe was searched.
-      Result = Value.define(:principals, :candidates, :strategy, :queries, :candidate_pool_size)
+      # universe was searched. `populations` lists every configured
+      # candidate population that resolved successfully for this call
+      # (including one that currently matches zero rows) -- enough metadata
+      # for a future UI to show "Candidate populations available" and let a
+      # developer retry against one specifically, without this class
+      # needing to grow an interactive selector itself.
+      Result = Value.define(:principals, :candidates, :strategy, :queries, :candidate_pool_size, :populations)
 
       # Deterministic, in-memory predicate plus an Active Record scope for the
       # same criterion. Internal only -- never returned to callers.
@@ -83,7 +89,9 @@ module Karst
       # estimate: #call always issues at most this many queries, regardless
       # of table width or row count. Reaching the cap simply means #call may
       # return fewer than `limit` principals rather than exceeding its query
-      # budget.
+      # budget. Configured candidate populations are additive on top of this
+      # (see #representative_sample) since their cost scales with how many
+      # populations are configured, not with `limit`.
       def self.query_budget(limit)
         1 + MAX_SCALAR_DISCOVERY_QUERIES + (limit * 4) + 2
       end
@@ -91,13 +99,17 @@ module Karst
       # dimensions is a Hash of Symbol => PrincipalDimension (see
       # Karst::Access::PrincipalDimension), already validated/normalized by
       # the caller (Configuration or PrincipalSource) -- PrincipalSampler
-      # never accepts raw accessor values directly.
+      # never accepts raw accessor values directly. populations is a Hash of
+      # Symbol => zero-argument callable (see
+      # Karst::Access::CandidatePopulation), similarly pre-normalized by the
+      # caller.
       def initialize(source:, limit: Karst.config.access_sweep_limit,
-                     pool_size: Karst.config.principal_candidate_pool_size, dimensions: {})
+                     pool_size: Karst.config.principal_candidate_pool_size, dimensions: {}, populations: {})
         @source = source
         @limit = limit
         @pool_size = pool_size
         @dimensions = dimensions
+        @populations = populations
         @queries = 0
         @query_budget = self.class.query_budget(limit)
       end
@@ -132,18 +144,30 @@ module Karst
         principals = @source.each.lazy.take(@limit).to_a
         candidates = principals.map { |principal| Candidate.new(principal: principal, reasons: []) }
         Result.new(principals: principals, candidates: candidates, strategy: :first_n, queries: 0,
-                   candidate_pool_size: nil)
+                   candidate_pool_size: nil, populations: [])
       end
 
       # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
       def representative_sample(relation)
         klass = relation.klass
         primary_key = single_primary_key!(klass)
+        # Each configured population costs at most one bounded query,
+        # issued against the full configured relation -- never the
+        # recent-N pool below, since the whole point of a configured
+        # population is to reach a meaningful state the *recent*
+        # population may not represent at all. Population resolution
+        # grows the query budget rather than eating into the
+        # dimension-discovery budget the rest of this method already
+        # relies on -- the number of configured populations affects
+        # candidate quality, never the global request budget.
+        @query_budget += @populations.size
+        populations = resolve_populations(klass)
         pool = bounded_pool_relation(relation, klass, primary_key)
         dimensions = build_dimensions(pool, klass)
         selected = {}
         covered = {}
 
+        apply_populations(populations, primary_key, selected)
         seed_candidate(pool, primary_key, dimensions, covered, selected)
         each_target(dimensions) do |target|
           break if selected.size >= @limit || !query_allowed?
@@ -159,7 +183,8 @@ module Karst
 
         candidates = selected.values
         Result.new(principals: candidates.map(&:principal), candidates: candidates,
-                   strategy: :representative, queries: @queries, candidate_pool_size: @pool_size)
+                   strategy: :representative, queries: @queries, candidate_pool_size: @pool_size,
+                   populations: populations)
       end
       # rubocop:enable Metrics/AbcSize, Metrics/MethodLength
 
@@ -226,6 +251,11 @@ module Karst
       # walks the primary-key index from its very start, past every
       # excluded low-id row, before ever reaching the pool. Descending order
       # instead reaches pool-dense territory on the first rows examined.
+      #
+      # A configured population may already have selected this exact seed
+      # row (the most-recent principal can easily also be, say, a system
+      # admin); merging here preserves that provenance instead of silently
+      # discarding it, and never probes the same principal twice for it.
       def seed_candidate(relation, primary_key, dimensions, covered, selected)
         return unless query_allowed?
 
@@ -233,9 +263,10 @@ module Karst
         seed = relation.order(primary_key => :desc).limit(1).first
         return unless seed
 
-        selected[seed.public_send(primary_key)] = Candidate.new(
-          principal: seed, reasons: cover_matching(seed, dimensions, covered)
-        )
+        id = seed.public_send(primary_key)
+        reasons = cover_matching(seed, dimensions, covered)
+        existing = selected[id]
+        selected[id] = Candidate.new(principal: seed, reasons: (existing ? existing.reasons + reasons : reasons).uniq)
       end
 
       def cover_matching(seed, dimensions, covered)
@@ -275,6 +306,69 @@ module Karst
         relation.where.not(primary_key => selected.keys).order(primary_key => :desc).limit(remaining).each do |record|
           selected[record.public_send(primary_key)] = Candidate.new(principal: record, reasons: [])
         end
+      end
+
+      # Resolves every configured name => callable population, fairly
+      # sharing @limit across however many populations there are so one
+      # very large population (responders: 300,000) cannot crowd out a
+      # much smaller one (system_admins: 8) within the same global sweep
+      # budget. Costs at most one query per configured population,
+      # regardless of that population's underlying row count, and never
+      # exceeds the instance's own query budget. Each callable is
+      # validated against this exact klass, so two PrincipalSampler
+      # instances over two different klasses never share or leak each
+      # other's populations -- a callable returning a different model's
+      # relation is rejected by CandidatePopulation.resolve's same-model
+      # check.
+      def resolve_populations(klass)
+        return [] if @populations.empty?
+
+        fair_share = [(@limit.to_f / @populations.size).ceil, 1].max
+        @populations.filter_map do |name, callable|
+          next unless query_allowed?
+
+          population = CandidatePopulation.resolve(name: name, callable: callable, source_klass: klass,
+                                                   limit: fair_share)
+          @queries += 1 if population
+          population
+        end
+      end
+
+      # Merges every resolved population's records into `selected`,
+      # interleaved round-robin across populations (not simply concatenated)
+      # so truncation at @limit still gives every population a fair chance
+      # to contribute rather than exhausting the first population's share
+      # before ever reaching the next. A principal present in more than one
+      # population is probed once but keeps every matching population's
+      # provenance (e.g. both "population=system_admins" and
+      # "population=auditors").
+      def apply_populations(populations, primary_key, selected)
+        return if populations.empty?
+
+        reasons_by_id = population_reasons_by_id(populations, primary_key)
+        interleave(populations.map(&:records)).each do |record|
+          break if selected.size >= @limit
+
+          id = record.public_send(primary_key)
+          next if selected.key?(id)
+
+          selected[id] = Candidate.new(principal: record, reasons: reasons_by_id[id])
+        end
+      end
+
+      def population_reasons_by_id(populations, primary_key)
+        reasons_by_id = Hash.new { |hash, id| hash[id] = [] }
+        populations.each do |population|
+          population.records.each do |record|
+            reasons_by_id[record.public_send(primary_key)] << population.provenance
+          end
+        end
+        reasons_by_id
+      end
+
+      def interleave(groups)
+        width = groups.map(&:size).max || 0
+        Array.new(width) { |i| groups.filter_map { |group| group[i] } }.flatten(1)
       end
 
       # Returns an Array of dimensions, each an Array of Target -- the shape

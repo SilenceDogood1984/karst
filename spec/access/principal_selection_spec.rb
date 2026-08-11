@@ -164,6 +164,29 @@ RSpec.describe Karst::Access::PrincipalSelection do
       expect(result.queries).to be > 0
     end
 
+    it "carries each source's configured populations through independently, without leaking across sources" do
+      6.times { SelectionAuthor.create!(premium: false) }
+      admin_author = SelectionAuthor.create!(premium: false)
+      6.times { SelectionReader.create!(role: "responder") }
+      owner_reader = SelectionReader.create!(role: "owner")
+      sources = {
+        authors: Karst::Access::PrincipalSource.new(
+          name: :authors, records: -> { SelectionAuthor.all },
+          populations: { admins: -> { SelectionAuthor.where(id: admin_author.id) } }
+        ),
+        readers: Karst::Access::PrincipalSource.new(
+          name: :readers, records: -> { SelectionReader.all },
+          populations: { admins: -> { SelectionReader.where(id: owner_reader.id) } }
+        )
+      }
+
+      result = described_class.new(sources: sources, limit: 10).call
+
+      expect(result.principals.map(&:id)).to include(admin_author.id, owner_reader.id)
+      expect(result.populations.map(&:source)).to contain_exactly(SelectionAuthor, SelectionReader)
+      expect(result.candidates.flat_map(&:reasons)).to include("population=admins")
+    end
+
     it "carries each source's configured dimensions through independently" do
       47.times { SelectionAuthor.create!(premium: false) }
       premium_author = SelectionAuthor.create!(premium: true)

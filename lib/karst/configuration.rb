@@ -10,7 +10,7 @@ module Karst
     attr_accessor :enabled, :principals, :assume_identity, :clear_identity, :principal_label,
                   :assume_browser_identity, :clear_browser_identity
     attr_reader :buffer_size, :access_sweep_limit, :usable_access_outcome, :principal_candidate_pool_size,
-                :principal_dimensions, :artifact_sources, :access_scenarios
+                :principal_dimensions, :principal_populations, :artifact_sources, :access_scenarios
 
     MAX_ACCESS_SWEEP_LIMIT = 100
 
@@ -35,6 +35,7 @@ module Karst
       @usable_access_outcome = ->(outcome) { outcome.status && (200..299).cover?(outcome.status) }
       @principal_candidate_pool_size = 1_000
       @principal_dimensions = {}
+      @principal_populations = {}
       @configured_principal_sources = nil
       @artifact_sources = {}
       @access_scenarios = {}
@@ -63,6 +64,28 @@ module Karst
       @principal_dimensions = Access::PrincipalDimension.normalize(dimensions)
     end
 
+    # An application-authored hint about meaningful candidate populations for
+    # whatever config.principals returns -- a Hash of name => zero-argument
+    # callable, each expected to return an ActiveRecord::Relation scoped to
+    # that same model, for example:
+    #
+    #   config.principal_populations = {
+    #     system_admins: -> { User.system_admins },
+    #     auditors: -> { User.auditors }
+    #   }
+    #
+    # Karst never infers that a population grants access or produces any UI
+    # state; it only tries records from it (see
+    # Karst::Access::PrincipalSampler/CandidatePopulation). nil/{} (the
+    # default) considers no populations at all. Karst does not attempt to
+    # verify that a callable's body is a "real" Rails named scope -- it only
+    # checks what calling it actually returns. Applications representing
+    # identity as more than one model configure populations per source
+    # instead (see config.principal_sources).
+    def principal_populations=(populations)
+      @principal_populations = Access::PrincipalSource.normalize_populations(:default, populations)
+    end
+
     def principal_sources=(sources)
       @configured_principal_sources = Access::PrincipalSource.normalize(sources)
     end
@@ -70,13 +93,16 @@ module Karst
     # The effective, normalized principal population(s) Karst may sample
     # from or resolve into: explicit config.principal_sources when
     # configured, otherwise a bare config.principals (plus any
-    # config.principal_dimensions) wrapped as one implicit :default source,
-    # or nil when neither is configured. A Hash of Symbol => PrincipalSource.
+    # config.principal_dimensions/config.principal_populations) wrapped as
+    # one implicit :default source, or nil when neither is configured. A
+    # Hash of Symbol => PrincipalSource.
     def principal_sources
       return @configured_principal_sources if @configured_principal_sources
       return nil unless @principals
 
-      { default: Access::PrincipalSource.new(name: :default, records: @principals, dimensions: @principal_dimensions) }
+      { default: Access::PrincipalSource.new(name: :default, records: @principals,
+                                             dimensions: @principal_dimensions,
+                                             populations: @principal_populations) }
     end
 
     def access_sweep_limit=(value)
