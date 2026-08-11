@@ -6,36 +6,7 @@ require "karst/web/panel"
 
 # rubocop:disable Metrics/BlockLength
 RSpec.describe Karst::Web::Panel do
-  let(:catalog_state_class) do
-    Data.define(:status, :matches) do
-      def scenarios_for(controller:, action:, http_method: nil)
-        matches.fetch([controller, action], []).select do |scenario|
-          http_method.nil? || scenario.http_method == http_method
-        end
-      end
-    end
-  end
-
-  # rubocop:disable Metrics/ParameterLists
-  def scenario(name:, outcome: :passed, explicit: false, principal: nil, redirect: nil, status: 200,
-               file_path: "spec/requests/page_spec.rb")
-    Karst::Spec::Scenario.new(
-      example_id: "example", file_path: file_path, line_number: 42, description_parts: [name],
-      full_description: name, karst_explicit: explicit, karst_name: explicit ? name : nil,
-      example_outcome: outcome, controller: "PagesController", action: "index", http_method: "GET",
-      route_pattern: "/pages", observed_path: "/pages", observed_status: status,
-      observed_redirect: redirect, principal_before: principal, principal_after: principal,
-      principal_changed: false, sequence: 0
-    )
-  end
-  # rubocop:enable Metrics/ParameterLists
-
-  def catalog(status, matches = {})
-    catalog_state_class.new(status: status, matches: matches)
-  end
-
-  def render(catalog, params = {})
-    allow(Karst::Spec::Catalog).to receive(:load).and_return(catalog)
+  def render(_catalog = nil, params = {})
     described_class.render(params: params).last.join
   end
 
@@ -83,34 +54,33 @@ RSpec.describe Karst::Web::Panel do
   end
 
   describe "route header" do
-    it "shows a compact route identity with method, path, controller, and action" do
-      body = render(catalog(:ready), route.merge("method" => "GET", "path" => "/documents/22/reader"))
+    it "shows the HTTP method and URL without controller/action terminology" do
+      body = render(nil, route.merge("method" => "GET", "path" => "/documents/22/reader"))
 
-      expect(body).to include(
-        "<p class=\"route-path\">GET /documents/22/reader</p>",
-        "<p class=\"route-controller\">PagesController#index</p>"
-      )
+      expect(body).to include("<p class=\"route-path\">GET /documents/22/reader</p>")
+      expect(body).not_to include("PagesController#index", "<label>Controller", "<label>Action")
     end
 
     it "omits the path line when no host request path is known" do
-      body = render(catalog(:ready), route)
+      body = render(nil, route)
 
-      expect(body).to include("PagesController#index")
-      expect(body).not_to include('<p class="route-path">')
+      expect(body).to include("No URL selected yet.")
+      expect(body).not_to include('<p class="route-path">', "PagesController#index")
     end
 
     it "shows a coherent empty state and an open route lookup when nothing is selected" do
-      body = render(catalog(:ready))
+      body = render(nil)
 
-      expect(body).to include("No route selected yet.", "Look up a route", '<details class="route-lookup" open>',
-                              'name="path"', 'name="method"', 'value="GET"',
-                              'name="controller"', 'name="action"')
+      expect(body).to include("No URL selected yet.", "What URL are you trying to test?",
+                              '<details class="route-lookup" open>', 'name="path"', 'name="method"',
+                              'value="GET"')
+      expect(body).not_to include("Controller", "Action")
     end
 
     it "collapses the route lookup once a route is already known" do
-      body = render(catalog(:ready), route)
+      body = render(nil, analyzed_route)
 
-      expect(body).to include("Look up a different route")
+      expect(body).to include("Test a different URL")
       expect(body).not_to include('<details class="route-lookup" open>')
     end
   end
@@ -118,18 +88,18 @@ RSpec.describe Karst::Web::Panel do
   describe "primary analyze action" do
     it "renders Analyze as the obvious primary action with the sample count visible" do
       Karst.config.principals = -> { [] }
-      body = render(catalog(:ready), analyzed_route)
+      body = render(nil, analyzed_route)
 
-      expect(body).to include('<button class="primary" type="submit">Analyze 25 principals</button>')
+      expect(body).to include('<button class="primary" type="submit">Who can use this? (test 25 users)</button>')
     ensure
       Karst.config.principals = nil
     end
 
-    it "notes when no principal source is configured, without dominating the page" do
-      body = render(catalog(:ready), analyzed_route)
+    it "notes when no user source is configured, without dominating the page" do
+      body = render(nil, analyzed_route)
 
-      expect(body).to include("No principal source is configured")
-      expect(body).to include("config.principals or config.principal_sources")
+      expect(body).to include("No user source is configured")
+      expect(body).not_to include("No principal source")
     end
 
     it "renders the representative label when any configured source (not just the first) is AR-capable" do
@@ -141,22 +111,22 @@ RSpec.describe Karst::Web::Panel do
       allow(Karst::Access::PrincipalSampler).to receive(:representative_capable?).with(second_source)
                                                                                  .and_return(true)
 
-      body = render(catalog(:ready), analyzed_route)
+      body = render(nil, analyzed_route)
 
-      expect(body).to include("Analyze 25 representative principals")
+      expect(body).to include("Who can use this? (test 25 representative users)")
     ensure
       Karst.config.principal_sources = nil
     end
 
     it "does not offer access analysis for non-GET routes" do
-      body = render(catalog(:ready), route.merge("method" => "POST", "path" => "/documents/22"))
+      body = render(nil, route.merge("method" => "POST", "path" => "/documents/22"))
 
       expect(body).to include("Access analysis is available for GET routes only.")
       expect(body).not_to include("Analyze 25")
     end
 
     it "omits the access section entirely when no host path is known" do
-      body = render(catalog(:ready), route)
+      body = render(nil, route)
 
       expect(body).not_to include("Analyze 25", "Access analysis is available for GET routes only.")
     end
@@ -172,7 +142,7 @@ RSpec.describe Karst::Web::Panel do
       body = described_class.render(params: analyzed_route, access_result: access_result(outcomes),
                                     csrf_token: "nonce").last.join
 
-      expect(body).to include("<h2>Usable principals — 2</h2>", "User #27", "Observed 200 OK", "User #28",
+      expect(body).to include("<h2>Users who can use this URL — 2</h2>", "User #27", "Observed 200 OK", "User #28",
                               "Observed 204 No Content", "Other observed outcomes — 3", "302 → /login — 1",
                               "Exception: RuntimeError — 1")
       expect(body.scan('<button type="submit">Test as</button>').size).to eq(2)
@@ -183,7 +153,7 @@ RSpec.describe Karst::Web::Panel do
       body = described_class.render(params: analyzed_route,
                                     access_result: access_result([access_outcome(id: 1, status: 401)])).last.join
 
-      expect(body).to include("<h2>Usable principals — 0</h2>", "No sampled principal produced a usable outcome.",
+      expect(body).to include("<h2>Users who can use this URL — 0</h2>", "No sampled user produced a usable outcome.",
                               "Other observed outcomes — 1")
       expect(body).not_to include("No user can access this page")
     end
@@ -203,7 +173,8 @@ RSpec.describe Karst::Web::Panel do
       body = described_class.render(params: analyzed_route,
                                     access_result: access_result([access_outcome(id: 1, status: 302)])).last.join
 
-      expect(body).to include("<h2>Usable principals — 1</h2>", "Observed 302 Found", "Other observed outcomes — 0")
+      expect(body).to include("<h2>Users who can use this URL — 1</h2>", "Observed 302 Found",
+                              "Other observed outcomes — 0")
     ensure
       Karst.config.usable_access_outcome = ->(outcome) { outcome.status && (200..299).cover?(outcome.status) }
     end
@@ -213,7 +184,7 @@ RSpec.describe Karst::Web::Panel do
       body = described_class.render(params: analyzed_route, access_result: error).last.join
 
       expect(body).to include("Analysis unavailable: probe endpoint unavailable")
-      expect(body).not_to include("Usable principals")
+      expect(body).not_to include("Users who can use this URL")
     end
 
     it "shows exact-resource relationships for usable principals compactly, in non-causal language" do
@@ -240,7 +211,7 @@ RSpec.describe Karst::Web::Panel do
       body = described_class.render(params: analyzed_route,
                                     access_result: access_result([access_outcome(id: 27, status: 200)])).last.join
 
-      expect(body).to include("<h2>Usable principals — 1</h2>", "User #27", "Observed 200 OK")
+      expect(body).to include("<h2>Users who can use this URL — 1</h2>", "User #27", "Observed 200 OK")
       expect(body).not_to include("Related state")
     end
   end
@@ -299,7 +270,7 @@ RSpec.describe Karst::Web::Panel do
     it "omits the section when no analysis has run yet" do
       approve_populations(system_admins: -> {})
 
-      body = render(catalog(:ready), analyzed_route)
+      body = render(nil, analyzed_route)
 
       expect(body).not_to include("Try another population")
     end
@@ -309,9 +280,8 @@ RSpec.describe Karst::Web::Panel do
 
       body = described_class.render(params: analyzed_route, access_result: access_result(outcomes)).last.join
 
-      expect(body).not_to include("Try another population")
-      expect(body).to include("No approved candidate populations are configured yet",
-                              '<a href="/karst/populations">Discover candidate populations</a>')
+      expect(body).not_to include("Try another population", 'href="/karst/populations"')
+      expect(body).to include("No approved candidate populations are configured yet")
     end
 
     it "never claims the suggestion causes or matches the observed halt, only that names overlap" do
@@ -331,7 +301,7 @@ RSpec.describe Karst::Web::Panel do
         access_result: access_result([access_outcome(id: 27, status: 200)], candidate_pool_size: 1_000)
       ).last.join
 
-      expect(body).to include("1 principals tested", "candidate pool: up to 1,000 most recent principals")
+      expect(body).to include("1 users tested", "candidate pool: up to 1,000 most recent users")
     end
 
     it "omits the candidate pool line when the result carries no pool (e.g. an Enumerable source)" do
@@ -339,7 +309,7 @@ RSpec.describe Karst::Web::Panel do
         params: analyzed_route, access_result: access_result([access_outcome(id: 27, status: 200)])
       ).last.join
 
-      expect(body).to include("1 principals tested")
+      expect(body).to include("1 users tested")
       expect(body).not_to include("candidate pool")
     end
   end
@@ -432,92 +402,22 @@ RSpec.describe Karst::Web::Panel do
     end
   end
 
-  describe "diagnostics: spec evidence (collapsed)" do
-    it "distinguishes missing and invalid catalogs once a route is selected" do
-      expect(render(catalog(:missing), route)).to include(
-        "Spec evidence — not yet generated", "No Karst scenario catalog has been generated yet.", "bundle exec rspec"
-      )
-      expect(render(catalog(:invalid), route)).to include(
-        "Spec evidence — unavailable", "Karst could not read the scenario catalog."
-      )
-    end
+  describe "legacy diagnostics" do
+    it "does not render diagnostics, spec evidence, runtime SQL, or controller/action controls" do
+      body = render(nil, analyzed_route)
 
-    it "omits spec evidence entirely when no route is selected" do
-      body = render(catalog(:missing))
-
-      expect(body).not_to include("Spec evidence")
-    end
-
-    it "distinguishes a ready catalog with no route coverage" do
-      body = render(catalog(:ready), route)
-
-      expect(body).to include("PagesController#index", "Spec evidence — 0 matching scenarios",
-                              "No observed specs currently cover this route.")
-    end
-
-    it "renders passed anonymous evidence with provenance inside a collapsed details block" do
-      observed = scenario(name: "Signed out")
-      body = render(catalog(:ready, { %w[PagesController index] => [observed] }), route)
-
-      expect(body).to include("<details class=\"diagnostic\"><summary>Spec evidence — 1 matching scenario</summary>")
-      expect(body).to include("Signed out", "Observed status: <strong>200</strong>", "Principal: Anonymous",
-                              "Observed by spec: <code>spec/requests/page_spec.rb:42</code>", "Passed spec")
-      expect(body).to include("does not prove current runtime authorization")
-    end
-
-    it "groups explicit and discovered scenarios in catalog order" do
-      principal = Karst::Spec::Principal.new(type: "Author", id: 123, scope: "user")
-      explicit = scenario(name: "Author with profile", explicit: true, principal: principal)
-      discovered = scenario(name: "redirects a reader", redirect: "/sign-in", status: 302)
-      body = render(catalog(:ready, { %w[PagesController index] => [explicit, discovered] }), route)
-
-      expect(body).to include("Explicit QA scenarios", "Discovered scenarios", "Principal: Author",
-                              "Observed redirect: <strong>/sign-in</strong>")
-      expect(body).not_to include("123")
-      expect(body.index("Author with profile")).to be < body.index("redirects a reader")
-    end
-
-    it "clearly marks failed and pending observations as untrusted" do
-      scenarios = [scenario(name: "broken", outcome: :failed, status: 500),
-                   scenario(name: "later", outcome: :pending)]
-      body = render(catalog(:ready, { %w[PagesController index] => scenarios }), route)
-
-      expect(body).to include("Failed spec — observed behavior is not trusted QA evidence",
-                              "Pending spec — observed behavior is not trusted QA evidence")
-    end
-  end
-
-  describe "diagnostics: runtime SQL (collapsed)" do
-    it "demotes the summary under Diagnostics, collapsed by default when capture is enabled" do
-      allow(Karst).to receive_messages(enabled?: true, subscribed?: true)
-      body = render(catalog(:ready))
-
-      expect(body).to include("<h2>Diagnostics</h2>")
-      expect(body).to match(
-        %r{<details class="diagnostic"><summary>Runtime SQL — \d+ observations · \d+ shapes</summary>}
-      )
-    end
-
-    it "surfaces a disabled capture state instead of a silently collapsed section" do
-      allow(Karst).to receive_messages(enabled?: false, subscribed?: false)
-      body = render(catalog(:ready))
-
-      expect(body).to include("capture disabled")
-      expect(body).to match(/<details class="diagnostic" open><summary>Runtime SQL[^<]*capture disabled/)
+      expect(body).not_to include("Diagnostics", "Spec evidence", "Runtime SQL",
+                                  "Controller/action diagnostics", "<label>Controller", "<label>Action")
     end
   end
 
   describe "escaping" do
-    it "escapes hostile route, scenario, principal, redirect, and provenance strings" do
-      hostile = '<script data-x="1">bad</script>'
-      principal = Karst::Spec::Principal.new(type: hostile, id: 1, scope: nil)
-      observed = scenario(name: hostile, principal: principal, redirect: hostile, file_path: hostile)
-      params = { "controller" => hostile, "action" => "index" }
-      state = catalog(:ready, { [hostile, "index"] => [observed] })
-      body = render(state, params)
+    it "escapes a hostile URL" do
+      hostile = '/documents/<script data-x="1">bad</script>'
+      body = described_class.render(params: { "method" => "GET", "path" => hostile }).last.join
 
       expect(body).not_to include(hostile)
-      expect(body.scan(CGI.escapeHTML(hostile)).size).to be >= 5
+      expect(body).to include(CGI.escapeHTML(hostile))
     end
 
     it "escapes a hostile display label on a usable principal" do

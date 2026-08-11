@@ -4,20 +4,10 @@ require "cgi"
 require "rack/utils"
 require "active_support/number_helper"
 
-begin
-  require_relative "../spec/catalog"
-rescue LoadError
-  # The panel reports an unavailable catalog rather than preventing /karst
-  # from loading. This keeps the development evidence surface degradable.
-end
-
 module Karst
   module Web
-    # Read-only HTML presentation of Karst's evidence for the current route.
-    # Information architecture: "which existing principal can I use to test
-    # what I'm looking at" is the primary workflow -- spec evidence and raw
-    # SQL evidence are supporting diagnostics, collapsed by default. All
-    # artifact and query-string values cross #escape before entering the
+    # Read-only HTML presentation of route access results for existing users.
+    # All artifact and query-string values cross #escape before entering the
     # document.
     # rubocop:disable Metrics/ModuleLength
     module Panel
@@ -40,7 +30,6 @@ module Karst
         h3{font-size:1rem;margin:0}
         h4{margin:0}
         .route-path{margin:0;color:#555;font-size:.95rem;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-        .route-controller{margin:.15rem 0 0;font-size:1.2rem;font-weight:600}
         .route-lookup{margin-top:.6rem;border:0;padding:0}
         .route-lookup summary{cursor:pointer;color:#555;font-size:.85rem;font-weight:400}
         .route-lookup form{margin-top:.6rem;display:flex;gap:.75rem;flex-wrap:wrap;align-items:flex-end}
@@ -136,23 +125,14 @@ module Karst
           http_method = string_param(params, "method")
           path = string_param(params, "path")
           "#{testing_banner(path, csrf_token, browser_identity_active)}" \
-            "#{route_header(controller, action, http_method, path, route_lookup_limitation)}" \
+            "#{route_header(http_method, path, route_lookup_limitation)}" \
             "#{access_section(http_method, path, controller, action, access_result, csrf_token,
-                              route_lookup_limitation)}" \
-            "#{diagnostics_section(load_catalog, controller, action, http_method)}"
+                              route_lookup_limitation)}"
         end
 
         def string_param(params, key)
           value = params[key]
           value.is_a?(String) ? value.strip : ""
-        end
-
-        def load_catalog
-          return nil unless defined?(Karst::Spec::Catalog)
-
-          Karst::Spec::Catalog.load
-        rescue StandardError
-          nil
         end
 
         # -- Testing-as banner ------------------------------------------------
@@ -173,33 +153,24 @@ module Karst
 
         # -- Compact route header ----------------------------------------------
 
-        def route_header(controller, action, http_method, path, limitation)
-          has_route = !(controller.empty? && action.empty?)
-          identity = has_route ? route_identity(controller, action, http_method, path) : "<p>No route selected yet.</p>"
-          lookup = route_lookup(controller, action, http_method, path, limitation)
+        def route_header(http_method, path, limitation)
+          identity = path.empty? ? "<p>No URL selected yet.</p>" : route_identity(http_method, path)
+          lookup = route_lookup(http_method, path, limitation)
           "<header class=\"route\">#{identity}#{lookup}</header>"
         end
 
-        def route_identity(controller, action, http_method, path)
-          path_line = path.empty? ? "" : "<p class=\"route-path\">#{method_prefix(http_method)}#{escape(path)}</p>"
-          controller_line = controller.empty? || action.empty? ? "" : route_controller_line(controller, action)
-          "#{path_line}#{controller_line}"
-        end
-
-        def route_controller_line(controller, action)
-          "<p class=\"route-controller\">#{escape(controller)}##{escape(action)}</p>"
+        def route_identity(http_method, path)
+          "<p class=\"route-path\">#{method_prefix(http_method)}#{escape(path)}</p>"
         end
 
         def method_prefix(http_method)
           http_method.empty? ? "" : "#{escape(http_method)} "
         end
 
-        # The lookup deliberately keeps its primary and secondary forms together
-        # so their labels, values, and disclosure state remain one UI component.
         # rubocop:disable Metrics/MethodLength
-        def route_lookup(controller, action, http_method, path, limitation)
-          open = controller.empty? && action.empty?
-          summary = open ? "Look up a route" : "Look up a different route"
+        def route_lookup(http_method, path, limitation)
+          open = path.empty?
+          summary = open ? "What URL are you trying to test?" : "Test a different URL"
           attr = open ? " open" : ""
           message = limitation ? "<p class=\"hint\" role=\"alert\">#{escape(limitation)}</p>" : ""
           <<~HTML
@@ -209,14 +180,8 @@ module Karst
             <input type="hidden" name="operation" value="route_lookup">
             <label>Path <input name="path" value="#{escape(path)}" placeholder="/organizations" required></label>
             <label>Method <input name="method" value="#{escape(http_method.empty? ? 'GET' : http_method)}" placeholder="GET" required></label>
-            <button type="submit">Recognize route</button>
-            </form>
-            <fieldset><legend>Controller/action diagnostics</legend>
-            <form action="/karst" method="get">
-            <label>Controller <input name="controller" value="#{escape(controller)}" placeholder="Author::ProjectsController"></label>
-            <label>Action <input name="action" value="#{escape(action)}" placeholder="index"></label>
-            <button type="submit">View route evidence</button>
-            </form></fieldset></details>
+            <button type="submit">Use this URL</button>
+            </form></details>
           HTML
         end
         # rubocop:enable Metrics/MethodLength
@@ -242,15 +207,11 @@ module Karst
         def analyze_form(context)
           sources = principal_sources
           kind = sources && any_representative?(sources) ? "representative " : ""
-          label = "Analyze #{Karst.config.access_sweep_limit} #{kind}principals"
+          label = "Who can use this? (test #{Karst.config.access_sweep_limit} #{kind}users)"
           operation = "<input type=\"hidden\" name=\"operation\" value=\"access_sweep\">"
           button = "<button class=\"primary\" type=\"submit\">#{escape(label)}</button>"
           form = "<form action=\"/karst\" method=\"post\">#{context}#{operation}#{button}</form>"
-          "#{form}#{scenario_forms}#{principal_source_hint(sources)}#{populations_link}"
-        end
-
-        def populations_link
-          "<p><a href=\"/karst/populations\">Discover &amp; curate candidate populations</a></p>"
+          "#{form}#{scenario_forms}#{principal_source_hint(sources)}"
         end
 
         def scenario_forms
@@ -278,7 +239,7 @@ module Karst
         def principal_source_hint(sources)
           return "" if sources
 
-          "<p class=\"hint\">No principal source is configured (config.principals or config.principal_sources). " \
+          "<p class=\"hint\">No user source is configured. " \
             "Analyzing will report why nothing could be sampled.</p>"
         end
 
@@ -329,8 +290,7 @@ module Karst
         end
 
         def no_populations_hint
-          "<p class=\"hint\">No approved candidate populations are configured yet. " \
-            "<a href=\"/karst/populations\">Discover candidate populations</a>.</p>"
+          "<p class=\"hint\">No approved candidate populations are configured yet.</p>"
         end
 
         def halted_note(halted)
@@ -398,7 +358,7 @@ module Karst
 
         def access_meta(result)
           seconds = escape(result.elapsed_ms / 1000.0)
-          "<p class=\"meta\">#{result.outcomes.size} principals tested#{candidate_pool_note(result)} · " \
+          "<p class=\"meta\">#{result.outcomes.size} users tested#{candidate_pool_note(result)} · " \
             "#{seconds}s · database rollback was attempted; other connections and non-database effects are not " \
             "isolated.</p>"
         end
@@ -411,7 +371,7 @@ module Karst
           return "" unless size
 
           delimited = ActiveSupport::NumberHelper.number_to_delimited(size)
-          " · candidate pool: up to #{escape(delimited)} most recent principals"
+          " · candidate pool: up to #{escape(delimited)} most recent users"
         end
 
         def write_warning(count)
@@ -426,12 +386,12 @@ module Karst
 
         def usable_outcomes(outcomes, result, csrf_token)
           body = if outcomes.empty?
-                   "<p>No sampled principal produced a usable outcome.</p>"
+                   "<p>No sampled user produced a usable outcome.</p>"
                  else
                    usable_cards(outcomes,
                                 result, csrf_token)
                  end
-          "<section class=\"usable\"><h2>Usable principals — #{outcomes.size}</h2>" \
+          "<section class=\"usable\"><h2>Users who can use this URL — #{outcomes.size}</h2>" \
             "#{test_as_hint(outcomes, csrf_token)}#{body}</section>"
         end
 
@@ -542,120 +502,6 @@ module Karst
         def status_title(status)
           phrase = Rack::Utils::HTTP_STATUS_CODES[status]
           phrase ? "#{escape(status)} #{escape(phrase)}" : escape(status)
-        end
-
-        # -- Diagnostics: spec evidence + runtime SQL (collapsed) ----------------
-
-        def diagnostics_section(catalog, controller, action, http_method)
-          "<section class=\"diagnostics\"><h2>Diagnostics</h2>" \
-            "#{spec_evidence_details(catalog, controller, action, http_method)}#{runtime_sql_details}</section>"
-        end
-
-        def spec_evidence_details(catalog, controller, action, http_method)
-          return "" if controller.empty? || action.empty?
-
-          state = catalog_state(catalog)
-          return spec_evidence_state(*state) if state
-
-          scenarios = catalog.scenarios_for(
-            controller: controller, action: action, http_method: http_method.empty? ? nil : http_method
-          )
-          spec_evidence_state(spec_evidence_summary(scenarios.size), spec_evidence_body(scenarios))
-        end
-
-        def catalog_state(catalog)
-          return ["Spec evidence — unavailable", catalog_unreadable_body] unless catalog
-          return ["Spec evidence — not yet generated", missing_catalog_body] if catalog.status == :missing
-          return ["Spec evidence — unavailable", catalog_unreadable_body] if catalog.status == :invalid
-
-          nil
-        end
-
-        def spec_evidence_state(summary, body)
-          "<details class=\"diagnostic\"><summary>#{summary}</summary>#{body}</details>"
-        end
-
-        def spec_evidence_summary(count)
-          noun = count == 1 ? "scenario" : "scenarios"
-          "Spec evidence — #{count} matching #{noun}"
-        end
-
-        def spec_evidence_body(scenarios)
-          return "<p>No observed specs currently cover this route.</p>" if scenarios.empty?
-
-          "#{spec_evidence_caveat}#{scenario_groups(scenarios)}"
-        end
-
-        def spec_evidence_caveat
-          "<p><small>Spec evidence reflects test-time behavior. It does not prove current runtime " \
-            "authorization.</small></p>"
-        end
-
-        def missing_catalog_body
-          <<~HTML
-            <p>No Karst scenario catalog has been generated yet.</p>
-            <p>Run <code>bundle exec rspec</code> with Karst's spec observer configured to generate it.</p>
-          HTML
-        end
-
-        def catalog_unreadable_body
-          "<p>Karst could not read the scenario catalog.</p>"
-        end
-
-        def scenario_groups(scenarios)
-          explicit, discovered = scenarios.partition(&:explicit?)
-          [["Explicit QA scenarios", explicit], ["Discovered scenarios", discovered]].filter_map do |title, group|
-            next if group.empty?
-
-            "<section><h3>#{title}</h3>#{group.map { |scenario| scenario_card(scenario) }.join}</section>"
-          end.join
-        end
-
-        def scenario_card(scenario)
-          <<~HTML
-            <article class="scenario #{escape(scenario.example_outcome)}">
-            <div class="label">#{escape(outcome_label(scenario.example_outcome))}</div>
-            <h4>#{escape(scenario.name)}</h4>
-            <div class="evidence"><span>Observed status: <strong>#{escape(scenario.observed_status || 'Unavailable')}</strong></span>#{redirect(scenario)}<span>Principal: #{escape(principal_label(scenario))}</span></div>
-            <p><small>Observed by spec: <code>#{escape(scenario.file_path)}:#{escape(scenario.line_number)}</code></small></p>
-            </article>
-          HTML
-        end
-
-        def outcome_label(outcome)
-          labels = { passed: "Passed spec", failed: "Failed spec — observed behavior is not trusted QA evidence",
-                     pending: "Pending spec — observed behavior is not trusted QA evidence" }
-          labels.fetch(outcome, "Unknown spec outcome")
-        end
-
-        def redirect(scenario)
-          return "" if scenario.observed_redirect.nil? || scenario.observed_redirect.to_s.empty?
-
-          "<span>Observed redirect: <strong>#{escape(scenario.observed_redirect)}</strong></span>"
-        end
-
-        def principal_label(scenario)
-          before = scenario.principal_before&.type || "Anonymous"
-          after = scenario.principal_after&.type || "Anonymous"
-          scenario.principal_changed ? "#{before} → #{after}" : before
-        end
-
-        def runtime_sql_details
-          window = Karst.window
-          enabled = Karst.enabled?
-          summary = runtime_sql_summary(window, enabled)
-          attr = enabled ? "" : " open"
-          <<~HTML
-            <details class="diagnostic"#{attr}><summary>#{summary}</summary>
-            <p>#{escape(window.declined.size)} declined · Capture: #{escape(enabled ? 'enabled' : 'disabled')} · Subscription: #{escape(Karst.subscribed? ? 'active' : 'inactive')}</p>
-            <p><small>Process-local, bounded, recently retained.</small></p>
-            </details>
-          HTML
-        end
-
-        def runtime_sql_summary(window, enabled)
-          summary = "Runtime SQL — #{escape(window.event_count)} observations · #{escape(window.shapes.size)} shapes"
-          enabled ? summary : "#{summary} — capture disabled"
         end
 
         def escape(value)
