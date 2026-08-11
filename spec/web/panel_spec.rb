@@ -42,13 +42,15 @@ RSpec.describe Karst::Web::Panel do
   let(:route) { { "controller" => "PagesController", "action" => "index" } }
   let(:analyzed_route) { route.merge("method" => "GET", "path" => "/documents/22/reader") }
 
-  def access_outcome(id:, status:, redirect: nil, exception_class: nil, sampling_reasons: nil)
+  # rubocop:disable Metrics/ParameterLists
+  def access_outcome(id:, status:, redirect: nil, exception_class: nil, sampling_reasons: nil, halted_callback: nil)
     descriptor = Karst::Identity::PrincipalDescriptor.new(model_name: "User", id: id, display_label: "User ##{id}")
     Karst::Access::Outcome.new(principal: descriptor, status: status, redirect: redirect,
                                exception_class: exception_class, writes_observed: false, write_count: 0,
                                elapsed_ms: 1.0, database_rollback_attempted: true,
-                               sampling_reasons: sampling_reasons)
+                               sampling_reasons: sampling_reasons, halted_callback: halted_callback)
   end
+  # rubocop:enable Metrics/ParameterLists
 
   def access_result(outcomes, candidate_pool_size: nil)
     Karst::Access::Result.new(path: "/documents/22/reader", http_method: "GET", outcomes: outcomes,
@@ -184,6 +186,16 @@ RSpec.describe Karst::Web::Panel do
       expect(body).to include("<h2>Usable principals — 0</h2>", "No sampled principal produced a usable outcome.",
                               "Other observed outcomes — 1")
       expect(body).not_to include("No user can access this page")
+    end
+
+    it "renders halted callbacks observationally and keeps otherwise identical groups separate" do
+      outcomes = [access_outcome(id: 1, status: 302, redirect: "/login", halted_callback: :require_subscription),
+                  access_outcome(id: 2, status: 302, redirect: "/login", halted_callback: :require_admin)]
+      body = described_class.render(params: analyzed_route, access_result: access_result(outcomes)).last.join
+
+      expect(body.scan("302 → /login — 1").size).to eq(2)
+      expect(body).to include("Halted callback: require_subscription", "Halted callback: require_admin")
+      expect(body).not_to include("Redirected because", "callback failed")
     end
 
     it "uses the configured usable-outcome presentation policy rather than reinventing it" do

@@ -21,7 +21,7 @@ module Karst
     # sampling evidence, not an authorization claim.
     Outcome = Value.define(:principal, :status, :redirect, :exception_class,
                            :writes_observed, :write_count, :elapsed_ms, :database_rollback_attempted,
-                           :sampling_reasons, :body_marker_observed)
+                           :sampling_reasons, :body_marker_observed, :halted_callback)
 
     # candidate_pool_size is nil unless the caller supplying `principals` (see
     # Access::PrincipalSampler::Result) knows it sampled from a bounded
@@ -31,7 +31,7 @@ module Karst
     Result = Value.define(:path, :http_method, :outcomes, :elapsed_ms, :aborted_reason, :database_isolation,
                           :candidate_pool_size) do
       def groups
-        outcomes.group_by { |item| [item.status, item.redirect, item.exception_class] }
+        outcomes.group_by { |item| [item.status, item.redirect, item.exception_class, item.halted_callback] }
       end
     end
 
@@ -109,13 +109,19 @@ module Karst
         started = monotonic
         status = redirect = exception_class = nil
         body_marker_observed = nil
+        halted_callback = nil
         writes = 0
         callback = ->(_name, _start, _finish, _id, payload) { writes += 1 if payload[:sql].to_s.match?(MUTATION) }
+        halt_observer = lambda do |_name, _start, _finish, _id, payload|
+          halted_callback = payload[:filter]
+        end
 
         with_rollback do
           ActiveSupport::Notifications.subscribed(callback, "sql.active_record") do
             Karst::Identity.with(session, principal) do
-              session.get(@path)
+              ActiveSupport::Notifications.subscribed(halt_observer, "halted_callback.action_controller") do
+                session.get(@path)
+              end
               rendered_exception = request_exception(session)
               if rendered_exception
                 exception_class = rendered_exception.class.name
@@ -135,7 +141,7 @@ module Karst
                     exception_class: exception_class, writes_observed: writes.positive?, write_count: writes,
                     elapsed_ms: elapsed(started), database_rollback_attempted: true,
                     sampling_reasons: (@sampling_reasons[principal] || []).freeze,
-                    body_marker_observed: body_marker_observed)
+                    body_marker_observed: body_marker_observed, halted_callback: halted_callback)
       end
       # rubocop:enable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity
 

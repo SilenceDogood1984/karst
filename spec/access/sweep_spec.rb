@@ -28,6 +28,11 @@ RSpec.describe Karst::Access::Sweep do
     def get(path)
       raise "private value" if @identity.id == 4
 
+      if [2, 3].include?(@identity.id)
+        filter = @identity.id == 2 ? :require_subscription : :require_admin
+        ActiveSupport::Notifications.instrument("halted_callback.action_controller", filter: filter)
+      end
+
       @response.status = { 1 => 200, 2 => 302, 3 => 403 }.fetch(@identity.id)
       @response.location = "/login?return_to=#{path}" if @response.status == 302
       return unless path == "/writes"
@@ -64,10 +69,29 @@ RSpec.describe Karst::Access::Sweep do
     expect(result.outcomes.map(&:status)).to eq([200, 302, 403, nil])
     expect(result.outcomes[1].redirect).to eq("/login")
     expect(result.outcomes[3].exception_class).to eq("RuntimeError")
+    expect(result.outcomes.map(&:halted_callback)).to eq([nil, :require_subscription, :require_admin, nil])
     expect(result.outcomes).to all(be_frozen)
     expect(result.groups.size).to eq(4)
     expect(result.database_isolation).to eq(:same_connection_rollback_attempted)
     expect(result.outcomes).to all(have_attributes(database_rollback_attempted: true))
+  end
+
+  it "keeps identical HTTP outcomes with different halted callbacks in separate groups" do
+    attributes = { principal: nil, status: 302, redirect: "/login", exception_class: nil,
+                   writes_observed: false, write_count: 0, elapsed_ms: 1.0,
+                   database_rollback_attempted: true }
+    subscription = Karst::Access::Outcome.new(**attributes, halted_callback: :require_subscription)
+    admin = Karst::Access::Outcome.new(**attributes, halted_callback: :require_admin)
+    result = Karst::Access::Result.new(path: "/documents", http_method: "GET", outcomes: [subscription, admin])
+
+    expect(result.groups.values).to contain_exactly([subscription], [admin])
+  end
+
+  it "isolates halted callback observations between sequential probes" do
+    result = described_class.new(path: "/documents", principals: [Principal.new(2), Principal.new(1)],
+                                 application: Object.new).call
+
+    expect(result.outcomes.map(&:halted_callback)).to eq([:require_subscription, nil])
   end
 
   it "groups response behavior independently from database-write evidence" do
