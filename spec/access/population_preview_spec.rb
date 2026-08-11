@@ -28,6 +28,20 @@ class PreviewUser < PopulationPreviewFixtureRecord
     "nope"
   end
 
+  def self.recalculate_totals
+    update_all(role: "recalculated")
+    all
+  end
+
+  def self.broken
+    raise "boom"
+  end
+
+  def self.writing_then_broken
+    update_all(role: "temporarily changed")
+    raise "boom after write"
+  end
+
   # Deliberately not passed to PopulationPreview's discovery_result in any
   # spec below -- exists to prove an un-discovered method is never invoked.
   def self.unauthorized_method
@@ -98,6 +112,31 @@ RSpec.describe Karst::Access::PopulationPreview do
       expect(result.resolved).to be(false)
       expect(result.records).to eq([])
       expect(result.error).to be_a(String)
+    end
+
+    it "rolls back and rejects a candidate class method that writes before returning a Relation" do
+      user = PreviewUser.create!(role: "admin")
+
+      result = call(method_name: "recalculate_totals", candidates: [:recalculate_totals])
+
+      expect(result.resolved).to be(false)
+      expect(user.reload.role).to eq("admin")
+    end
+
+    it "reports an unresolved result, without raising, when the candidate raises" do
+      result = call(method_name: "broken", candidates: [:broken])
+
+      expect(result.resolved).to be(false)
+      expect(result.records).to eq([])
+    end
+
+    it "rolls back a candidate write even when the candidate subsequently raises" do
+      user = PreviewUser.create!(role: "admin")
+
+      result = call(method_name: "writing_then_broken", candidates: [:writing_then_broken])
+
+      expect(result.resolved).to be(false)
+      expect(user.reload.role).to eq("admin")
     end
 
     it "never calls a method discovery did not list as a candidate for this model" do
