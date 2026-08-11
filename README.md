@@ -204,15 +204,14 @@ rejected.
 
 When `config.principals` returns an Active Record relation or model class, the
 panel's Analyze button runs `Karst::Access::PrincipalSampler` ahead of the
-sweep instead of taking whatever rows happen to sort first. It selects up to
-`access_sweep_limit` principals biased toward covering distinct *observed
-database states* -- boolean columns, `enum` columns, presence/absence of a
-nullable foreign key, and other low-cardinality scalar columns (10 or fewer
-observed distinct values, checked with one bounded `DISTINCT ... LIMIT` query
-per candidate column, never a full-table scan or `COUNT(*)`). This is
-schema-state diversity the sampler observed in the database, not behavioral
-diversity: the sampler never executes a route, so it has no evidence about how
-any of these principals actually behave -- that evidence exists only once
+sweep instead of taking whatever rows happen to sort first. It first uses
+configured candidate populations as application-authored semantic hints. When no population contributes a candidate, it falls back to covering
+distinct *observed database states* within the bounded recent-user pool --
+boolean columns, `enum` columns, presence/absence of a nullable foreign key,
+and low-cardinality scalar columns. Discovery happens in memory only after the
+pool's single `LIMIT`-bounded query; it never scans or counts the full table.
+This fallback is schema-state diversity, not behavioral diversity: the sampler
+never executes a route, so it has no evidence about how any of these principals actually behave -- that evidence exists only once
 `Access::Sweep` runs.
 
 A conservative, name-based filter unconditionally excludes anything resembling
@@ -224,13 +223,12 @@ cardinality alone cannot be what keeps such a column out, since a *nullable*
 one would otherwise reach presence/absence sampling without ever going through
 the cardinality check.
 
-Query volume is bounded by the number of dimensions and the configured limit,
-not by table size, so it behaves the same whether the underlying table has a
-thousand rows or a million; `Karst::Access::PrincipalSampler.query_budget(limit)`
-states that bound explicitly and it is enforced at every query-issuing call
-site, not merely estimated -- a call may return fewer than `limit` principals
-if the budget is exhausted, but never issues more queries than the budget
-declares. An Active Record source with a composite or missing primary key
+Query volume is one bounded recent-pool query plus at most one bounded query per
+configured population, independent of table size.
+`Karst::Access::PrincipalSampler.query_budget(limit, population_count)` states
+that bound explicitly. Population resolution never uses `COUNT`, and schema
+fallback never issues discovery queries. An Active Record source with a
+composite or missing primary key
 raises `Karst::Access::PrincipalSampler::UnsupportedPrimaryKey` (a
 `Karst::Access::Error`) rather than failing obscurely mid-query; pass an
 already-materialized `Array`/Enumerable of principals instead to use bounded-
@@ -241,9 +239,11 @@ compares no outcomes, and its result feeds `Karst::Access::Sweep` exactly like
 any other bounded principal source. Any other Enumerable source falls back to
 the existing bounded-first strategy, unchanged.
 
-### Explicit principal sources and dimensions
+### Candidate populations, principal sources, and compatibility dimensions
 
-`config.principals` and generic schema discovery are a good default, but real
+Candidate populations are the preferred way to describe principals worth
+trying. Generic schema discovery remains a zero-configuration fallback, while
+legacy explicit dimensions remain supported for compatibility. Real
 applications represent identity very differently -- one `User` model with an
 explicit role column, several distinct principal models (`Author`, `Reader`),
 relational roles (`User`/`Membership`/`Organization`), or an authorization
@@ -262,46 +262,6 @@ access?"), is deliberately out of scope for this version. A dimension is
 sampling evidence, not an authorization claim: Karst may report
 `role=local_admin` next to a usable principal; it never states or implies
 that `local_admin` is what let the request through.
-
-#### Dimensions: `config.principal_dimensions`
-
-```ruby
-Karst.configure do |config|
-  config.principals = -> { User.all }
-  config.principal_dimensions = {
-    role: :role,
-    system_admin: :system_admin?,
-    reseller: ->(user) { user.plan == "reseller" }
-  }
-end
-```
-
-Each dimension is a plain attribute (`:role`), a boolean predicate
-(`:system_admin?`), or a callable of one argument. Configured dimensions take
-priority over `PrincipalSampler`'s generic schema discovery and are tried
-first; generic discovery still runs afterward for any column no configured
-dimension already names, so an application with no extra configuration keeps
-today's behavior exactly. Given a pool of 900 `responder`, 50 `local_admin`,
-30 `group_admin`, 15 `reseller`, and 5 `system_admin` accounts and a limit of
-25, Karst deliberately tries to include a representative of every configured
-role value before simply filling the rest with more responders.
-
-A dimension backed by a real column (including Rails' own auto-generated
-`<boolean column>?` predicate method, which returns exactly the column's
-value) is discovered the same bounded way generic dimensions are -- one
-`DISTINCT ... LIMIT` query, never a full scan. A dimension with no backing
-column -- a computed predicate or a callable -- cannot be translated to SQL,
-so it is instead evaluated once, in Ruby, over the same already
-query-bounded candidate pool `PrincipalSampler` derives for large-table
-safety (see above), never per-row against the full table.
-
-A dimension named (or, for a `Symbol`/`String` accessor, reading an
-attribute named) like `email`, `name`, `phone`, `token`, `password`,
-`address`, or `credential` is rejected with `ArgumentError` as soon as it is
-configured. Karst dimensions are for coarse state, not user identity data --
-this cannot be checked for a callable accessor, since its body cannot be
-inspected, so a callable that itself reads PII is a configuration mistake
-Karst cannot catch on your behalf.
 
 #### Multiple principal models: `config.principal_sources`
 
@@ -363,13 +323,10 @@ role=local_admin · premium=true
 
 Real applications already contain vocabulary for meaningful subsets of
 principals that schema-state diversity alone cannot reliably find -- a
-`system_admins` scope, an `auditors` scope, a `responders` scope. On a wide
-model, generic dimension discovery is capped (`MAX_DIMENSIONS`, currently 8)
-and driven by column order, so a meaningful boolean or enum column can
-simply never be reached before the cap is hit. A configured population is
-tried regardless of how many other columns exist, and -- unlike generic
-discovery and configured dimensions, both scoped to the bounded recent-N
-`principal_candidate_pool_size` pool -- is queried against the full
+`system_admins` scope, an `auditors` scope, a `responders` scope. A configured
+population is tried regardless of how many columns exist and, unlike fallback
+schema discovery and configured dimensions, which are scoped to the bounded
+recent-N `principal_candidate_pool_size` pool, is queried against the full
 configured relation, so a population that matters but is not recent (a
 `system_admins` account created years ago) is never invisible just because
 it fell out of the pool:
@@ -455,6 +412,43 @@ This is deliberately generic under the hood
 provenance label) so the same mechanism can later resolve populations over
 non-principal models -- `Subscription.renewable`, `Import.with_sheets` --
 without a rewrite. This release wires it into principal sampling only.
+
+#### Compatibility: `config.principal_dimensions`
+
+```ruby
+Karst.configure do |config|
+  config.principals = -> { User.all }
+  config.principal_dimensions = {
+    role: :role,
+    system_admin: :system_admin?,
+    reseller: ->(user) { user.plan == "reseller" }
+  }
+end
+```
+
+Each dimension is a plain attribute (`:role`), a boolean predicate
+(`:system_admin?`), or a callable of one argument. Configured dimensions remain
+supported and are evaluated over the bounded recent-user pool. New configurations should prefer candidate populations;
+dimensions are retained for compatibility rather than as Karst's primary
+semantic search mechanism. Generic discovery runs only when configured
+populations contribute no candidates. Given a pool of 900 `responder`, 50
+`local_admin`,
+30 `group_admin`, 15 `reseller`, and 5 `system_admin` accounts and a limit of
+25, Karst deliberately tries to include a representative of every configured
+role value before simply filling the rest with more responders.
+
+Every retained dimension form -- a column, Rails boolean predicate, computed
+predicate, or callable -- is evaluated in Ruby over the already query-bounded
+candidate pool `PrincipalSampler` derives for large-table
+safety (see above), never per-row against the full table.
+
+A dimension named (or, for a `Symbol`/`String` accessor, reading an
+attribute named) like `email`, `name`, `phone`, `token`, `password`,
+`address`, or `credential` is rejected with `ArgumentError` as soon as it is
+configured. Karst dimensions are for coarse state, not user identity data --
+this cannot be checked for a callable accessor, since its body cannot be
+inspected, so a callable that itself reads PII is a configuration mistake
+Karst cannot catch on your behalf.
 
 #### Discovering and curating candidate populations
 

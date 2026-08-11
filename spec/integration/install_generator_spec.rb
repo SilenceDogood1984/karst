@@ -87,6 +87,14 @@ RSpec.describe "karst:install generator" do
       expect(active_lines.join).to eq("Karst.configure do |config|\nend\n")
     end
 
+    it "promotes populations without generating legacy dimension setup" do
+      content = read("config/initializers/karst.rb")
+
+      expect(content).to include("config.principal_populations")
+      expect(content).not_to include("config.principal_dimensions")
+      expect(content).not_to include("dimensions:")
+    end
+
     it "does not assume a host-specific session key" do
       content = read("config/initializers/karst.rb")
 
