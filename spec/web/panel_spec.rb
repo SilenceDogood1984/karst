@@ -245,6 +245,85 @@ RSpec.describe Karst::Web::Panel do
     end
   end
 
+  describe "guided population retry" do
+    def approve_populations(populations)
+      Karst.config.principals = -> { [] }
+      Karst.config.principal_populations = populations
+    end
+
+    after do
+      Karst.config.principals = nil
+      Karst.config.principal_populations = nil
+    end
+
+    it "offers approved populations to retry when nothing sampled was usable" do
+      approve_populations(system_admins: -> {}, auditors: -> {})
+      outcomes = [access_outcome(id: 1, status: 403, halted_callback: :authorize_admin)]
+
+      body = described_class.render(params: analyzed_route, access_result: access_result(outcomes)).last.join
+
+      expect(body).to include("Try another population", "Observed halt: <code>authorize_admin</code>")
+      expect(body).to include("Suggested populations", "system_admins")
+      expect(body).to include("Other approved populations", "auditors")
+      expect(body).to include("name match: admin")
+    end
+
+    it "never hides a non-matching approved population, only ranks it separately" do
+      approve_populations(system_admins: -> {}, responders: -> {})
+      outcomes = [access_outcome(id: 1, status: 403, halted_callback: :authorize_admin)]
+
+      body = described_class.render(params: analyzed_route, access_result: access_result(outcomes)).last.join
+
+      expect(body).to include("system_admins", "responders")
+    end
+
+    it "carries the current route context and target population into the retry form" do
+      approve_populations(system_admins: -> {})
+      outcomes = [access_outcome(id: 1, status: 403)]
+
+      body = described_class.render(params: analyzed_route, access_result: access_result(outcomes)).last.join
+
+      expect(body).to include('name="operation" value="population_sweep"', 'name="population" value="system_admins"',
+                              'name="path" value="/documents/22/reader"')
+    end
+
+    it "omits the section entirely once a usable principal was already found" do
+      approve_populations(system_admins: -> {})
+      outcomes = [access_outcome(id: 1, status: 200), access_outcome(id: 2, status: 403)]
+
+      body = described_class.render(params: analyzed_route, access_result: access_result(outcomes)).last.join
+
+      expect(body).not_to include("Try another population")
+    end
+
+    it "omits the section when no analysis has run yet" do
+      approve_populations(system_admins: -> {})
+
+      body = render(catalog(:ready), analyzed_route)
+
+      expect(body).not_to include("Try another population")
+    end
+
+    it "points at /karst/populations instead when no population has been approved yet" do
+      outcomes = [access_outcome(id: 1, status: 403)]
+
+      body = described_class.render(params: analyzed_route, access_result: access_result(outcomes)).last.join
+
+      expect(body).not_to include("Try another population")
+      expect(body).to include("No approved candidate populations are configured yet",
+                              '<a href="/karst/populations">Discover candidate populations</a>')
+    end
+
+    it "never claims the suggestion causes or matches the observed halt, only that names overlap" do
+      approve_populations(system_admins: -> {})
+      outcomes = [access_outcome(id: 1, status: 403, halted_callback: :authorize_admin)]
+
+      body = described_class.render(params: analyzed_route, access_result: access_result(outcomes)).last.join
+
+      expect(body).not_to include("grants access", "will pass", "causes", "guaranteed")
+    end
+  end
+
   describe "candidate pool disclosure" do
     it "truthfully reports a bounded candidate pool without implying the full universe was searched" do
       body = described_class.render(

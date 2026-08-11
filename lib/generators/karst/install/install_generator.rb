@@ -50,6 +50,10 @@ module Karst
 
         4. Start Rails and visit a page, then /karst.
 
+        5. Optional: browse and curate candidate populations (application
+           scopes like `User.system_admins`) at /karst/populations, or run
+           `bin/rails karst:populations` from the command line.
+
       STEPS
       private_constant :NEXT_STEPS
 

@@ -437,18 +437,81 @@ config.principal_sources = {
 
 `Karst::Access::PrincipalSampler::Result#populations` lists every
 population that resolved successfully for a given call (including one that
-currently matches zero rows), enough metadata for a future UI to show which
-candidate populations are available and let a developer retry against one
-specifically -- this release does not build that selector, only the
-metadata it would read.
+currently matches zero rows), letting the panel show which candidate
+populations are available and offer a retry against one specifically -- see
+"Discovering and curating candidate populations" below.
 
 This is deliberately generic under the hood
 (`Karst::Access::CandidatePopulation`: source, name, bounded records,
 provenance label) so the same mechanism can later resolve populations over
 non-principal models -- `Subscription.renewable`, `Import.with_sheets` --
-without a rewrite. This release wires it into principal sampling only, and
-does not attempt any automatic discovery of candidate populations; explicit
-configuration is the only supported path.
+without a rewrite. This release wires it into principal sampling only.
+
+#### Discovering and curating candidate populations
+
+Writing `config.principal_populations` by hand works well once you know
+which scopes matter. On a large application -- dozens or hundreds of
+models, many with several scopes -- finding them by reading source is
+tedious, and Karst has no reliable way to ask Rails "list every named scope"
+(see above). `Karst::Access::PopulationDiscovery` instead offers an
+explicit, conservative *discovery* step: it lists every application Active
+Record model (excluding abstract classes and Rails/framework-internal
+models such as `ActiveRecord::SchemaMigration` or `ActiveStorage::*`) and,
+for each, every public class method defined directly on that model whose
+shape -- callable with no arguments, not named like a mutator/predicate/writer
+(`destroy_all!`, `admin?`, `role=`) -- makes it *possibly* a named scope.
+This is a heuristic, not a certainty: Active Record exposes no registry
+that would let Karst know for sure, so a same-shaped ordinary class method
+can appear too, and a scope contributed by an `ActiveSupport::Concern`'s
+`class_methods do ... end` block (added via `extend`, not defined directly)
+is missed. Discovery never executes a discovered method, never issues a
+query, and never runs automatically on an ordinary `/karst` request -- only
+when explicitly triggered.
+
+Two ways to trigger it:
+
+```
+bin/rails karst:populations
+```
+
+prints every discovered model and its candidate method names to the
+terminal. Or visit `/karst/populations` (linked from the main `/karst`
+panel) for a browsable, curatable page: models are grouped and collapsed by
+default (`<details>`, no frontend framework -- a little vanilla JS only
+powers client-side search/filter), so an application with 150 models and
+500 candidate populations never renders as one giant checkbox dump.
+Checking a candidate and clicking **Preview** runs a separate, explicit,
+`LIMIT 3`-bounded query (never a `COUNT`, never full materialization) to
+show a handful of matching records -- still just a hint, never a claim that
+the population grants access.
+
+Selecting populations and clicking **Generate configuration snippet**
+produces ready-to-paste Ruby -- `config.principal_populations = { ... }`,
+or `config.principal_sources = { ... }` when more than one configured
+principal source is involved (keeping same-named populations on different
+models distinguishable, e.g. `Author.admins` vs. `Reader.admins`). Karst
+never writes this into your application's files automatically; you stay in
+control of what actually gets committed. A selected population belonging to
+a model that isn't (yet) a configured principal source is reported back
+honestly as left out of the snippet, rather than silently dropped -- the
+discovery/candidate representation is deliberately generic (model name +
+method name), so the same UI can support curating *artifact* populations
+(`Subscription.renewable`) later without a rewrite; this release only wires
+selections into principal sampling.
+
+**Guided retry.** When the main `/karst` panel's most recent analysis found
+no usable outcome, and at least one population is already approved
+(configured, not merely discovered), it offers **Try another population**:
+one button per approved population, running a fresh bounded sweep against
+only that population's own records -- never the global representative
+sample, and never more than one population at a time. If the analysis
+observed a halted controller callback (e.g. `authorize_admin`), Karst
+optionally ranks the approved populations by a small, transparent name-token
+heuristic (`Karst::Access::PopulationSuggestion` -- simple substring
+overlap, no AI/NLP) and labels the match (`name match: admin`) -- every
+approved population is still shown, ranked or not, and Karst never claims
+the suggested population *causes* or *will* produce a different outcome.
+Only running the retry proves that.
 
 Every principal receives a fresh `ActionDispatch::Integration::Session` and is
 assumed and cleared only through `Karst::Identity`. Each synchronous request is

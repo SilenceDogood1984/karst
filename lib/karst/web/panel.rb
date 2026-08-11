@@ -75,6 +75,9 @@ module Karst
         .evidence{display:flex;gap:1rem;flex-wrap:wrap;font-size:.9rem}
         .label{font-size:.72rem;font-weight:700;text-transform:uppercase;color:#666}
         .failed,.pending{border-left:4px solid #b3261e}
+        section.guided-retry{margin:1rem 0;border:1px solid #ddd;border-radius:.5rem;padding:.9rem 1rem}
+        .retry-group{margin:.5rem 0}
+        .retry-form{display:inline-block;margin:.25rem .5rem .25rem 0}
         small{color:#666}
         .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
         @media (max-width:480px){
@@ -100,6 +103,7 @@ module Karst
           .testing-banner{background:#3a2f0d;border-color:#6b5423;color:#f0e4c0}
           .hint{color:#d8a63d}
           .failed,.pending{border-left-color:#e5534b}
+          section.guided-retry{border-color:#33343a}
         }
       CSS
       private_constant :STYLE
@@ -231,7 +235,7 @@ module Karst
                    "<p>Access analysis is available for GET routes only.</p>"
                  end
           heading = "<h2 class=\"sr-only\">Access analysis</h2>"
-          "<section class=\"access\">#{heading}#{body}#{access_result(result, csrf_token)}</section>"
+          "<section class=\"access\">#{heading}#{body}#{access_result(result, csrf_token, context)}</section>"
         end
         # rubocop:enable Metrics/ParameterLists
 
@@ -242,7 +246,11 @@ module Karst
           operation = "<input type=\"hidden\" name=\"operation\" value=\"access_sweep\">"
           button = "<button class=\"primary\" type=\"submit\">#{escape(label)}</button>"
           form = "<form action=\"/karst\" method=\"post\">#{context}#{operation}#{button}</form>"
-          "#{form}#{scenario_forms}#{principal_source_hint(sources)}"
+          "#{form}#{scenario_forms}#{principal_source_hint(sources)}#{populations_link}"
+        end
+
+        def populations_link
+          "<p><a href=\"/karst/populations\">Discover &amp; curate candidate populations</a></p>"
         end
 
         def scenario_forms
@@ -279,7 +287,7 @@ module Karst
         end
 
         # rubocop:disable Metrics/AbcSize
-        def access_result(result, csrf_token)
+        def access_result(result, csrf_token, context)
           return "" unless result
           return "<p>Analysis unavailable: #{escape(result.message)}</p>" if result.is_a?(StandardError)
 
@@ -289,10 +297,80 @@ module Karst
           warning = write_count.positive? ? write_warning(write_count) : ""
           usable, other = result.outcomes.partition { |outcome| usable_outcome?(outcome) }
           usable_section = usable_outcomes(usable, result, csrf_token)
+          retry_section = guided_retry_section(result, usable, context)
           other_section = other_outcomes(other, result.path)
-          "#{access_meta(result)}#{warning}#{usable_section}#{other_section}"
+          "#{access_meta(result)}#{warning}#{usable_section}#{retry_section}#{other_section}"
         end
         # rubocop:enable Metrics/AbcSize
+
+        # -- Guided retry against an approved population -----------------------
+
+        # Only offered once a sweep actually ran and found nothing usable --
+        # never claims the suggested population *will* work, only that it is
+        # an already-approved candidate worth trying next (see README
+        # "Guided retry"). Population selection here is always restricted to
+        # config.principal_populations/config.principal_sources[...]
+        # .populations -- never a merely *discovered*, unapproved candidate.
+        def guided_retry_section(result, usable, context)
+          return "" if result.outcomes.empty? || usable.any?
+
+          approved = approved_population_names
+          return no_populations_hint if approved.empty?
+
+          halted = dominant_halted_callback(result.outcomes)
+          ranked = Access::PopulationSuggestion.rank(observed: halted, population_names: approved)
+          <<~HTML
+            <section class="guided-retry"><h2>Try another population</h2>
+            #{halted_note(halted)}
+            #{retry_group('Suggested populations', ranked[:suggested], context)}
+            #{retry_group('Other approved populations', ranked[:other], context)}
+            </section>
+          HTML
+        end
+
+        def no_populations_hint
+          "<p class=\"hint\">No approved candidate populations are configured yet. " \
+            "<a href=\"/karst/populations\">Discover candidate populations</a>.</p>"
+        end
+
+        def halted_note(halted)
+          return "" unless halted
+
+          "<p class=\"meta\">Observed halt: <code>#{escape(halted)}</code></p>"
+        end
+
+        def approved_population_names
+          Identity.principal_sources.values.flat_map { |source| source.populations.keys }.uniq
+        rescue Identity::Error
+          []
+        end
+
+        def dominant_halted_callback(outcomes)
+          tally = Hash.new(0)
+          outcomes.filter_map(&:halted_callback).each { |callback| tally[callback] += 1 }
+          return nil if tally.empty?
+
+          tally.max_by { |_callback, count| count }.first
+        end
+
+        def retry_group(title, suggestions, context)
+          return "" if suggestions.empty?
+
+          items = suggestions.map { |suggestion| retry_button(suggestion, context) }.join
+          "<div class=\"retry-group\"><p class=\"label\">#{escape(title)}</p>#{items}</div>"
+        end
+
+        def retry_button(suggestion, context)
+          fields = context + hidden("operation", "population_sweep") + hidden("population", suggestion.name)
+          "<form class=\"retry-form\" action=\"/karst\" method=\"post\">#{fields}" \
+            "<button type=\"submit\">#{escape(suggestion.name)}</button>#{match_reason(suggestion)}</form>"
+        end
+
+        def match_reason(suggestion)
+          return "" if suggestion.matched_tokens.empty?
+
+          " <small>(name match: #{escape(suggestion.matched_tokens.join(', '))})</small>"
+        end
 
         def scenario_result(result, csrf_token)
           matches, mismatches = result.outcomes.partition(&:match)

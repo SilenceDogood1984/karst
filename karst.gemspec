@@ -12,8 +12,8 @@ Gem::Specification.new do |spec|
   spec.license = "MIT"
   spec.required_ruby_version = ">= 2.7"
 
-  spec.files = Dir["lib/**/*.rb", "ARCHITECTURE.md", "CHANGELOG.md", "CODE_OF_CONDUCT.md", "CONTRIBUTING.md",
-                   "LICENSE", "README.md", "SECURITY.md"]
+  spec.files = Dir["lib/**/*.rb", "lib/**/*.rake", "ARCHITECTURE.md", "CHANGELOG.md", "CODE_OF_CONDUCT.md",
+                   "CONTRIBUTING.md", "LICENSE", "README.md", "SECURITY.md"]
   spec.metadata["source_code_uri"] = "https://github.com/SilenceDogood1984/karst"
   spec.metadata["changelog_uri"] = "https://github.com/SilenceDogood1984/karst/blob/main/CHANGELOG.md"
   spec.metadata["rubygems_mfa_required"] = "true"

@@ -2,6 +2,7 @@
 
 require_relative "locality"
 require_relative "panel"
+require_relative "populations_panel"
 require_relative "badge"
 require_relative "browser_identity"
 require_relative "route_lookup"
@@ -12,6 +13,11 @@ require "active_support/notifications"
 require_relative "../access/sweep"
 require_relative "../access/principal_selection"
 require_relative "../access/scenario_sweep"
+require_relative "../access/candidate_population"
+require_relative "../access/population_discovery"
+require_relative "../access/population_preview"
+require_relative "../access/population_config_snippet"
+require_relative "../access/population_suggestion"
 
 module Karst
   module Web
@@ -39,6 +45,12 @@ module Karst
       OWNED_PATH = "/karst"
       private_constant :OWNED_PATH
 
+      POPULATIONS_PATH = "/karst/populations"
+      private_constant :POPULATIONS_PATH
+
+      CANDIDATE_SEPARATOR = "::"
+      private_constant :CANDIDATE_SEPARATOR
+
       CONTEXT_KEY = :karst_web_request_context
       private_constant :CONTEXT_KEY
 
@@ -58,8 +70,10 @@ module Karst
 
       private
 
+      # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
       def call_owned(env)
         return @app.call(env) unless development? && @locality.local?(env["REMOTE_ADDR"])
+        return call_populations(env) if env["PATH_INFO"] == POPULATIONS_PATH
 
         params = owned_params(env)
         lookup = recognize_manual_route(env, params)
@@ -71,6 +85,41 @@ module Karst
         Panel.render(params: params, access_result: analyze(env, params), route_lookup_limitation: lookup&.limitation,
                      csrf_token: browser_token(browser_identity),
                      browser_identity_active: browser_identity_active?(browser_identity))
+      end
+      # rubocop:enable Metrics/AbcSize, Metrics/MethodLength
+
+      # Discovery, preview, and snippet generation are all read-only or
+      # bounded-read actions (see Karst::Access::PopulationDiscovery/
+      # PopulationPreview) -- none of them mutate the real browser session
+      # the way `test_as` does, so unlike that operation this path needs no
+      # CSRF token, exactly like the ordinary `access_sweep` POST above.
+      def call_populations(env)
+        params = owned_params(env)
+        discovery = Access::PopulationDiscovery.new.call
+        selected = selected_candidates(discovery, params)
+        snippet = Access::PopulationConfigSnippet.generate(selected) if params["generate_snippet"]
+        Web::PopulationsPanel.render(discovery: discovery, selected: selected, snippet: snippet,
+                                     preview: population_preview(discovery, params))
+      end
+
+      def selected_candidates(discovery, params)
+        raw = Array(params["population"]).map(&:to_s)
+        discovery.candidates.select { |candidate| raw.include?(candidate_key(candidate)) }
+      end
+
+      def population_preview(discovery, params)
+        key = params["preview"].to_s
+        return nil if key.empty?
+
+        candidate = discovery.candidates.find { |item| candidate_key(item) == key }
+        return nil unless candidate
+
+        Access::PopulationPreview.call(model_name: candidate.model_name, method_name: candidate.method_name,
+                                       discovery_result: discovery)
+      end
+
+      def candidate_key(candidate)
+        "#{candidate.model_name}#{CANDIDATE_SEPARATOR}#{candidate.method_name}"
       end
 
       def call_with_badge(env)
@@ -84,7 +133,7 @@ module Karst
       end
 
       def owned?(env)
-        env["PATH_INFO"] == OWNED_PATH
+        [OWNED_PATH, POPULATIONS_PATH].include?(env["PATH_INFO"])
       end
 
       def owned_params(env)
@@ -100,9 +149,11 @@ module Karst
         RouteLookup.new(path: params["path"], http_method: params["method"]).call
       end
 
+      # rubocop:disable Metrics/AbcSize
       def analyze(env, params)
         return nil unless env["REQUEST_METHOD"] == "POST"
         return scenario_analyze(params) if params["operation"] == "artifact_sweep"
+        return population_analyze(params) if params["operation"] == "population_sweep"
         return nil unless params["operation"] == "access_sweep"
 
         sampled = Access::PrincipalSelection.new(sources: Identity.principal_sources).call
@@ -111,6 +162,37 @@ module Karst
                           sampling_reasons: sampling_reasons(sampled)).call
       rescue Access::Error, Identity::Error, ArgumentError => e
         e
+      end
+      # rubocop:enable Metrics/AbcSize
+
+      # A "guided retry" against exactly one already-approved population
+      # (config.principal_populations / config.principal_sources[...].
+      # populations) -- never a newly discovered/unapproved candidate, and
+      # never more than one population at a time (see README "Guided
+      # retry"). Reuses the same Access::Sweep and access_sweep_limit as an
+      # ordinary analysis; this introduces no new safety limit surface.
+      # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
+      def population_analyze(params)
+        name = params["population"].to_s.to_sym
+        source = Identity.principal_sources.values.find { |candidate| candidate.populations.key?(name) }
+        raise ArgumentError, "unknown or unapproved population" unless source
+
+        klass = source.record_klass
+        raise ArgumentError, "population source is not a representative Active Record model" unless klass
+
+        population = Access::CandidatePopulation.resolve(
+          name: name, callable: source.populations.fetch(name), source_klass: klass,
+          limit: Karst.config.access_sweep_limit
+        )
+        raise ArgumentError, "population did not resolve to a usable relation" unless population
+
+        Access::Sweep.new(path: params["path"], http_method: params["method"], principals: population.records,
+                          sampling_reasons: population_sampling_reasons(population)).call
+      end
+      # rubocop:enable Metrics/AbcSize, Metrics/MethodLength
+
+      def population_sampling_reasons(population)
+        population.records.to_h { |record| [record, [population.provenance]] }
       end
 
       def scenario_analyze(params)
