@@ -10,9 +10,21 @@ module Karst
     attr_accessor :enabled, :principals, :assume_identity, :clear_identity, :principal_label,
                   :assume_browser_identity, :clear_browser_identity
     attr_reader :buffer_size, :access_sweep_limit, :usable_access_outcome, :principal_candidate_pool_size,
-                :principal_dimensions, :principal_populations, :artifact_sources, :access_scenarios
+                :principal_dimensions, :principal_populations, :artifact_sources, :access_scenarios,
+                :population_retry_limit
 
     MAX_ACCESS_SWEEP_LIMIT = 100
+
+    # How many records a single configured candidate population may
+    # contribute when Karst automatically retries it after an ordinary
+    # sample found nothing usable (see Karst::Access::Search). Kept
+    # deliberately small: the point of a population retry is to answer
+    # "does this population reach the behavior at all," which one or two
+    # records already settle -- not to survey the population. The total
+    # number of extra requests a retry may issue is bounded separately, by
+    # access_sweep_limit, so adding populations can never make an analysis
+    # cost more than roughly twice an ordinary sweep.
+    MAX_POPULATION_RETRY_LIMIT = 10
 
     # Conservative hard ceiling on how many recent principals a
     # representative-sampling candidate pool may ever cover. This bounds the
@@ -34,6 +46,7 @@ module Karst
       @access_sweep_limit = 25
       @usable_access_outcome = ->(outcome) { outcome.status && (200..299).cover?(outcome.status) }
       @principal_candidate_pool_size = 1_000
+      @population_retry_limit = 3
       @principal_dimensions = {}
       @principal_populations = {}
       @configured_principal_sources = nil
@@ -120,6 +133,14 @@ module Karst
       end
 
       @principal_candidate_pool_size = value
+    end
+
+    def population_retry_limit=(value)
+      unless value.is_a?(Integer) && value.positive? && value <= MAX_POPULATION_RETRY_LIMIT
+        raise ArgumentError, "population_retry_limit must be between 1 and #{MAX_POPULATION_RETRY_LIMIT}"
+      end
+
+      @population_retry_limit = value
     end
 
     def buffer_size=(value)

@@ -212,46 +212,88 @@ RSpec.describe "bounded access sweep Rails integration" do
     expect(response.body).not_to include('href="/karst/populations"')
   end
 
-  it "runs a guided population_sweep bounded to exactly one approved population, respecting access_sweep_limit" do
-    KarstAccessPrincipal.delete_all
-    200.times { KarstAccessPrincipal.create!(behavior: "ok") }
-    minority = KarstAccessPrincipal.create!(behavior: "forbidden")
-    Karst.config.principals = -> { KarstAccessPrincipal.all }
-    Karst.config.principal_populations = { flagged: -> { KarstAccessPrincipal.flagged } }
+  def access_sweep_response
     stack = Karst::Web::Middleware.new(KarstTestApplication)
-    mock = Rack::MockRequest.new(stack)
-
-    response = mock.post(
+    Rack::MockRequest.new(stack).post(
       "/karst", "REMOTE_ADDR" => "127.0.0.1", "CONTENT_TYPE" => "application/x-www-form-urlencoded",
-                input: "operation=population_sweep&population=flagged&method=GET&path=%2Fdocuments%2Fread%2Fedit"
+                input: "operation=access_sweep&method=GET&path=%2Fdocuments%2Fread%2Fedit"
     )
+  end
+
+  it "automatically retries an approved population once the ordinary sample finds no usable user" do
+    KarstAccessPrincipal.delete_all
+    5.times { KarstAccessPrincipal.create!(behavior: "forbidden") }
+    usable = KarstAccessPrincipal.create!(behavior: "ok")
+    Karst.config.access_sweep_limit = 3
+    Karst.config.principals = -> { KarstAccessPrincipal.where(behavior: "forbidden") }
+    Karst.config.principal_populations = { working: -> { KarstAccessPrincipal.where(behavior: "ok") } }
+
+    response = access_sweep_response
 
     expect(response.status).to eq(200)
-    # Bounded to exactly the flagged population (1 record), not the 25-wide
-    # default access_sweep_limit or the 201-row full principal universe.
-    expect(response.body).to include("1 users tested", "KarstAccessPrincipal ##{minority.id}",
-                                     "Halted callback: halt_for_access_behavior")
+    expect(response.body).to include("Sample: 3 recent users, none usable",
+                                     "halted at <code>halt_for_access_behavior</code>")
+    expect(response.body).to include("Candidate populations", "working",
+                                     "KarstAccessPrincipal ##{usable.id} → 200 OK ✓")
+    expect(response.body).to include("<h2>Usable users — 1</h2>")
   ensure
     Karst.config.principals = nil
     Karst.config.principal_populations = nil
   end
 
-  it "fails a guided population_sweep against an unapproved population name safely, without raising" do
-    Karst.config.principals = -> { KarstAccessPrincipal.all }
-    Karst.config.principal_populations = { flagged: -> { KarstAccessPrincipal.flagged } }
-    stack = Karst::Web::Middleware.new(KarstTestApplication)
-    mock = Rack::MockRequest.new(stack)
+  it "retains grouped observed evidence from every population when none of them succeeds" do
+    KarstAccessPrincipal.delete_all
+    3.times { KarstAccessPrincipal.create!(behavior: "forbidden") }
+    KarstAccessPrincipal.create!(behavior: "redirect")
+    Karst.config.access_sweep_limit = 2
+    Karst.config.principals = -> { KarstAccessPrincipal.where(behavior: "forbidden") }
+    Karst.config.principal_populations = { redirected: -> { KarstAccessPrincipal.where(behavior: "redirect") },
+                                           missing: -> { KarstAccessPrincipal.where(behavior: "nobody") } }
 
-    response = mock.post(
-      "/karst", "REMOTE_ADDR" => "127.0.0.1", "CONTENT_TYPE" => "application/x-www-form-urlencoded",
-                input: "operation=population_sweep&population=not_approved&method=GET&path=%2Fdocuments%2Fread%2Fedit"
-    )
+    response = access_sweep_response
 
     expect(response.status).to eq(200)
-    expect(response.body).to include("Analysis unavailable")
+    expect(response.body).to include("<h2>Usable users — 0</h2>")
+    expect(response.body).to include("redirected", "1 user tried — none usable")
+    expect(response.body).to include("missing", "no matching records")
   ensure
     Karst.config.principals = nil
     Karst.config.principal_populations = nil
+  end
+
+  it "never evaluates any population when the ordinary sample already found a usable user" do
+    KarstAccessPrincipal.delete_all
+    KarstAccessPrincipal.create!(behavior: "ok")
+    flagged = KarstAccessPrincipal.create!(behavior: "forbidden")
+    Karst.config.principals = -> { KarstAccessPrincipal.where(behavior: "ok") }
+    Karst.config.principal_populations = { flagged: -> { KarstAccessPrincipal.flagged } }
+
+    response = access_sweep_response
+
+    expect(response.status).to eq(200)
+    expect(response.body).to include("<h2>Usable users — 1</h2>")
+    expect(response.body).not_to include("Candidate populations", "KarstAccessPrincipal ##{flagged.id}")
+  ensure
+    Karst.config.principals = nil
+    Karst.config.principal_populations = nil
+  end
+
+  it "never automatically executes a discoverable scope that was never configured as a population" do
+    KarstAccessPrincipal.delete_all
+    2.times { KarstAccessPrincipal.create!(behavior: "forbidden") }
+    KarstAccessPrincipal.create!(behavior: "ok")
+    Karst.config.access_sweep_limit = 2
+    Karst.config.principals = -> { KarstAccessPrincipal.where(behavior: "forbidden") }
+
+    response = access_sweep_response
+
+    # KarstAccessPrincipal.flagged is discoverable at /karst/populations, and
+    # a usable "ok" record exists, but nothing unconfigured is ever run.
+    expect(response.status).to eq(200)
+    expect(response.body).to include("<h2>Usable users — 0</h2>")
+    expect(response.body).not_to include("Candidate populations")
+  ensure
+    Karst.config.principals = nil
   end
 
   it "bypasses non-reentrant host middleware at the route dispatch boundary" do

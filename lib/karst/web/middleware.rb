@@ -11,13 +11,13 @@ require "rack/utils"
 require "rack/request"
 require "active_support/notifications"
 require_relative "../access/sweep"
+require_relative "../access/search"
 require_relative "../access/principal_selection"
 require_relative "../access/scenario_sweep"
 require_relative "../access/candidate_population"
 require_relative "../access/population_discovery"
 require_relative "../access/population_preview"
 require_relative "../access/population_config_snippet"
-require_relative "../access/population_suggestion"
 
 module Karst
   module Web
@@ -149,50 +149,22 @@ module Karst
         RouteLookup.new(path: params["path"], http_method: params["method"]).call
       end
 
-      # rubocop:disable Metrics/AbcSize
+      # One analysis operation, not two: Access::Search runs the ordinary
+      # bounded sample and, only if that finds nothing usable, automatically
+      # retries each *approved* candidate population in configuration order
+      # (see Karst::Access::Search). There is deliberately no separate
+      # "try this population" operation for a developer to press --
+      # and no path by which a merely discovered, unapproved population
+      # name can be executed.
       def analyze(env, params)
         return nil unless env["REQUEST_METHOD"] == "POST"
         return scenario_analyze(params) if params["operation"] == "artifact_sweep"
-        return population_analyze(params) if params["operation"] == "population_sweep"
         return nil unless params["operation"] == "access_sweep"
 
-        sampled = Access::PrincipalSelection.new(sources: Identity.principal_sources).call
-        Access::Sweep.new(path: params["path"], http_method: params["method"], principals: sampled.principals,
-                          candidate_pool_size: sampled.candidate_pool_size,
-                          sampling_reasons: sampling_reasons(sampled)).call
+        Access::Search.new(path: params["path"], http_method: params["method"],
+                           sources: Identity.principal_sources).call
       rescue Access::Error, Identity::Error, ArgumentError => e
         e
-      end
-      # rubocop:enable Metrics/AbcSize
-
-      # A "guided retry" against exactly one already-approved population
-      # (config.principal_populations / config.principal_sources[...].
-      # populations) -- never a newly discovered/unapproved candidate, and
-      # never more than one population at a time (see README "Guided
-      # retry"). Reuses the same Access::Sweep and access_sweep_limit as an
-      # ordinary analysis; this introduces no new safety limit surface.
-      # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
-      def population_analyze(params)
-        name = params["population"].to_s.to_sym
-        source = Identity.principal_sources.values.find { |candidate| candidate.populations.key?(name) }
-        raise ArgumentError, "unknown or unapproved population" unless source
-
-        klass = source.record_klass
-        raise ArgumentError, "population source is not a representative Active Record model" unless klass
-
-        population = Access::CandidatePopulation.resolve(
-          name: name, callable: source.populations.fetch(name), source_klass: klass,
-          limit: Karst.config.access_sweep_limit
-        )
-        raise ArgumentError, "population did not resolve to a usable relation" unless population
-
-        Access::Sweep.new(path: params["path"], http_method: params["method"], principals: population.records,
-                          sampling_reasons: population_sampling_reasons(population)).call
-      end
-      # rubocop:enable Metrics/AbcSize, Metrics/MethodLength
-
-      def population_sampling_reasons(population)
-        population.records.to_h { |record| [record, [population.provenance]] }
       end
 
       def scenario_analyze(params)

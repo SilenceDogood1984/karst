@@ -23,11 +23,26 @@ RSpec.describe Karst::Web::Panel do
   end
   # rubocop:enable Metrics/ParameterLists
 
-  def access_result(outcomes, candidate_pool_size: nil)
+  def sweep_result(outcomes, candidate_pool_size: nil)
     Karst::Access::Result.new(path: "/documents/22/reader", http_method: "GET", outcomes: outcomes,
                               elapsed_ms: outcomes.size.to_f, aborted_reason: nil,
                               database_isolation: :same_connection_rollback_attempted,
                               candidate_pool_size: candidate_pool_size)
+  end
+
+  # The panel renders one access shape: Karst::Access::Search::Result. A
+  # plain sweep with no population retries is simply that shape with an
+  # empty attempts list.
+  def access_result(outcomes, candidate_pool_size: nil, attempts: [])
+    Karst::Access::Search::Result.new(initial: sweep_result(outcomes, candidate_pool_size: candidate_pool_size),
+                                      attempts: attempts)
+  end
+
+  def attempt(name, state, outcomes: nil, error: nil)
+    Karst::Access::Search::PopulationAttempt.new(
+      name: name, source_name: :default, state: state, error: error,
+      result: outcomes && sweep_result(outcomes)
+    )
   end
 
   def enable_browser_identity!
@@ -122,13 +137,13 @@ RSpec.describe Karst::Web::Panel do
       body = render(nil, route.merge("method" => "POST", "path" => "/documents/22"))
 
       expect(body).to include("Access analysis is available for GET routes only.")
-      expect(body).not_to include("Analyze 25")
+      expect(body).not_to include("Who can use this page?")
     end
 
     it "omits the access section entirely when no host path is known" do
       body = render(nil, route)
 
-      expect(body).not_to include("Analyze 25", "Access analysis is available for GET routes only.")
+      expect(body).not_to include("Who can use this page?", "Access analysis is available for GET routes only.")
     end
   end
 
@@ -216,81 +231,77 @@ RSpec.describe Karst::Web::Panel do
     end
   end
 
-  describe "guided population retry" do
-    def approve_populations(populations)
-      Karst.config.principals = -> { [] }
-      Karst.config.principal_populations = populations
+  describe "automatic candidate population retries" do
+    it "reports the verified user a population produced, alongside what the sample observed" do
+      sample = [access_outcome(id: 1, status: 403, halted_callback: :authorize_admin)]
+      hit = [access_outcome(id: 27, status: 200, sampling_reasons: ["population=system_admins"])]
+      attempts = [attempt(:system_admins, :usable, outcomes: hit), attempt(:auditors, :skipped)]
+
+      body = described_class.render(params: analyzed_route,
+                                    access_result: access_result(sample, attempts: attempts)).last.join
+
+      expect(body).to include("Candidate populations", "system_admins", "User #27 → 200 OK ✓",
+                              "<h2>Usable users — 1</h2>")
+      expect(body).to include("Sample: 1 recent user, none usable · halted at <code>authorize_admin</code>")
+      expect(body).to include("auditors", "not tried — a usable user was already found")
     end
 
-    after do
-      Karst.config.principals = nil
-      Karst.config.principal_populations = nil
+    it "reports every population honestly when none of them produced a usable user" do
+      sample = [access_outcome(id: 1, status: 403, halted_callback: :authorize_admin)]
+      missed = [access_outcome(id: 5, status: 302, redirect: "/login", halted_callback: :authorize_admin)]
+      attempts = [attempt(:system_admins, :no_match, outcomes: missed), attempt(:auditors, :empty),
+                  attempt(:responders, :unresolved, error: "did not resolve to a usable relation"),
+                  attempt(:legacy, :already_tried), attempt(:late, :budget_exhausted)]
+
+      body = described_class.render(params: analyzed_route,
+                                    access_result: access_result(sample, attempts: attempts)).last.join
+
+      expect(body).to include("1 user tried — none usable · halted at <code>authorize_admin</code>")
+      expect(body).to include("no matching records")
+      expect(body).to include("could not be resolved (did not resolve to a usable relation)")
+      expect(body).to include("every candidate was already tested above")
+      expect(body).to include("not tried — the retry request budget was reached")
+      expect(body).to include("<h2>Usable users — 0</h2>")
     end
 
-    it "offers approved populations to retry when nothing sampled was usable" do
-      approve_populations(system_admins: -> {}, auditors: -> {})
-      outcomes = [access_outcome(id: 1, status: 403, halted_callback: :authorize_admin)]
+    it "counts population requests in the analysis meta without implying they were sampled" do
+      sample = [access_outcome(id: 1, status: 403)]
+      hit = [access_outcome(id: 27, status: 200)]
+      attempts = [attempt(:system_admins, :usable, outcomes: hit)]
 
-      body = described_class.render(params: analyzed_route, access_result: access_result(outcomes)).last.join
+      body = described_class.render(params: analyzed_route,
+                                    access_result: access_result(sample, attempts: attempts)).last.join
 
-      expect(body).to include("Try another population", "Observed halt: <code>authorize_admin</code>")
-      expect(body).to include("Suggested populations", "system_admins")
-      expect(body).to include("Other approved populations", "auditors")
-      expect(body).to include("name match: admin")
+      expect(body).to include("2 users tested", "including 1 user from 1 candidate population")
     end
 
-    it "never hides a non-matching approved population, only ranks it separately" do
-      approve_populations(system_admins: -> {}, responders: -> {})
-      outcomes = [access_outcome(id: 1, status: 403, halted_callback: :authorize_admin)]
+    it "omits the populations section entirely when none is configured" do
+      body = described_class.render(params: analyzed_route,
+                                    access_result: access_result([access_outcome(id: 1, status: 403)])).last.join
 
-      body = described_class.render(params: analyzed_route, access_result: access_result(outcomes)).last.join
-
-      expect(body).to include("system_admins", "responders")
+      expect(body).not_to include("Candidate populations")
     end
 
-    it "carries the current route context and target population into the retry form" do
-      approve_populations(system_admins: -> {})
-      outcomes = [access_outcome(id: 1, status: 403)]
+    it "never claims a population caused or explains any observed outcome" do
+      sample = [access_outcome(id: 1, status: 403, halted_callback: :authorize_admin)]
+      hit = [access_outcome(id: 27, status: 200)]
+      attempts = [attempt(:system_admins, :usable, outcomes: hit)]
 
-      body = described_class.render(params: analyzed_route, access_result: access_result(outcomes)).last.join
+      body = described_class.render(params: analyzed_route,
+                                    access_result: access_result(sample, attempts: attempts)).last.join
 
-      expect(body).to include('name="operation" value="population_sweep"', 'name="population" value="system_admins"',
-                              'name="path" value="/documents/22/reader"')
+      expect(body).not_to include("grants access", "will pass", "because", "guaranteed", "is authorized")
     end
 
-    it "omits the section entirely once a usable principal was already found" do
-      approve_populations(system_admins: -> {})
-      outcomes = [access_outcome(id: 1, status: 200), access_outcome(id: 2, status: 403)]
+    it "escapes hostile population names and errors rather than rendering them as markup" do
+      attempts = [attempt(:"<script>x</script>", :unresolved, error: "<img src=x>")]
 
-      body = described_class.render(params: analyzed_route, access_result: access_result(outcomes)).last.join
+      body = described_class.render(params: analyzed_route,
+                                    access_result: access_result([access_outcome(id: 1, status: 403)],
+                                                                 attempts: attempts)).last.join
 
-      expect(body).not_to include("Try another population")
-    end
-
-    it "omits the section when no analysis has run yet" do
-      approve_populations(system_admins: -> {})
-
-      body = render(nil, analyzed_route)
-
-      expect(body).not_to include("Try another population")
-    end
-
-    it "points at /karst/populations instead when no population has been approved yet" do
-      outcomes = [access_outcome(id: 1, status: 403)]
-
-      body = described_class.render(params: analyzed_route, access_result: access_result(outcomes)).last.join
-
-      expect(body).not_to include("Try another population", 'href="/karst/populations"')
-      expect(body).to include("No approved candidate populations are configured yet")
-    end
-
-    it "never claims the suggestion causes or matches the observed halt, only that names overlap" do
-      approve_populations(system_admins: -> {})
-      outcomes = [access_outcome(id: 1, status: 403, halted_callback: :authorize_admin)]
-
-      body = described_class.render(params: analyzed_route, access_result: access_result(outcomes)).last.join
-
-      expect(body).not_to include("grants access", "will pass", "causes", "guaranteed")
+      expect(body).to include("&lt;script&gt;x&lt;/script&gt;", "&lt;img src=x&gt;")
+      expect(body).not_to include("<script>x</script>")
     end
   end
 
@@ -301,7 +312,7 @@ RSpec.describe Karst::Web::Panel do
         access_result: access_result([access_outcome(id: 27, status: 200)], candidate_pool_size: 1_000)
       ).last.join
 
-      expect(body).to include("1 users tested", "candidate pool: up to 1,000 most recent users")
+      expect(body).to include("1 user tested", "candidate pool: up to 1,000 most recent users")
     end
 
     it "omits the candidate pool line when the result carries no pool (e.g. an Enumerable source)" do
@@ -309,7 +320,7 @@ RSpec.describe Karst::Web::Panel do
         params: analyzed_route, access_result: access_result([access_outcome(id: 27, status: 200)])
       ).last.join
 
-      expect(body).to include("1 users tested")
+      expect(body).to include("1 user tested")
       expect(body).not_to include("candidate pool")
     end
   end

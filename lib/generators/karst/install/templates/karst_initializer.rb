@@ -38,6 +38,15 @@ Karst.configure do |config|
   # relation -- and a callable that raises, requires an argument, or
   # returns something else is skipped rather than raised.
   #
+  # Approved populations are retried automatically: if the ordinary sample
+  # finds no usable user, Karst tries each of these in the order written
+  # here and stops at the first one that produces a usable outcome. Only
+  # populations configured here (or on a config.principal_sources entry)
+  # are ever executed automatically -- a name merely discovered at
+  # /karst/populations never is. At most config.population_retry_limit
+  # records per population (default 3), and at most
+  # config.access_sweep_limit extra requests in total.
+  #
   # config.principal_populations = {
   #   system_admins: -> { User.system_admins },
   #   auditors: -> { User.auditors },
