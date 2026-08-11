@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "../value"
+require_relative "database_isolation"
 
 module Karst
   module Access
@@ -27,6 +28,7 @@ module Karst
     # ActiveRecord::Relation scoped to the same model being sampled. Whether
     # that relation came from `scope :system_admins, -> { ... }` or a plain
     # `def self.system_admins; ...; end` makes no difference here.
+    # rubocop:disable Metrics/BlockLength
     CandidatePopulation = Value.define(:source, :name, :records, :provenance) do
       class << self
         # Resolves one configured name => callable pair into a bounded,
@@ -36,20 +38,38 @@ module Karst
         # requiring an argument Karst never supplies). Invalid populations
         # are skipped, never raised: a misconfigured population should
         # degrade the candidate pool, not break the sweep. Issues at most
-        # one SQL query, always LIMIT-bounded -- never a COUNT, never full
+        # one SELECT query, always LIMIT-bounded -- never a COUNT, never full
         # materialization, regardless of how many rows the underlying
-        # relation matches.
+        # relation matches. Evaluation and materialization happen inside a
+        # rollback-only transaction on the source model's connection. A
+        # candidate that emits mutating SQL is rejected even though Karst
+        # attempted to roll that transaction back.
         def resolve(name:, callable:, source_klass:, limit:)
-          relation = callable.call
-          return nil unless relation.is_a?(ActiveRecord::Relation) && relation.klass == source_klass
+          evaluation = evaluate(callable, source_klass, limit)
+          return nil unless usable_evaluation?(evaluation)
 
-          records = bounded(relation, source_klass, limit)
+          records = evaluation.value
+          return nil unless records
+
           new(source: source_klass, name: name.to_sym, records: records, provenance: "population=#{name}")
         rescue StandardError
           nil
         end
 
         private
+
+        def evaluate(callable, source_klass, limit)
+          DatabaseIsolation.call(connection_class: source_klass) do
+            relation = callable.call
+            next unless relation.is_a?(ActiveRecord::Relation) && relation.klass == source_klass
+
+            bounded(relation, source_klass, limit)
+          end
+        end
+
+        def usable_evaluation?(evaluation)
+          evaluation.exception.nil? && evaluation.write_count.zero? && evaluation.database_rollback_attempted
+        end
 
         # Only imposes primary-key ordering as a deterministic fallback when
         # the configured relation has none of its own -- an application's
@@ -61,5 +81,6 @@ module Karst
         end
       end
     end
+    # rubocop:enable Metrics/BlockLength
   end
 end

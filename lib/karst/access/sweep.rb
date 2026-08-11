@@ -3,6 +3,7 @@
 require "active_support/notifications"
 require "uri"
 require_relative "probe_application"
+require_relative "database_isolation"
 require_relative "../identity"
 require_relative "../value"
 
@@ -39,8 +40,6 @@ module Karst
     # session and a rollback-only transaction for every bounded principal.
     # rubocop:disable Metrics/ClassLength
     class Sweep
-      MUTATION = %r{\A\s*(?:/\*.*?\*/\s*)*(INSERT|UPDATE|DELETE)\b}im
-
       # sampling_reasons optionally maps a principal (by Ruby equality, so
       # the same Active Record identity even across separate instances) to
       # the Array of reasons it was selected for -- see
@@ -111,7 +110,9 @@ module Karst
         body_marker_observed = nil
         halted_callback = nil
         writes = 0
-        callback = ->(_name, _start, _finish, _id, payload) { writes += 1 if payload[:sql].to_s.match?(MUTATION) }
+        callback = lambda do |_name, _start, _finish, _id, payload|
+          writes += 1 if DatabaseIsolation.mutation?(payload[:sql])
+        end
         halt_observer = lambda do |_name, _start, _finish, _id, payload|
           halted_callback = payload[:filter]
         end

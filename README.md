@@ -411,6 +411,15 @@ populations are configured (a population matching 8 rows and one matching
 300,000 rows each get a proportional share of `access_sweep_limit`, so the
 larger population can never crowd out the smaller one) -- never a `COUNT`,
 and never full materialization, regardless of the population's real size.
+Karst evaluates the callable and materializes its bounded relation inside a
+rollback-only transaction on the source model's Active Record connection. It
+observes the same `INSERT`, `UPDATE`, and `DELETE` SQL evidence as an access
+sweep and rejects a population that emits a write, even though rollback was
+attempted. This is deliberately reported only as same-connection database
+rollback: it cannot contain jobs, mail, HTTP requests, files, Redis, writes on
+other connections, or any other non-database effect. Candidate evaluation is
+therefore execution evidence, not a claim that the callable is side-effect
+free.
 When the configured relation already specifies its own order, Karst keeps
 it; only when the relation has no order of its own does Karst add a
 deterministic primary-key fallback so results stay reproducible. A

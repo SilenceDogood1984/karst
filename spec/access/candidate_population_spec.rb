@@ -89,6 +89,32 @@ RSpec.describe Karst::Access::CandidatePopulation do
       expect(population).to be_nil
     end
 
+    it "rolls back and rejects a callable that writes before returning a valid relation" do
+      principal = PopulationPrincipal.create!(role: "admin")
+      callable = lambda do
+        PopulationPrincipal.update_all(role: "recalculated")
+        PopulationPrincipal.all
+      end
+
+      population = resolve(name: :recalculate_totals, callable: callable)
+
+      expect(population).to be_nil
+      expect(principal.reload.role).to eq("admin")
+    end
+
+    it "rolls back a callable's write before swallowing its StandardError" do
+      principal = PopulationPrincipal.create!(role: "admin")
+      callable = lambda do
+        PopulationPrincipal.update_all(role: "temporarily changed")
+        raise "boom after write"
+      end
+
+      population = resolve(name: :broken_writer, callable: callable)
+
+      expect(population).to be_nil
+      expect(principal.reload.role).to eq("admin")
+    end
+
     it "returns nil for a callable returning another model's relation (same-model requirement)" do
       population = resolve(name: :cross_model, callable: -> { OtherPopulationRecord.all })
 
