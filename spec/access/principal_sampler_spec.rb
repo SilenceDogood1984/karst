@@ -664,6 +664,36 @@ RSpec.describe Karst::Access::PrincipalSampler do
       expect(result.populations.map(&:name)).to eq(%i[system_admins auditors responders])
     end
 
+    it "retains a generic or dimension candidate within the global limit" do
+      ScopedSamplerPrincipal.delete_all
+      20.times { ScopedSamplerPrincipal.create!(role: "responder") }
+      ScopedSamplerPrincipal.create!(role: "outside_populations")
+
+      result = described_class.new(source: ScopedSamplerPrincipal.all, limit: 5,
+                                   populations: scoped_sampler_populations).call
+
+      expect(result.principals.size).to eq(5)
+      expect(result.candidates).to include(satisfy do |candidate|
+        candidate.reasons.none? { |reason| reason.start_with?("population=") }
+      end)
+    end
+
+    it "includes every configured population in the declared query budget" do
+      ScopedSamplerPrincipal.delete_all
+      50.times { ScopedSamplerPrincipal.create!(role: "responder") }
+      populations = 10.times.to_h do |index|
+        [:"population_#{index}", -> { ScopedSamplerPrincipal.where(role: "responder") }]
+      end
+
+      queries = sql_queries do
+        @result = described_class.new(source: ScopedSamplerPrincipal.all, limit: 25,
+                                      populations: populations).call
+      end
+
+      expect(@result.principals.size).to be <= 25
+      expect(queries.size).to be <= described_class.query_budget(25, 10)
+    end
+
     it "probes a principal belonging to two populations once, preserving both populations' provenance" do
       ScopedSamplerPrincipal.delete_all
       dual = ScopedSamplerPrincipal.create!(role: "system_admin", flagged: true)
