@@ -190,7 +190,7 @@ RSpec.describe "bounded access sweep Rails integration" do
     response = mock.get("/karst/populations", "REMOTE_ADDR" => "127.0.0.1")
 
     expect(response.status).to eq(200)
-    expect(response.body).to include("Candidate populations", "Available models", "KarstAccessPrincipal")
+    expect(response.body).to include("Candidate scopes", "Available models", "KarstAccessPrincipal")
     expect(response.body).to include("flagged") # the scope defined on KarstAccessPrincipal above
   end
 
@@ -200,7 +200,7 @@ RSpec.describe "bounded access sweep Rails integration" do
 
     response = mock.get("/karst/populations", "REMOTE_ADDR" => "192.168.1.10")
 
-    expect(response.body).not_to include("Candidate populations", "Available models")
+    expect(response.body).not_to include("Candidate scopes", "Available models")
   end
 
   it "links to /karst/populations from the main panel's access analysis section" do

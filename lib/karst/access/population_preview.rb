@@ -54,6 +54,8 @@ module Karst
 
       def resolve(klass)
         method_name = @method_name
+        return missing_scope unless scope_exists?(klass, method_name)
+
         population = CandidatePopulation.resolve(
           name: method_name.to_sym, callable: -> { klass.public_send(method_name) },
           source_klass: klass, limit: PREVIEW_LIMIT
@@ -62,6 +64,14 @@ module Karst
 
         Result.new(model_name: @model_name, method_name: @method_name, resolved: true, records: population.records,
                    error: nil)
+      end
+
+      def scope_exists?(klass, method_name)
+        klass.respond_to?(method_name)
+      end
+
+      def missing_scope
+        unresolved("the discovered scope no longer exists on #{@model_name}")
       end
 
       def unresolved(error)

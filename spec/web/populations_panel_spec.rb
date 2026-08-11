@@ -46,7 +46,7 @@ RSpec.describe Karst::Web::PopulationsPanel do
 
       expect(body.scan('<details class="model-group"').size).to eq(150)
       expect(body.scan('<details class="model-group" data-model="Model0" open').size).to eq(0)
-      expect(body.scan("3 candidates").size).to eq(150)
+      expect(body.scan("3 scopes").size).to eq(150)
       expect(body).to include("Model0", "Model149")
     end
 
@@ -76,6 +76,7 @@ RSpec.describe Karst::Web::PopulationsPanel do
       expect(body).to include('<input type="search" id="karst-population-search"')
       expect(body).to include("karst-population-search")
       expect(body).to match(/<script nonce="[0-9a-f]+">/)
+      expect(body).to include("Search scopes or models")
     end
   end
 
@@ -188,6 +189,13 @@ RSpec.describe Karst::Web::PopulationsPanel do
   end
 
   describe "discovery limitations" do
+    it "discloses direct-model discovery and the concern limitation" do
+      body = render(discovery: discovery([]))
+
+      expect(body).to include("Candidate scopes", "declared directly in application model source",
+                              "Scopes contributed by concerns may not appear")
+    end
+
     it "surfaces an honest load warning instead of silently under-reporting models" do
       body = render(discovery: discovery([], load_warning: "The application could not be fully loaded"))
 
