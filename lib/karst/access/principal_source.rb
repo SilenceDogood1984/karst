@@ -40,6 +40,24 @@ module Karst
         records.call
       end
 
+      # The Active Record class this source's records ultimately belong to,
+      # or nil for a source whose evaluated records are not an
+      # ActiveRecord::Relation/Class (a plain Array/Enumerable source, or a
+      # callable that raises). Only ever builds a Relation to read its
+      # #klass -- never queries a row. Used to match a
+      # Karst::Access::PopulationDiscovery-discovered model against an
+      # already-configured principal source, and by the panel's guided
+      # population retry.
+      def record_klass
+        evaluated = evaluate
+        return evaluated if defined?(ActiveRecord::Base) && evaluated.is_a?(Class) && evaluated < ActiveRecord::Base
+        return evaluated.klass if defined?(ActiveRecord::Relation) && evaluated.is_a?(ActiveRecord::Relation)
+
+        nil
+      rescue StandardError
+        nil
+      end
+
       # Accepts a raw Hash of name => (callable, or {records:, dimensions:,
       # populations:}) -- the shape config.principal_sources= receives.
       def self.normalize(sources)

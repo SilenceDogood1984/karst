@@ -26,6 +26,10 @@ module Karst
     config.after_initialize do
       Karst.subscribe! if Karst.enabled?
     end
+
+    rake_tasks do
+      load File.expand_path("../tasks/karst.rake", __dir__)
+    end
   end
 
   private_constant :Railtie

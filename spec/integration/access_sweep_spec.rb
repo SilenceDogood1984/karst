@@ -1,7 +1,9 @@
 # frozen_string_literal: true
 
 require "spec_helper"
+require "rack/mock"
 require_relative "../support/test_application"
+require "karst/web/middleware"
 
 ActiveRecord::Schema.define do
   create_table :karst_access_principals, force: true do |table|
@@ -177,6 +179,77 @@ RSpec.describe "bounded access sweep Rails integration" do
     expect(result.outcomes.map(&:status)).to include(403)
   ensure
     Karst.config.principal_candidate_pool_size = 1_000
+    Karst.config.principals = nil
+    Karst.config.principal_populations = nil
+  end
+
+  it "serves the /karst/populations discovery page and finds a real, already-loaded application model" do
+    stack = Karst::Web::Middleware.new(KarstTestApplication)
+    mock = Rack::MockRequest.new(stack)
+
+    response = mock.get("/karst/populations", "REMOTE_ADDR" => "127.0.0.1")
+
+    expect(response.status).to eq(200)
+    expect(response.body).to include("Candidate populations", "Available models", "KarstAccessPrincipal")
+    expect(response.body).to include("flagged") # the scope defined on KarstAccessPrincipal above
+  end
+
+  it "falls through to the host application for a nonlocal request to /karst/populations" do
+    stack = Karst::Web::Middleware.new(KarstTestApplication)
+    mock = Rack::MockRequest.new(stack)
+
+    response = mock.get("/karst/populations", "REMOTE_ADDR" => "192.168.1.10")
+
+    expect(response.body).not_to include("Candidate populations", "Available models")
+  end
+
+  it "links to /karst/populations from the main panel's access analysis section" do
+    stack = Karst::Web::Middleware.new(KarstTestApplication)
+    mock = Rack::MockRequest.new(stack)
+
+    response = mock.get("/karst?method=GET&path=%2Fdocuments%2Fread%2Fedit", "REMOTE_ADDR" => "127.0.0.1")
+
+    expect(response.body).to include('href="/karst/populations"')
+  end
+
+  it "runs a guided population_sweep bounded to exactly one approved population, respecting access_sweep_limit" do
+    KarstAccessPrincipal.delete_all
+    200.times { KarstAccessPrincipal.create!(behavior: "ok") }
+    minority = KarstAccessPrincipal.create!(behavior: "forbidden")
+    Karst.config.principals = -> { KarstAccessPrincipal.all }
+    Karst.config.principal_populations = { flagged: -> { KarstAccessPrincipal.flagged } }
+    stack = Karst::Web::Middleware.new(KarstTestApplication)
+    mock = Rack::MockRequest.new(stack)
+
+    response = mock.post(
+      "/karst", "REMOTE_ADDR" => "127.0.0.1", "CONTENT_TYPE" => "application/x-www-form-urlencoded",
+                input: "operation=population_sweep&population=flagged&method=GET&path=%2Fdocuments%2Fread%2Fedit"
+    )
+
+    expect(response.status).to eq(200)
+    # Bounded to exactly the flagged population (1 record), not the 25-wide
+    # default access_sweep_limit or the 201-row full principal universe.
+    expect(response.body).to include("1 principals tested", "KarstAccessPrincipal ##{minority.id}",
+                                     "Halted callback: halt_for_access_behavior")
+  ensure
+    Karst.config.principals = nil
+    Karst.config.principal_populations = nil
+  end
+
+  it "fails a guided population_sweep against an unapproved population name safely, without raising" do
+    Karst.config.principals = -> { KarstAccessPrincipal.all }
+    Karst.config.principal_populations = { flagged: -> { KarstAccessPrincipal.flagged } }
+    stack = Karst::Web::Middleware.new(KarstTestApplication)
+    mock = Rack::MockRequest.new(stack)
+
+    response = mock.post(
+      "/karst", "REMOTE_ADDR" => "127.0.0.1", "CONTENT_TYPE" => "application/x-www-form-urlencoded",
+                input: "operation=population_sweep&population=not_approved&method=GET&path=%2Fdocuments%2Fread%2Fedit"
+    )
+
+    expect(response.status).to eq(200)
+    expect(response.body).to include("Analysis unavailable")
+  ensure
     Karst.config.principals = nil
     Karst.config.principal_populations = nil
   end
