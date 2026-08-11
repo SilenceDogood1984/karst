@@ -359,6 +359,97 @@ Sampled for:
 role=local_admin · premium=true
 ```
 
+#### Candidate populations: `config.principal_populations`
+
+Real applications already contain vocabulary for meaningful subsets of
+principals that schema-state diversity alone cannot reliably find -- a
+`system_admins` scope, an `auditors` scope, a `responders` scope. On a wide
+model, generic dimension discovery is capped (`MAX_DIMENSIONS`, currently 8)
+and driven by column order, so a meaningful boolean or enum column can
+simply never be reached before the cap is hit. A configured population is
+tried regardless of how many other columns exist, and -- unlike generic
+discovery and configured dimensions, both scoped to the bounded recent-N
+`principal_candidate_pool_size` pool -- is queried against the full
+configured relation, so a population that matters but is not recent (a
+`system_admins` account created years ago) is never invisible just because
+it fell out of the pool:
+
+```ruby
+Karst.configure do |config|
+  config.principals = -> { User.all }
+  config.principal_populations = {
+    system_admins: -> { User.system_admins },
+    auditors: -> { User.auditors },
+    responders: -> { User.responders }
+  }
+end
+```
+
+**A population is a hint, never a claim.** Configuring
+`config.principal_populations` tells Karst "these records are worth
+trying" -- not "these records satisfy the behavior" and not "this
+population grants access." Karst never infers that a population causes any
+authorization or UI behavior; only `Access::Sweep`'s actual runtime
+execution observes what a request does. The panel never states
+`system_admin scope grants access` or anything like it -- only that a
+principal was *sampled from* that population.
+
+Each value in `config.principal_populations` is a zero-argument callable --
+typically `-> { Model.some_scope }`, but any callable that returns an
+`ActiveRecord::Relation` scoped to the same model works identically.
+**Karst does not, and cannot, verify that the callable's body came from
+Rails' own `scope :name, -> { ... }` macro -- Active Record exposes no
+public registry that would distinguish a named scope from an ordinary
+handwritten class method.** Karst only checks the one thing it can actually
+observe: calling the configured callable returns a same-model relation. A
+callable that raises, that requires an argument, or that returns something
+else entirely (another model's relation, a plain value) is silently
+skipped rather than raised: a mistake in configuration degrades the
+candidate pool, it does not break the sweep. Every configured population
+costs at most one `LIMIT`-bounded query, split fairly across however many
+populations are configured (a population matching 8 rows and one matching
+300,000 rows each get a proportional share of `access_sweep_limit`, so the
+larger population can never crowd out the smaller one) -- never a `COUNT`,
+and never full materialization, regardless of the population's real size.
+When the configured relation already specifies its own order, Karst keeps
+it; only when the relation has no order of its own does Karst add a
+deterministic primary-key fallback so results stay reproducible. A
+principal matching more than one configured population is still probed
+only once; its provenance preserves every population that matched
+(`population=system_admins`, `population=auditors`), not just the first
+one found -- shown next to any dimension reasons on the same **Sampled
+for** line:
+
+```
+Sampled for:
+population=system_admins · role=local_admin
+```
+
+An application representing identity as more than one model configures
+populations per source instead of (or alongside) the flat form above:
+
+```ruby
+config.principal_sources = {
+  authors: { records: -> { Author.all }, populations: { admins: -> { Author.admins } } },
+  readers: -> { Reader.all }
+}
+```
+
+`Karst::Access::PrincipalSampler::Result#populations` lists every
+population that resolved successfully for a given call (including one that
+currently matches zero rows), enough metadata for a future UI to show which
+candidate populations are available and let a developer retry against one
+specifically -- this release does not build that selector, only the
+metadata it would read.
+
+This is deliberately generic under the hood
+(`Karst::Access::CandidatePopulation`: source, name, bounded records,
+provenance label) so the same mechanism can later resolve populations over
+non-principal models -- `Subscription.renewable`, `Import.with_sheets` --
+without a rewrite. This release wires it into principal sampling only, and
+does not attempt any automatic discovery of candidate populations; explicit
+configuration is the only supported path.
+
 Every principal receives a fresh `ActionDispatch::Integration::Session` and is
 assumed and cleared only through `Karst::Identity`. Each synchronous request is
 wrapped in `ActiveRecord::Base.transaction(requires_new: true)` and deliberately

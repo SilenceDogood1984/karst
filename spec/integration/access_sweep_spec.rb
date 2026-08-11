@@ -11,6 +11,7 @@ ActiveRecord::Schema.define do
 end
 
 class KarstAccessPrincipal < ActiveRecord::Base
+  scope :flagged, -> { where(behavior: "forbidden") }
 end
 
 class KarstAccessFixtureController < ActionController::Base
@@ -152,6 +153,32 @@ RSpec.describe "bounded access sweep Rails integration" do
   ensure
     Karst.config.principal_candidate_pool_size = 1_000
     Karst.config.principals = nil
+  end
+
+  it "honors config.principal_populations end-to-end (via config.principal_sources), surfacing a minority " \
+     "population's principal past a dominant population outside the recent candidate pool, within the same " \
+     "global sweep limit" do
+    KarstAccessPrincipal.delete_all
+    minority = KarstAccessPrincipal.create!(behavior: "forbidden")
+    300.times { KarstAccessPrincipal.create!(behavior: "ok") }
+    Karst.config.principal_candidate_pool_size = 20
+    Karst.config.principals = -> { KarstAccessPrincipal.all }
+    Karst.config.principal_populations = { flagged: -> { KarstAccessPrincipal.flagged } }
+
+    sampled = Karst::Access::PrincipalSelection.new(sources: Karst::Identity.principal_sources, limit: 25).call
+    expect(sampled.principals.size).to be <= 25
+    expect(sampled.principals.map(&:id)).to include(minority.id)
+    expect(sampled.populations.map(&:name)).to eq([:flagged])
+    expect(sampled.candidates.find { |c| c.principal.id == minority.id }.reasons).to include("population=flagged")
+
+    result = Karst::Access::Sweep.new(path: "/documents/read/edit", principals: sampled.principals,
+                                      application: KarstTestApplication).call
+
+    expect(result.outcomes.map(&:status)).to include(403)
+  ensure
+    Karst.config.principal_candidate_pool_size = 1_000
+    Karst.config.principals = nil
+    Karst.config.principal_populations = nil
   end
 
   it "bypasses non-reentrant host middleware at the route dispatch boundary" do
