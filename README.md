@@ -147,6 +147,51 @@ under **Other observed outcomes**. If none of the sampled candidates produces
 a usable outcome, the panel says exactly that; it does not claim that no user
 can access the page.
 
+### Explicit artifact scenarios
+
+Applications can add a deliberately application-authored artifact population
+and scenario. Karst does not discover records, relationships, paths, or the
+meaning of a successful response:
+
+```ruby
+Karst.configure do |config|
+  config.artifact_source(:imports, limit: 100) do
+    Import.order(created_at: :desc)
+  end
+
+  config.access_scenario(
+    :cross_admin_import,
+    artifact: :imports,
+    path: ->(import) { "/admin/imports/#{import.id}" },
+    expect: { status: 404 },
+    combination_limit: 25,
+    stop_on_match: true
+  )
+end
+```
+
+`expect` accepts only `status`, an exact query-free `redirect`, and
+`body_includes`. They are observable response predicates, not authorization
+assertions. Multiple predicates must all match. Response bodies are inspected
+for the configured marker but are not retained in evidence.
+
+Artifact sources require a limit from 1 through 1,000. Karst applies that
+limit to an Active Record relation before enumeration (and lazily takes the
+same bound from another Enumerable). A scenario additionally caps actual
+principal × artifact requests at `combination_limit` (1 through 100), while
+principal selection retains the existing representative principal bound.
+`stop_on_match: true` is the default and returns after the first verified
+combination; set it to false to retain every observation up to the combination
+cap. Every request still uses a fresh identity session and rollback-only
+transaction, and exceptions remain mismatch observations.
+
+For an Import QA case, the host application can define separate explicitly
+scoped sources (for example, recent imports with sheets) and scenarios with
+the desired path and marker. `Import`, `Sheet`, ownership, and what makes an
+import useful remain entirely application-configured; Karst only reports the
+principal, artifact, concrete GET, observed response, expected predicates,
+and whether those observations matched.
+
 The default `config.access_sweep_limit` is 25 and can be set from 1 through the
 hard ceiling of 100. Active Record relations receive `limit` before they are
 materialized; other Enumerables are consumed lazily only up to the bound. There

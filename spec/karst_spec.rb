@@ -136,6 +136,34 @@ RSpec.describe Karst do
           .to raise_error(ArgumentError, /must be callable or a Hash/)
       end
     end
+
+    describe "artifact scenarios" do
+      it "registers explicit bounded sources and scenarios" do
+        configuration = configuration_class.new
+        configuration.artifact_source(:imports, limit: 20) { [] }
+        configured = configuration.access_scenario(:missing_import, artifact: :imports,
+                                                                    path: ->(item) { "/imports/#{item.id}" },
+                                                                    expect: { status: 404, body_includes: "Not found" },
+                                                                    combination_limit: 10)
+
+        expect(configuration.artifact_sources[:imports]).to have_attributes(limit: 20)
+        expect(configured).to have_attributes(name: :missing_import, combination_limit: 10, stop_on_match: true)
+      end
+
+      it "requires explicit safe bounds and rejects unknown predicates and sources" do
+        configuration = configuration_class.new
+        expect { configuration.artifact_source(:imports, limit: 1_001) { [] } }.to raise_error(ArgumentError)
+        expect do
+          configuration.access_scenario(:missing, artifact: :unknown, path: ->(_item) { "/" },
+                                                  expect: { status: 404 })
+        end.to raise_error(ArgumentError, /unknown artifact source/)
+        configuration.artifact_source(:imports, limit: 1) { [] }
+        expect do
+          configuration.access_scenario(:missing, artifact: :imports, path: ->(_item) { "/" },
+                                                  expect: { semantic_access: true })
+        end.to raise_error(ArgumentError, /unsupported expectation/)
+      end
+    end
   end
 
   describe "process-level buffer" do

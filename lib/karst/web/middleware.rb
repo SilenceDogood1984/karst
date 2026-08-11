@@ -11,6 +11,7 @@ require "rack/request"
 require "active_support/notifications"
 require_relative "../access/sweep"
 require_relative "../access/principal_selection"
+require_relative "../access/scenario_sweep"
 
 module Karst
   module Web
@@ -100,7 +101,9 @@ module Karst
       end
 
       def analyze(env, params)
-        return nil unless env["REQUEST_METHOD"] == "POST" && params["operation"] == "access_sweep"
+        return nil unless env["REQUEST_METHOD"] == "POST"
+        return scenario_analyze(params) if params["operation"] == "artifact_sweep"
+        return nil unless params["operation"] == "access_sweep"
 
         sampled = Access::PrincipalSelection.new(sources: Identity.principal_sources).call
         Access::Sweep.new(path: params["path"], http_method: params["method"], principals: sampled.principals,
@@ -108,6 +111,16 @@ module Karst
                           sampling_reasons: sampling_reasons(sampled)).call
       rescue Access::Error, Identity::Error, ArgumentError => e
         e
+      end
+
+      def scenario_analyze(params)
+        scenario = Karst.config.access_scenarios[params["scenario"].to_s.to_sym]
+        raise ArgumentError, "unknown access scenario" unless scenario
+
+        sampled = Access::PrincipalSelection.new(sources: Identity.principal_sources).call
+        Access::ScenarioSweep.new(scenario: scenario, principals: sampled.principals,
+                                  candidate_pool_size: sampled.candidate_pool_size,
+                                  sampling_reasons: sampling_reasons(sampled)).call
       end
 
       def sampling_reasons(sampled)
