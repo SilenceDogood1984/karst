@@ -15,6 +15,8 @@ module Karst
     # nil, `set_user`/`logout` are called without a scope, matching Warden's
     # own default behavior for a plain, non-Devise Warden setup.
     class WardenAdapter
+      attr_reader :scope
+
       def initialize(scope: nil)
         @scope = scope
       end

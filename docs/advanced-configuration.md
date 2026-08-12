@@ -78,6 +78,25 @@ Each source is a name plus a lazily-evaluated `records:` callable, and optional 
 
 Candidates are split across sources within one overall `access_sweep_limit`: every non-empty source gets at least one candidate, and the rest fill round-robin so one source running dry never starves another.
 
+## Several Devise models, selected locally
+
+`config.principal_sources` above is the way to commit multiple sources as reviewable Ruby. If your app simply has more than one Devise model (`User`, `Admin`) and nothing configured, Karst still refuses to guess which one(s) to test — but you don't have to write an initializer to resolve that. The `/karst` panel shows every Devise-detected model as a checkbox right where the old "configure `config.principals`" message used to sit:
+
+```
+Karst found 2 user types: Admin, User.
+
+Which should Karst test?
+
+[ ] Admin
+[ ] User
+
+[Save]
+```
+
+Checking one model behaves exactly like a single-model Devise app always has. Checking more than one produces exactly what `config.principal_sources` would: one independently queryable source per model, each keyed by its own Devise/Warden scope (`User` → `:user`, `Admin` → `:admin`) — never collapsed into a combined source, and probe/browser identity always uses the correct scope for whichever source actually produced a given principal.
+
+The selection is saved to `tmp/karst/principal_source_selection.json`, relative to `Rails.root` — the same machine-local, git-ignored, development/test-only mechanism candidate-population approval already uses (see [Curating candidate populations](#curating-candidate-populations) below): a bare model name, nothing else, revalidated against Devise's own current `Devise.mappings` on every read. A selected model Devise no longer maps (removed, renamed) is silently dropped rather than trusted, and if that empties the selection entirely, Karst is ambiguous again and asks once more. An explicitly configured `config.principals`/`config.principal_sources` always wins outright over a saved selection, exactly like it wins over Devise inference. Once saved, `/karst`, `bin/rails karst:verify`, and the MCP `verify_access` tool all pick it up automatically, with no separate wiring — and both return the same actionable, structured error before anything is selected.
+
 ## Representative sampling and dimensions
 
 When `config.principals` (or a source's `records:`) returns an Active Record relation, Karst doesn't just take whichever rows sort first — it tries to cover a handful of different observed states within one bounded, recent pool (`principal_candidate_pool_size`, default 1,000 rows, one query).

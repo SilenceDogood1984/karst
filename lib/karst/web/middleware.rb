@@ -21,6 +21,8 @@ require_relative "../access/population_approvals"
 require_relative "../access/approved_populations"
 require_relative "../access/population_preview"
 require_relative "../access/population_config_snippet"
+require_relative "../access/principal_source_selection"
+require_relative "../identity/devise_support"
 
 module Karst
   module Web
@@ -73,7 +75,7 @@ module Karst
 
       private
 
-      # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
+      # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity
       def call_owned(env)
         return @app.call(env) unless development? && @locality.local?(env["REMOTE_ADDR"])
         return call_populations(env) if env["PATH_INFO"] == POPULATIONS_PATH
@@ -81,6 +83,9 @@ module Karst
         params = owned_params(env)
         lookup = recognize_manual_route(env, params)
         params = lookup.params if lookup
+        selection, denied = principal_source_selection_result(env, params)
+        return denied if denied
+
         browser_identity = BrowserIdentity.new(Rack::Request.new(env))
         identity_response = mutate_browser_identity(env, params, browser_identity)
         return identity_response if identity_response
@@ -89,9 +94,42 @@ module Karst
         Panel.render(params: params, access_result: result, route_lookup_limitation: lookup&.limitation,
                      csrf_token: browser_token(browser_identity),
                      browser_identity_active: browser_identity_active?(browser_identity),
-                     unapproved_candidate_count: unapproved_candidate_count(result))
+                     unapproved_candidate_count: unapproved_candidate_count(result),
+                     principal_source_selection_saved: !selection.nil? && selection.error.nil?,
+                     principal_source_selection_error: selection&.error)
       end
-      # rubocop:enable Metrics/AbcSize, Metrics/MethodLength
+      # rubocop:enable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity
+
+      # [selection_record, nil] once saved, [nil, forbidden_response] when an
+      # attempted save was refused, or [nil, nil] for any other operation.
+      # Unlike every other operation Karst serves at /karst, saving a
+      # selection writes local state that outlives the request -- exactly
+      # like approving a candidate population -- and this page issues no
+      # CSRF token of its own precisely while ambiguous
+      # (Identity.browser_supported? is false until a selection resolves the
+      # ambiguity), so the check is same-origin rather than token-based; see
+      # #approved_origin?.
+      def principal_source_selection_result(env, params)
+        return [nil, nil] unless saving_principal_source_selection?(env, params)
+        return [nil, forbidden] unless approved_origin?(env)
+
+        [save_principal_source_selection(params), nil]
+      end
+
+      def saving_principal_source_selection?(env, params)
+        env["REQUEST_METHOD"] == "POST" && params["operation"] == "select_principal_sources"
+      end
+
+      # Only a model Devise itself currently maps can ever be written --
+      # exactly like candidate-population approval only ever writes a
+      # currently discovered scope -- so this form can never seed the file
+      # with an arbitrary submitted class name.
+      def save_principal_source_selection(params)
+        submitted = Array(params["principal"]).map(&:to_s)
+        names = Identity::DeviseSupport.mappings.map { |mapping| mapping.model.name }
+                                       .select { |name| submitted.include?(name) }
+        Access::PrincipalSourceSelection.replace(names)
+      end
 
       # Unlike every other operation Karst serves, approving writes local
       # state that outlives the request, so every POST to this path must

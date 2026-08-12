@@ -3,6 +3,7 @@
 require_relative "value"
 require_relative "identity/devise_support"
 require_relative "identity/warden_adapter"
+require_relative "access/selected_principal_sources"
 
 module Karst
   # Framework-neutral identity seam for controlled probes. It deliberately
@@ -157,23 +158,38 @@ module Karst
         explicit_browser_hooks? || automatic_browser_identity_available?
       end
 
+      # Returns the Devise/Warden scope this browser identity was actually
+      # assumed under (nil for explicit hooks, or for a non-Devise bare
+      # Warden proxy) -- see Karst::Web::BrowserIdentity, which retains it
+      # for the lifetime of the browser session so #clear_browser below never
+      # has to guess which of several selected sources produced the
+      # principal being cleared.
       def assume_browser(request, principal)
         raise Unavailable, "browser identity hooks are not configured" unless browser_supported?
 
         if explicit_browser_hooks?
           Karst.config.assume_browser_identity.call(request, principal)
+          nil
         else
-          inferred_adapter(principal).assume(request, principal)
+          warden_adapter = inferred_adapter(principal)
+          warden_adapter.assume(request, principal)
+          warden_adapter.scope
         end
       end
 
-      def clear_browser(request)
+      # `scope`, when given, is the exact scope #assume_browser returned for
+      # the identity actually being cleared (see
+      # Karst::Web::BrowserIdentity) -- used in preference to
+      # #scope_for_effective_source, which cannot always determine one on
+      # its own with no principal in hand and several selected sources. Karst
+      # still refuses to guess when neither is available.
+      def clear_browser(request, scope: nil)
         raise Unavailable, "browser identity hooks are not configured" unless browser_supported?
 
         if explicit_browser_hooks?
           Karst.config.clear_browser_identity.call(request)
         else
-          inferred_adapter(nil).clear(request)
+          inferred_adapter(nil, scope: scope).clear(request)
         end
       end
 
@@ -294,25 +310,26 @@ module Karst
       # With a specific `principal`, scope comes straight from that
       # principal's own class -- the most direct evidence available, and
       # correct even when a source mixes multiple Devise-mapped subclasses,
-      # regardless of how many principal_sources are configured. Without one
-      # (browser identity clear has no principal to hand back), scope falls
-      # back to the single effective principal source's model -- see
-      # #effective_principal_model. Devise loaded with no resolvable scope
+      # regardless of how many principal_sources are configured. Without one,
+      # `scope:` (when the caller already knows exactly which identity is
+      # being cleared -- see #clear_browser) wins; otherwise scope falls back
+      # to the single effective principal source's model -- see
+      # #scope_for_effective_source. Devise loaded with no resolvable scope
       # refuses to guess rather than risk operating under the wrong Warden
       # scope.
-      def inferred_adapter(principal)
+      def inferred_adapter(principal, scope: nil)
         raise Unavailable, "no identity hooks are configured and Warden is unavailable" unless warden_available?
         return WardenAdapter.new unless DeviseSupport.available?
 
-        scope = principal ? DeviseSupport.mapping_for(principal.class)&.scope : scope_for_effective_source
-        unless scope
+        resolved = scope || (principal ? DeviseSupport.mapping_for(principal.class)&.scope : scope_for_effective_source)
+        unless resolved
           raise Unavailable,
                 "Karst could not determine this principal's Devise/Warden scope automatically; " \
                 "configure config.assume_identity/config.clear_identity " \
                 "(or config.assume_browser_identity/config.clear_browser_identity)"
         end
 
-        WardenAdapter.new(scope: scope)
+        WardenAdapter.new(scope: resolved)
       end
 
       # Probe-identity eligibility. Preserves the pre-existing bare-Warden
@@ -322,7 +339,7 @@ module Karst
         return false unless warden_available?
         return true unless DeviseSupport.available?
 
-        !scope_for_effective_source.nil?
+        every_effective_source_scoped?
       end
 
       # Browser-identity eligibility. Deliberately stricter than probe
@@ -333,7 +350,29 @@ module Karst
       def automatic_browser_identity_available?
         return false unless warden_available? && DeviseSupport.available?
 
-        !scope_for_effective_source.nil?
+        every_effective_source_scoped?
+      end
+
+      # True once every currently effective principal source resolves to its
+      # own known Devise/Warden scope -- the single-source case this always
+      # covered (see #scope_for_effective_source), plus several sources when
+      # each is independently Devise-mapped, exactly what
+      # Access::SelectedPrincipalSources builds from a local multi-model
+      # selection. Per-principal scope resolution (#inferred_adapter with a
+      # principal already in hand) is already correct for any number of
+      # sources; this governs only "no principal yet" eligibility and the
+      # bare-clear fallback, so it still refuses to guess when a source is
+      # not provably Devise-scoped.
+      def every_effective_source_scoped?
+        sources = safe_principal_sources
+        return false unless sources&.any?
+
+        sources.values.all? { |source| devise_scope_for_source(source) }
+      end
+
+      def devise_scope_for_source(source)
+        model = model_from_source(source)
+        model && DeviseSupport.mapping_for(model)&.scope
       end
 
       def scope_for_effective_source
@@ -342,14 +381,11 @@ module Karst
       end
 
       # The model backing the *single* effective principal source, when one
-      # can be determined without risk. Deliberately conservative once more
-      # than one Karst::Access::PrincipalSource is configured (an explicit
-      # multi-model config.principal_sources): resolving a scope with no
-      # principal in hand (see #inferred_adapter) would otherwise have to
-      # guess which configured source the missing principal belonged to.
-      # Per-principal scope resolution (the common case, with an actual
-      # principal instance already in hand) never goes through this path at
-      # all, and is unaffected by how many sources are configured.
+      # can be determined without risk. Per-principal scope resolution (the
+      # common case, with an actual principal instance already in hand)
+      # never goes through this path at all, and is unaffected by how many
+      # sources are configured -- see #every_effective_source_scoped? above
+      # for the multi-source "no principal in hand" case.
       def effective_principal_model
         sources = safe_principal_sources
         return nil unless sources && sources.size == 1
@@ -401,18 +437,20 @@ module Karst
 
       def ambiguous_principal_source?
         return false if Karst.config.principals || Karst.config.configured_principal_sources
+        return false if Access::SelectedPrincipalSources.mappings.any?
 
         DeviseSupport.mappings.size > 1
       end
 
       def principal_source_ready?
         !Karst.config.principals.nil? || !Karst.config.configured_principal_sources.nil? ||
-          !DeviseSupport.unambiguous_mapping.nil?
+          !DeviseSupport.unambiguous_mapping.nil? || Access::SelectedPrincipalSources.mappings.any?
       end
 
       def ambiguous_message
         names = DeviseSupport.mappings.map { |mapping| mapping.model.name }.sort.join(", ")
-        "Karst detected multiple Devise models (#{names}). Configure config.principals explicitly."
+        "Karst detected multiple Devise models (#{names}). Select which one(s) to test at /karst, " \
+          "or configure config.principals/config.principal_sources explicitly."
       end
 
       def unavailable_message

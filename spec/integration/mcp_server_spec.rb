@@ -17,6 +17,13 @@ class KarstMcpPrincipal < ActiveRecord::Base
   scope :workers, -> { where(behavior: "ok") }
 end
 
+# A second, distinct Ruby class Devise could map -- deliberately backed by
+# the same table as KarstMcpPrincipal (no new migration needed), used only to
+# prove two selected Devise models stay independently queryable sources.
+class KarstMcpSecondaryPrincipal < ActiveRecord::Base
+  self.table_name = "karst_mcp_principals"
+end
+
 class KarstMcpFixtureController < ActionController::Base
   before_action :gate, only: :document
 
@@ -310,6 +317,119 @@ RSpec.describe "Karst MCP server, end to end against a real Rails application" d
 
       expect(document["verified_usable"]).to be(false)
       expect(document["populations"]).to eq([])
+    end
+  end
+
+  # The CLI and MCP surfaces of the same refusal-then-selection workflow as
+  # candidate-population approval, one boundary earlier: several Devise
+  # models detected and nothing explicit configured. Both must receive the
+  # same structured, actionable error before a selection exists, and both
+  # must work automatically -- no Ruby, no adapter-specific wiring -- once
+  # one does.
+  describe "locally selected principal sources" do
+    around do |example|
+      Dir.mktmpdir("karst-mcp-selection") do |dir|
+        @selection_path = File.join(dir, "tmp/karst/principal_source_selection.json")
+        example.run
+      end
+    end
+
+    before do
+      allow(Karst::Access::PrincipalSourceSelection).to receive(:path).and_return(@selection_path)
+      stub_const("Devise", Module.new)
+      mapping = Struct.new(:to, :name)
+      allow(Devise).to receive(:mappings).and_return(
+        member: mapping.new(KarstMcpPrincipal, :member),
+        admin: mapping.new(KarstMcpSecondaryPrincipal, :admin)
+      )
+      stub_const("Warden::Manager", Class.new)
+      KarstMcpPrincipal.delete_all
+    end
+
+    after { Karst.config.principal_sources = nil }
+
+    def select(*model_names)
+      Karst::Access::PrincipalSourceSelection.replace(model_names)
+    end
+
+    it "returns the same actionable structured error to both CLI and MCP before anything is selected" do
+      document, error = call_tool(path: "/mcp_documents/1")
+      cli_document = Karst::CLI::Verification.new(path: "/mcp_documents/1").evidence
+
+      expect(error).to be(true)
+      expect(document.dig("error", "type")).to eq("configuration_error")
+      expect(document.dig("error", "message")).to include("multiple Devise models", "/karst")
+      expect(document.dig("error", "message")).not_to include("Configure config.principals explicitly")
+      expect(cli_document[:error][:type]).to eq("configuration_error")
+      expect(cli_document[:error][:message]).to eq(document.dig("error", "message"))
+    end
+
+    it "verifies through MCP once only the first model is selected" do
+      working = KarstMcpPrincipal.create!(behavior: "ok")
+      select("KarstMcpPrincipal")
+
+      document, error = call_tool(path: "/mcp_documents/1")
+
+      expect(error).to be(false)
+      expect(document["verified_usable"]).to be(true)
+      expect(document.dig("verified_principal", "id")).to eq(working.id)
+    end
+
+    it "verifies through MCP once only the second model is selected" do
+      working = KarstMcpPrincipal.create!(behavior: "ok")
+      select("KarstMcpSecondaryPrincipal")
+
+      document, error = call_tool(path: "/mcp_documents/1")
+
+      expect(error).to be(false)
+      expect(document["verified_usable"]).to be(true)
+      expect(document.dig("verified_principal", "id")).to eq(working.id)
+      expect(document.dig("verified_principal", "model")).to eq("KarstMcpSecondaryPrincipal")
+    end
+
+    it "keeps both selected models as independent sources, with no Ruby configuration at all" do
+      KarstMcpPrincipal.create!(behavior: "ok")
+      select("KarstMcpPrincipal", "KarstMcpSecondaryPrincipal")
+
+      expect(Karst.config.principal_sources.keys).to contain_exactly(:member, :admin)
+
+      document, error = call_tool(path: "/mcp_documents/1")
+
+      expect(error).to be(false)
+      expect(document["verified_usable"]).to be(true)
+    end
+
+    it "matches Karst::CLI::Verification's --json evidence once a selection makes analysis possible" do
+      KarstMcpPrincipal.create!(behavior: "ok")
+      select("KarstMcpPrincipal")
+
+      document, = call_tool(path: "/mcp_documents/1")
+      cli_document = JSON.parse(JSON.generate(Karst::CLI::Verification.new(path: "/mcp_documents/1").evidence))
+
+      expect(strip_elapsed(document)).to eq(strip_elapsed(cli_document))
+    end
+
+    it "reports the same structured error again once the selection goes stale, never guessing" do
+      select("KarstMcpPrincipal")
+      expect(call_tool(path: "/mcp_documents/1").last).to be(false)
+
+      allow(Devise).to receive(:mappings).and_return({})
+
+      document, error = call_tool(path: "/mcp_documents/1")
+      expect(error).to be(true)
+      expect(document.dig("error", "type")).to eq("configuration_error")
+    end
+
+    it "keeps an explicit config.principal_sources ahead of a saved local selection" do
+      select("KarstMcpPrincipal")
+      working = KarstMcpSecondaryPrincipal.create!(behavior: "ok")
+      Karst.config.principal_sources = { explicit: -> { KarstMcpSecondaryPrincipal.where(behavior: "ok") } }
+
+      document, = call_tool(path: "/mcp_documents/1")
+
+      expect(document["verified_usable"]).to be(true)
+      expect(document.dig("verified_principal", "id")).to eq(working.id)
+      expect(document.dig("verified_principal", "model")).to eq("KarstMcpSecondaryPrincipal")
     end
   end
 
