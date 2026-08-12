@@ -6,7 +6,8 @@ cd "$(dirname "$0")/.."
 DEVISE_SPEC="spec/integration/devise_golden_path_integration_spec.rb"
 MULTI_DEVISE_SPEC="spec/integration/multi_devise_golden_path_integration_spec.rb"
 CUSTOM_AUTH_SPEC="spec/integration/custom_auth_golden_path_integration_spec.rb"
-ISOLATED_SPECS_PATTERN="spec/integration/{devise_golden_path_integration_spec.rb,multi_devise_golden_path_integration_spec.rb,custom_auth_golden_path_integration_spec.rb}"
+RAILS8_AUTH_SPEC="spec/integration/rails8_auth_golden_path_integration_spec.rb"
+ISOLATED_SPECS_PATTERN="spec/integration/{devise_golden_path_integration_spec.rb,multi_devise_golden_path_integration_spec.rb,custom_auth_golden_path_integration_spec.rb,rails8_auth_golden_path_integration_spec.rb}"
 
 for version in 6_1 7_0 7_1 7_2 8_0; do
   export BUNDLE_GEMFILE="$PWD/gemfiles/rails_${version}.gemfile"
@@ -24,4 +25,5 @@ for version in 6_1 7_0 7_1 7_2 8_0; do
   bundle exec rspec "$DEVISE_SPEC"
   bundle exec rspec "$MULTI_DEVISE_SPEC"
   bundle exec rspec "$CUSTOM_AUTH_SPEC"
+  bundle exec rspec "$RAILS8_AUTH_SPEC"
 done

@@ -6,6 +6,8 @@ If you are looking for an option that used to be here, check [Removed configurat
 
 ## Custom or non-Devise authentication
 
+Using Rails 8's own `bin/rails generate authentication` rather than Devise? See [rails8-authentication.md](rails8-authentication.md) for the exact, complete recipe — it is an instance of the same escape hatch documented below, filled in with that generator's own `User`/`Session`/`Current` objects. Karst has no registry to infer this from the way it does for Devise, so it needs the few lines below rather than nothing.
+
 Karst does not assume identity is a `User`, an Active Record object, or a Warden session. Configure a lazy candidate source and the hooks a probe session uses to sign in and out:
 
 ```ruby
