@@ -97,6 +97,23 @@ RSpec.describe "Karst MCP server, end to end against a real Rails application" d
     Karst.config.access_sweep_limit = 25
   end
 
+  # config.enabled must gate verify_access too, not only the /karst
+  # middleware -- see spec/integration/web_middleware_spec.rb and
+  # spec/integration/access_sweep_spec.rb for the same contract on the
+  # panel/badge and CLI adapters.
+  it "reports a structured error, never a crash, once Karst is disabled" do
+    KarstMcpPrincipal.create!(behavior: "ok")
+    Karst.config.principals = -> { KarstMcpPrincipal.all }
+    Karst.config.enabled = false
+
+    document, error = call_tool(path: "/mcp_documents/1")
+
+    expect(error).to be(true)
+    expect(document.dig("error", "message")).to match(/disabled/)
+  ensure
+    Karst.config.enabled = true
+  end
+
   it "verifies a usable ordinary sample outcome and reports the winning source" do
     ok = KarstMcpPrincipal.create!(behavior: "ok")
     Karst.config.principals = -> { KarstMcpPrincipal.all }

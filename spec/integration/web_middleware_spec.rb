@@ -140,6 +140,67 @@ RSpec.describe "Karst web middleware" do
     end
   end
 
+  # config.enabled defaults to true in development/test, but it is the one
+  # documented off switch for an exceptional environment (a shared
+  # development box, a CI job that boots Rails but must never expose
+  # Karst). It must actually gate the surface it claims to, not just the
+  # long-removed SQL subscription it originally controlled.
+  describe "config.enabled" do
+    it "falls through to the host application from a loopback request once disabled" do
+      output, status = run_script(rails_env: "development", script: <<~RUBY)
+        #{request_harness}
+        Karst.config.enabled = false
+        response = MOCK.get("/karst", "REMOTE_ADDR" => "127.0.0.1")
+        abort "expected the host application" unless response.body.start_with?(SENTINEL_BODY)
+        abort "expected no Karst branding while disabled" if response.body.include?("Karst")
+      RUBY
+
+      expect(status).to be_success, output
+    end
+
+    it "omits the page badge from a real HTML response once disabled" do
+      harness = File.expand_path("../support/badge_application", __dir__)
+      full_script = <<~RUBY
+        require #{harness.inspect}
+        require "rack/mock"
+        MOCK = Rack::MockRequest.new(BadgeApplication)
+        bufferable = Rack.release.split(".").first.to_i >= 3
+
+        enabled_response = MOCK.get("/badge_pages/1", "REMOTE_ADDR" => "127.0.0.1")
+        if bufferable
+          href = "controller=BadgePagesController&amp;action=show"
+          abort "expected the badge while enabled" unless enabled_response.body.include?(href)
+        end
+
+        Karst.config.enabled = false
+        disabled_response = MOCK.get("/badge_pages/1", "REMOTE_ADDR" => "127.0.0.1")
+        abort "expected the page unmodified once disabled" unless disabled_response.body.include?("<h1>Page 1</h1>")
+        abort "expected no badge markup while disabled" if disabled_response.body.include?("controller=BadgePagesController")
+      RUBY
+
+      output, status = Open3.capture2e(
+        { "RAILS_ENV" => "development" }, RbConfig.ruby, "-I#{File.expand_path('../../lib', __dir__)}", "-e",
+        full_script
+      )
+
+      expect(status).to be_success, output
+    end
+
+    it "serves /karst again once re-enabled, with no process restart" do
+      output, status = run_script(rails_env: "development", script: <<~RUBY)
+        #{request_harness}
+        Karst.config.enabled = false
+        MOCK.get("/karst", "REMOTE_ADDR" => "127.0.0.1")
+        Karst.config.enabled = true
+        response = MOCK.get("/karst", "REMOTE_ADDR" => "127.0.0.1")
+        abort "expected 200, got \#{response.status}" unless response.status == 200
+        abort "expected the Karst page" unless response.body.include?("Karst")
+      RUBY
+
+      expect(status).to be_success, output
+    end
+  end
+
   describe "pass-through" do
     it "delivers non-Karst paths to the underlying application unchanged" do
       output, status = run_script(rails_env: "development", script: <<~RUBY)

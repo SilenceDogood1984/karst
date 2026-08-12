@@ -14,18 +14,23 @@ module Karst
 
   # Process-level settings that control Karst's implemented behavior.
   #
-  # Karst is designed so that a conventional application configures none of
-  # this. A single-model Devise app is inferred outright, candidate
-  # populations are approved locally at /karst/populations rather than
-  # written here, and every limit below already has a bounded default. What
-  # remains is for exceptional applications: custom (non-Devise)
+  # An ordinary application sets none of this. A single-model Devise app is
+  # inferred outright, candidate populations are approved locally at
+  # /karst/populations rather than written here, and every limit below
+  # already has a bounded default. `enabled` is not normal configuration
+  # either -- it is an off switch for exceptional cases (a shared
+  # development environment, a CI job that boots Rails but must never run
+  # Karst), already true by default wherever it should be. What remains
+  # below is for exceptional applications: custom (non-Devise)
   # authentication, identity spread across several models, and a handful of
   # deliberately unprominent bounds. See docs/advanced-configuration.md.
   class Configuration
-    # `enabled` is the only option an ordinary application ever sets. The
-    # rest are escape hatches for custom (non-Devise) authentication --
-    # principals, assume_identity, clear_identity, principal_label, and the
-    # browser Test-as pair -- and are documented as such.
+    # None of these are normal configuration. `enabled` is an off switch for
+    # the exceptional case where Karst's default (on in development/test) is
+    # wrong for this environment. The rest are escape hatches for custom
+    # (non-Devise) authentication -- principals, assume_identity,
+    # clear_identity, principal_label, and the browser Test-as pair -- and
+    # are documented as such.
     attr_accessor :enabled, :principals, :assume_identity, :clear_identity, :principal_label,
                   :assume_browser_identity, :clear_browser_identity
 
