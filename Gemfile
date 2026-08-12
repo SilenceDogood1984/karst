@@ -4,10 +4,6 @@ source "https://rubygems.org"
 
 gemspec
 
-# Optional at runtime, but present for Karst's MCP adapter specs. Applications
-# that use `karst:mcp` opt in to this dependency in their own Gemfile.
-gem "mcp", "~> 0.9.0"
-
 gem "activerecord", "~> 7.0.0"
 gem "railties", "~> 7.0.0"
 gem "rake", "~> 13.2"
