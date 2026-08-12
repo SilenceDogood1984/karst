@@ -310,6 +310,27 @@ compares no outcomes, and its result feeds `Karst::Access::Sweep` exactly like
 any other bounded principal source. Any other Enumerable source falls back to
 the existing bounded-first strategy, unchanged.
 
+### CLI verification
+
+Run the same bounded `Karst::Access::Search` workflow used by `/karst` from a
+shell (the method may be omitted because GET is the only supported method):
+
+```sh
+bin/rails karst:verify GET /admin/imports/123
+bin/rails karst:verify GET /admin/imports/123 --json
+```
+
+The human form is compact terminal output. The JSON form is a stable evidence
+interface intended for tools and scripts. Its top-level `schema_version` is
+currently `1` and will change when a breaking output change occurs. Neither
+form includes response bodies, record attributes, SQL, cookies, sessions, or
+query strings.
+
+Exit codes are `0` when a verified usable principal was found, `1` when the
+bounded verification completed without one (JSON is still emitted), and `2`
+for input, setup, or configuration errors. HTTP response statuses are evidence
+in the output and are never used as process exit codes.
+
 ### Candidate populations, principal sources, and compatibility dimensions
 
 Candidate populations are the preferred way to describe principals worth
