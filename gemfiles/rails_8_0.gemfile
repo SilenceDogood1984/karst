@@ -4,6 +4,7 @@ source "https://rubygems.org"
 
 gemspec path: ".."
 
+gem "devise"
 gem "rails", "~> 8.0.0"
 gem "rspec", "~> 3.13"
 gem "sqlite3", "~> 2.1"
