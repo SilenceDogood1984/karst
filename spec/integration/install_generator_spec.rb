@@ -100,6 +100,24 @@ RSpec.describe "karst:install generator" do
 
       expect(content).not_to include("session_token")
     end
+
+    it "leads with the zero-config Devise/Warden golden path before any override example" do
+      content = read("config/initializers/karst.rb")
+
+      golden_path_index = content.index("Karst needs none of the configuration below")
+      first_override_index = content.index("config.principals = -> { User.all }")
+
+      expect(golden_path_index).not_to be_nil
+      expect(first_override_index).not_to be_nil
+      expect(golden_path_index).to be < first_override_index
+    end
+
+    it "does not instruct every application to configure five identity hooks" do
+      content = read("config/initializers/karst.rb")
+
+      expect(content).to include("Karst needs none of the configuration below")
+      expect(content).not_to include("Every hook below is commented out on purpose")
+    end
   end
 
   describe "the generated identity controller" do

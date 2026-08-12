@@ -288,6 +288,68 @@ RSpec.describe "Karst web middleware" do
       expect(status).to be_success, output
     end
 
+    it "uses Warden automatically for Test as on the Devise/Warden golden path (no browser hooks configured)" do
+      output, status = run_script(rails_env: "development", script: <<~RUBY)
+        require "rack/mock"
+        require "rack/session/cookie"
+        require "warden"
+
+        GoldenPathPrincipal = Struct.new(:id)
+        GoldenPathMapping = Struct.new(:to, :name)
+        fake_devise = Module.new
+        fake_devise.define_singleton_method(:mappings) { { user: GoldenPathMapping.new(GoldenPathPrincipal, :user) } }
+        Object.const_set(:Devise, fake_devise)
+
+        principal = GoldenPathPrincipal.new(27)
+        Warden::Manager.serialize_into_session(&:id)
+        Warden::Manager.serialize_from_session { |id| id == principal.id ? principal : nil }
+
+        Karst.config.principals = -> { [principal] }
+        descriptor = Karst::Identity.describe(principal)
+        outcome = Karst::Access::Outcome.new(
+          principal: descriptor, status: 200, redirect: nil, exception_class: nil,
+          writes_observed: false, write_count: 0, elapsed_ms: 0.0, database_rollback_attempted: true
+        )
+        result = Karst::Access::Result.new(
+          path: "/documents/22/reader", http_method: "GET", outcomes: [outcome], elapsed_ms: 0.0,
+          aborted_reason: nil, database_isolation: :same_connection_rollback_attempted
+        )
+        Karst::Access::Sweep.define_singleton_method(:new) { |**| Struct.new(:value) { def call; value; end }.new(result) }
+        host = lambda do |env|
+          user = env["warden"].user(:user)
+          [200, { "Content-Type" => "text/plain" }, ["user=\#{user ? user.id : 'anonymous'}"]]
+        end
+        stack = Rack::Builder.new do
+          use Rack::Session::Cookie, secret: "s" * 64
+          use Warden::Manager do |manager|
+            manager.failure_app = ->(_env) { [401, {}, ["unauthorized"]] }
+          end
+          use Karst::Web::Middleware
+          run host
+        end.to_app
+        browser = Rack::Test::Session.new(Rack::MockSession.new(stack))
+        browser.header("REMOTE_ADDR", "127.0.0.1")
+        browser.post("/karst", operation: "access_sweep", method: "GET", path: "/documents/22/reader")
+        token = browser.last_response.body[/name="csrf_token" value="([^"]+)"/, 1]
+        abort "missing test-as token -- automatic Warden browser identity was not offered" unless token
+        browser.post("/karst", operation: "test_as", csrf_token: token, principal_type: descriptor.model_name,
+                     principal_id: descriptor.id, path: "/documents/22/reader?secret=discarded")
+        abort "wrong return path" unless browser.last_response.status == 303 &&
+                                         browser.last_response["Location"] == "/documents/22/reader"
+        browser.get("/documents/22/reader")
+        abort "browser identity was not established through the real Warden::Manager stack" \
+          unless browser.last_response.body == "user=27"
+        browser.get("/karst?path=%2Fdocuments%2F22%2Freader")
+        rotated_token = browser.last_response.body[/name="csrf_token" value="([^"]+)"/, 1]
+        abort "missing rotated stop token" unless rotated_token
+        browser.post("/karst", operation: "stop_test_as", csrf_token: rotated_token, path: "/documents/22/reader")
+        browser.get("/documents/22/reader")
+        abort "browser identity was not cleared through Warden" unless browser.last_response.body == "user=anonymous"
+      RUBY
+
+      expect(status).to be_success, output
+    end
+
     it "only lets a local development POST trigger an access sweep" do
       output, status = run_script(rails_env: "development", script: <<~RUBY)
         #{request_harness}

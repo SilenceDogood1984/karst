@@ -282,8 +282,9 @@ module Karst
         def principal_source_hint(sources)
           return "" if sources
 
-          "<p class=\"hint\">No user source is configured. " \
-            "Analyzing will report why nothing could be sampled.</p>"
+          message = Identity.setup_state.message ||
+                    "No user source is configured. Analyzing will report why nothing could be sampled."
+          "<p class=\"hint\">#{escape(message)}</p>"
         end
 
         def hidden(name, value)
@@ -475,8 +476,10 @@ module Karst
         def test_as_hint(outcomes, csrf_token)
           return "" if outcomes.empty? || (Identity.browser_supported? && csrf_token)
 
-          "<p class=\"hint\">Browser Test as is not configured (config.assume_browser_identity / " \
-            "config.clear_browser_identity).</p>"
+          message = Identity.setup_state.message ||
+                    "Browser Test as is not configured (config.assume_browser_identity / " \
+                    "config.clear_browser_identity)."
+          "<p class=\"hint\">#{escape(message)}</p>"
         end
 
         def usable_principal(outcome, result, csrf_token)

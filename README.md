@@ -6,6 +6,27 @@ Karst is a runtime evidence engine for Rails.
 
 Karst is intended to capture what actually happened while a Rails application ran and make that evidence useful. It starts from observed behavior rather than guesses about what code might do.
 
+## Quick start
+
+```sh
+# Gemfile
+gem "karst", group: :development
+
+bundle install
+bin/rails karst:install
+bin/rails server
+```
+
+Then visit `/karst`.
+
+If your app uses a conventional single-model Devise setup (one Devise-authenticatable
+model, commonly `User`), Karst automatically uses that model and Warden for access
+probes and "Test as" -- no identity configuration required. If Karst finds more than
+one Devise model, or none, it says so directly on the `/karst` panel instead of
+guessing; see [Identity adapters](#identity-adapters) for exactly what "automatic"
+means, how the Devise model and Warden scope are determined, and how to configure
+things explicitly for custom authentication.
+
 ## Philosophy
 
 - Prefer runtime observation to static inference.
@@ -49,6 +70,50 @@ A `Window`'s counts and durations apply only to that Window. Fingerprints are a 
 In Rails development, Karst serves a read-only evidence panel at `GET /karst` through a small Rack middleware — no engine, route, or controller. The panel's primary workflow answers "which existing principal can I use to test what I'm looking at": a compact route identity (method, path, controller/action) sits at the top, followed by the **Analyze** action described below and, once run, the usable principals it found. Spec evidence (read from `tmp/karst/scenarios.json` through `Karst::Spec::Catalog`, showing statuses, redirects, principal types, outcomes, and spec provenance for a controller/action) and Runtime SQL Window counts are supporting diagnostics, collapsed by default under **Diagnostics**. The spec evidence summary distinguishes a missing or invalid artifact from a ready catalog with no matching scenarios.
 
 ## Identity adapters
+
+### The automatic Devise/Warden path
+
+Karst does not "understand authentication." It detects specific, stable framework
+metadata and uses Warden's own runtime identity API only when it can prove the
+mapping -- it never guesses.
+
+When `config.principals` is not explicitly set, Karst reads `Devise.mappings`
+(populated by `devise_for` in `config/routes.rb`, the same metadata Devise itself
+relies on for `current_user`/`authenticate_user!`). If it finds exactly one
+Devise-registered model, that model becomes the effective principal source
+(conceptually `User.all`, evaluated lazily like any other source -- Karst never
+counts or scans the table to make this determination). If it finds more than one
+Devise model, automatic principal selection is unavailable and the `/karst` panel
+says exactly which models it found instead of picking one; configure
+`config.principals` explicitly to resolve the ambiguity.
+
+Independently, when `config.assume_identity`/`config.clear_identity` (probe) or
+`config.assume_browser_identity`/`config.clear_browser_identity` (browser "Test as")
+are not explicitly set, Karst derives the Warden scope for a principal directly from
+Devise's mapping for that principal's own class -- never a hardcoded `:user`, so
+`AdminUser` correctly resolves to `:admin_user` and so on -- and calls Warden's
+public `set_user(principal, scope: scope)` / `logout(scope)` on the probe's isolated
+integration session or, for "Test as", the real local browser request. If Devise is
+loaded but the scope for the effective principal can't be determined safely, Karst
+refuses to guess and reports the limitation rather than assuming `:user`.
+
+Explicit configuration always wins and is never partially combined with inference:
+setting `config.principals` to a custom scope does not require also configuring the
+identity hooks by hand -- Karst still infers Warden scope for whatever model that
+scope resolves to, as long as it is one Devise itself maps (for example,
+`config.principals = -> { Admin.all }` still gets automatic probe/browser identity
+for the `:admin` scope). Setting `config.assume_identity`/`config.clear_identity`
+explicitly disables automatic *probe* identity only; automatic browser identity is
+unaffected unless its own hooks are also set explicitly, and vice versa. Setting
+only one of a pair (`config.assume_identity` without `config.clear_identity`, or the
+reverse) is a configuration error, not a partial fallback to inference.
+
+None of this weakens Karst's existing safety boundaries: automatic browser identity
+still only operates through Karst's local-development-only, CSRF-protected browser
+identity path, still resolves principals only through the effective `config.principals`
+source, and is still unavailable outside `Rails.env.development?`.
+
+### Custom or non-Devise authentication
 
 Karst does not assume that application identity is a `User`, Active Record, or
 Warden object. Applications may independently configure a lazy candidate source
@@ -585,11 +650,14 @@ boundary is the directly observed peer address plus the development environment.
 Nonlocal and non-development POST requests fall through to the host unchanged,
 and GET requests never start a sweep.
 
-When Warden has already been loaded, Karst can alternatively use the public
-`set_user` and `logout` APIs on an existing Rack `env["warden"]` proxy. Warden is
-not required or eagerly loaded. A bare `ActionDispatch::Integration::Session`
-does not expose an initialized Warden proxy generically; configure the explicit
-hooks above for that case rather than relying on app-specific Warden internals.
+When Warden has already been loaded and no explicit identity hooks are configured,
+Karst can alternatively use the public `set_user` and `logout` APIs on an existing
+Rack `env["warden"]` proxy -- with an explicit `scope:` derived from Devise's own
+mapping when Devise is present (see [Identity adapters](#identity-adapters) above),
+or without one for a plain, non-Devise Warden setup. Warden is not required or
+eagerly loaded. A bare `ActionDispatch::Integration::Session` does not expose an
+initialized Warden proxy generically; configure the explicit hooks above for that
+case rather than relying on app-specific Warden internals.
 
 The normal development workflow needs no manual controller/action entry: open any page in your Rails app, and Karst adds a small "Karst" badge fixed near a screen corner, already scoped to the controller/action that rendered the page (derived from a real `process_action.action_controller` notification, never guessed from the URL). Click it to jump straight to that route's observed scenarios — `/author/projects` links directly into `Author::ProjectsController#index`, with the count of observed scenarios shown on the badge itself when the catalog is ready. The badge only appears on genuine, rewritable HTML page responses — never on JSON, redirects, Turbo Stream responses, file downloads, or `/karst` itself — and it degrades to a plain, unstyled link under a host Content-Security-Policy that forbids inline styles; Karst never rewrites the host's own CSP header to work around this. On a Rack 2 stack (Rails 6.1 and, on Rack 2, Rails 7.0) the response body Karst would need to rewrite isn't safely bufferable, so the badge is unavailable there; `/karst` itself is unaffected. See [Compatibility](#compatibility) below.
 
@@ -662,15 +730,17 @@ bundle add karst
 bin/rails generate karst:install
 ```
 
-`bin/rails generate karst:install` is optional, convenience scaffolding for a Rails host application -- it is never required. Karst remains fully configurable by hand (see [Identity adapters](#identity-adapters) above), and an application that already configures `Karst.configure` manually has nothing to gain from running it. What it does not do is guess: Karst cannot safely infer how an arbitrary application authenticates, so it never wires up a working login flow on your behalf.
+`bin/rails generate karst:install` is optional, convenience scaffolding for a Rails host application -- it is never required. Karst remains fully configurable by hand (see [Identity adapters](#identity-adapters) above), and an application that already configures `Karst.configure` manually has nothing to gain from running it.
+
+For a conventional single-model Devise application, the generated initializer needs no changes at all -- the automatic Devise/Warden path described under [Identity adapters](#identity-adapters) takes over as soon as Rails boots. What the generator does not do is guess at a *custom* authentication mechanism: Karst cannot safely infer how an arbitrary non-Devise application authenticates, so it never wires up a working login flow on your behalf there.
 
 The generator creates three things:
 
-- `config/initializers/karst.rb` -- a documented but entirely commented-out initializer with placeholders for every hook described under [Identity adapters](#identity-adapters): `config.principals`, `config.assume_identity`, `config.clear_identity`, `config.assume_browser_identity`, and `config.clear_browser_identity`. The examples in the comments are examples, not assumptions about this application's `User` model, session keys, or auth library.
-- `app/controllers/karst_identity_controller.rb` -- a small, explicitly named `KarstIdentityController` that exists only so Karst's isolated probe session has a real request/response cycle to establish and clear authentication through. `create` first resolves the submitted principal strictly through `Karst::Identity.resolve` -- never a bare `Model.find`, so a probe request can never reach outside whatever `config.principals` returns -- then raises `NotImplementedError` with a clearly marked `TODO` until a developer replaces that part with this application's real sign-in code (session-based, Devise, Warden, or anything else) operating on the already-resolved principal. `destroy` raises the same way until wired to this application's real sign-out code. Karst does not implement a generic authentication mechanism for you.
+- `config/initializers/karst.rb` -- leads with the automatic Devise/Warden path, then documents every hook described under [Identity adapters](#identity-adapters) (`config.principals`, `config.assume_identity`, `config.clear_identity`, `config.assume_browser_identity`, `config.clear_browser_identity`) as commented-out overrides for the ambiguous-Devise or custom-authentication case. The examples in the comments are examples, not assumptions about this application's `User` model, session keys, or auth library.
+- `app/controllers/karst_identity_controller.rb` -- a small, explicitly named `KarstIdentityController` that exists only so a *custom* `config.assume_identity`/`config.clear_identity` pair has a real request/response cycle to establish and clear authentication through, for applications not on the automatic Devise/Warden path. `create` first resolves the submitted principal strictly through `Karst::Identity.resolve` -- never a bare `Model.find`, so a probe request can never reach outside whatever `config.principals` returns -- then raises `NotImplementedError` with a clearly marked `TODO` until a developer replaces that part with this application's real sign-in code operating on the already-resolved principal. `destroy` raises the same way until wired to this application's real sign-out code. It is unused, and safe to delete, on the automatic Devise/Warden path.
 - Development-only routes for that controller, inserted into `config/routes.rb` inside `if Rails.env.development?`. Running the generator again does not duplicate this block.
 
-Installation is not complete until those TODOs are replaced with this application's real identity semantics; the generator prints next steps as a reminder rather than claiming the work is done. Automatic support for common auth libraries (Devise, Warden) is future work, not part of this generator.
+On the automatic Devise/Warden path, installation is complete as generated. For custom authentication, installation is not complete until the `KarstIdentityController` TODOs are replaced with this application's real identity semantics; the generator prints next steps as a reminder rather than claiming that work is done.
 
 ## Contributing
 

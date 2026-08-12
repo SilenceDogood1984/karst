@@ -6,13 +6,27 @@ module Karst
     # already contains a Warden proxy. Warden cannot be bootstrapped safely
     # from a bare ActionDispatch::Integration::Session, so applications using
     # those sessions should configure explicit hooks (usually test endpoints).
+    #
+    # `scope:` is the Warden/Devise scope (e.g. `:user`, `:admin`) this
+    # adapter operates under. When known (see DeviseSupport), it is always
+    # passed explicitly rather than relying on Warden's own default scope --
+    # a Devise app almost always protects routes with a specific scope, and
+    # guessing wrong would silently authenticate under the wrong one. When
+    # nil, `set_user`/`logout` are called without a scope, matching Warden's
+    # own default behavior for a plain, non-Devise Warden setup.
     class WardenAdapter
+      def initialize(scope: nil)
+        @scope = scope
+      end
+
       def assume(session, principal)
-        proxy_for(session).set_user(principal)
+        proxy = proxy_for(session)
+        @scope ? proxy.set_user(principal, scope: @scope) : proxy.set_user(principal)
       end
 
       def clear(session)
-        proxy_for(session).logout
+        proxy = proxy_for(session)
+        @scope ? proxy.logout(@scope) : proxy.logout
       end
 
       private

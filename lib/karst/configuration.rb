@@ -3,6 +3,7 @@
 require_relative "access/principal_source"
 require_relative "access/artifact_source"
 require_relative "access/scenario"
+require_relative "identity/devise_support"
 
 module Karst
   # Process-level settings that control Karst's implemented behavior.
@@ -11,7 +12,7 @@ module Karst
                   :assume_browser_identity, :clear_browser_identity
     attr_reader :buffer_size, :access_sweep_limit, :usable_access_outcome, :principal_candidate_pool_size,
                 :principal_dimensions, :principal_populations, :artifact_sources, :access_scenarios,
-                :population_retry_limit
+                :population_retry_limit, :configured_principal_sources
 
     MAX_ACCESS_SWEEP_LIMIT = 100
 
@@ -110,15 +111,18 @@ module Karst
     # from or resolve into: explicit config.principal_sources when
     # configured, otherwise a bare config.principals (plus any
     # config.principal_dimensions/config.principal_populations) wrapped as
-    # one implicit :default source, or nil when neither is configured. A
+    # one implicit :default source, otherwise -- when neither is configured
+    # -- one inferred Devise model wrapped the same way (see
+    # Karst::Identity::DeviseSupport), or nil when none of those apply. A
     # Hash of Symbol => PrincipalSource.
     def principal_sources
       return @configured_principal_sources if @configured_principal_sources
-      return nil unless @principals
+      return default_principal_source(@principals) if @principals
 
-      { default: Access::PrincipalSource.new(name: :default, records: @principals,
-                                             dimensions: @principal_dimensions,
-                                             populations: @principal_populations) }
+      inferred = Identity::DeviseSupport.unambiguous_mapping
+      return nil unless inferred
+
+      default_principal_source(-> { inferred.model.all })
     end
 
     def access_sweep_limit=(value)
@@ -159,6 +163,12 @@ module Karst
     end
 
     private
+
+    def default_principal_source(records)
+      { default: Access::PrincipalSource.new(name: :default, records: records,
+                                             dimensions: @principal_dimensions,
+                                             populations: @principal_populations) }
+    end
 
     # Older/custom outcome-like values may expose only a status. An absent
     # optional evidence field means Karst did not observe that evidence, just
