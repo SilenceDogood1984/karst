@@ -3,6 +3,7 @@
 require "tmpdir"
 require "fileutils"
 
+# rubocop:disable Metrics/BlockLength
 RSpec.configure do |config|
   config.disable_monkey_patching!
   config.raise_errors_for_deprecations!
@@ -29,9 +30,26 @@ RSpec.configure do |config|
     allow(Karst::Access::PopulationApprovals).to receive(:path).and_return(isolated_path)
   end
 
+  # Same isolation, same reason, for Karst::Access::PrincipalSourceSelection
+  # (tmp/karst/principal_source_selection.json): several specs boot a real
+  # Rails::Application whose root resolves to this checkout, and Configuration
+  # #principal_sources now reads this file too whenever several Devise models
+  # are detected and nothing explicit is configured.
+  config.before do
+    next unless defined?(Karst::Access::PrincipalSourceSelection)
+
+    isolated_path = File.join(Dir.tmpdir, "karst-rspec-#{Process.pid}", "principal_source_selection.json")
+    allow(Karst::Access::PrincipalSourceSelection).to receive(:path).and_return(isolated_path)
+  end
+
   config.after do
     if defined?(Karst::Access::PopulationApprovals)
       isolated_path = File.join(Dir.tmpdir, "karst-rspec-#{Process.pid}", "approved_populations.json")
+      FileUtils.rm_f(isolated_path)
+    end
+
+    if defined?(Karst::Access::PrincipalSourceSelection)
+      isolated_path = File.join(Dir.tmpdir, "karst-rspec-#{Process.pid}", "principal_source_selection.json")
       FileUtils.rm_f(isolated_path)
     end
 
@@ -51,3 +69,4 @@ RSpec.configure do |config|
     end
   end
 end
+# rubocop:enable Metrics/BlockLength

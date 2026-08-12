@@ -149,10 +149,13 @@ module Karst
       class << self
         # rubocop:disable Metrics/ParameterLists
         def render(params: {}, access_result: nil, csrf_token: nil, browser_identity_active: false,
-                   route_lookup_limitation: nil, unapproved_candidate_count: nil)
+                   route_lookup_limitation: nil, unapproved_candidate_count: nil,
+                   principal_source_selection_saved: false, principal_source_selection_error: nil)
           state = { csrf_token: csrf_token, browser_identity_active: browser_identity_active,
                     route_lookup_limitation: route_lookup_limitation,
-                    unapproved_candidate_count: unapproved_candidate_count }
+                    unapproved_candidate_count: unapproved_candidate_count,
+                    principal_source_selection_saved: principal_source_selection_saved,
+                    principal_source_selection_error: principal_source_selection_error }
           [200, HEADERS.dup, [document(params, access_result, state)]]
         end
         # rubocop:enable Metrics/ParameterLists
@@ -247,7 +250,7 @@ module Karst
           context = hidden("controller", controller) + hidden("action", action) +
                     hidden("method", http_method) + hidden("path", path)
           body = if http_method == "GET"
-                   analyze_form(context)
+                   analyze_form(context, state)
                  else
                    "<p>Access analysis is available for GET routes only.</p>"
                  end
@@ -256,14 +259,19 @@ module Karst
         end
         # rubocop:enable Metrics/ParameterLists
 
-        def analyze_form(context)
+        def analyze_form(context, state)
           sources = principal_sources
           kind = sources && any_representative?(sources) ? "representative " : ""
           label = "Who can use this? (test #{Karst.config.access_sweep_limit} #{kind}users)"
           operation = "<input type=\"hidden\" name=\"operation\" value=\"access_sweep\">"
           button = "<button class=\"primary\" type=\"submit\">#{escape(label)}</button>"
           form = "<form action=\"/karst\" method=\"post\">#{context}#{operation}#{button}</form>"
-          "#{form}#{scenario_forms}#{principal_source_hint(sources)}"
+          # The save notice is independent of whether the save just resolved
+          # the ambiguity below: a save that succeeded and immediately made
+          # `sources` truthy must still tell the developer it worked, rather
+          # than have the confirmation vanish the moment it stops being
+          # needed.
+          "#{principal_source_selection_notice(state)}#{form}#{scenario_forms}#{principal_source_hint(sources)}"
         end
 
         def scenario_forms
@@ -291,8 +299,8 @@ module Karst
         def principal_source_hint(sources)
           return "" if sources
 
-          state = Identity.setup_state
-          return "<p class=\"hint\">#{escape(state.message)}</p>" if state.status == :ambiguous
+          setup = Identity.setup_state
+          return principal_source_selection_form(setup) if setup.status == :ambiguous
 
           custom_auth_hint
         end
@@ -301,6 +309,57 @@ module Karst
           url = "https://github.com/SilenceDogood1984/karst/blob/main/docs/advanced-configuration.md#custom-or-non-devise-authentication"
           "<p class=\"hint\" role=\"alert\">Karst couldn't determine how this app authenticates users. " \
             "<a href=\"#{url}\">Set up custom authentication</a></p>"
+        end
+
+        # The one place Karst asks a developer to pick which ambiguous
+        # Devise model(s) to test, right where the old "configure
+        # config.principals" hint used to sit -- no initializer, no separate
+        # page. Only ever offers the models Devise.mappings itself currently
+        # reports (see Karst::Identity::DeviseSupport); saving is handled by
+        # Karst::Web::Middleware, which only ever persists a submitted name
+        # that matches one of those same mappings (see
+        # Karst::Access::PrincipalSourceSelection).
+        def principal_source_selection_form(setup)
+          candidates = Identity::DeviseSupport.mappings.sort_by { |mapping| mapping.model.name }
+          return "<p class=\"hint\" role=\"alert\">#{escape(setup.message)}</p>" if candidates.size < 2
+
+          <<~HTML
+            <div class="hint" role="alert">
+            #{principal_source_selection_intro(candidates)}
+            #{principal_source_selection_fields(candidates)}
+            </div>
+          HTML
+        end
+
+        def principal_source_selection_intro(candidates)
+          names = candidates.map { |mapping| mapping.model.name }
+          "<p>Karst found #{names.size} user types: #{escape(names.join(', '))}.</p>"
+        end
+
+        def principal_source_selection_fields(candidates)
+          selected = Access::SelectedPrincipalSources.mappings.map { |mapping| mapping.model.name }
+          rows = candidates.map { |mapping| principal_source_checkbox(mapping, selected) }.join
+          <<~HTML
+            <form action="/karst" method="post">
+            <input type="hidden" name="operation" value="select_principal_sources">
+            <p>Which should Karst test?</p>
+            #{rows}
+            <button type="submit">Save</button>
+            </form>
+          HTML
+        end
+
+        def principal_source_checkbox(mapping, selected)
+          name = mapping.model.name
+          box = "<input type=\"checkbox\" name=\"principal[]\" value=\"#{escape(name)}\"" \
+                "#{' checked' if selected.include?(name)}>"
+          "<label>#{box} #{escape(name)}</label><br>"
+        end
+
+        def principal_source_selection_notice(state)
+          saved = "<p class=\"hint\" role=\"status\">Selection saved.</p>" if state[:principal_source_selection_saved]
+          error = state[:principal_source_selection_error]
+          "#{saved}#{"<p class=\"hint\" role=\"alert\">#{escape(error)}</p>" if error}"
         end
 
         def hidden(name, value)

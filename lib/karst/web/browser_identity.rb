@@ -13,6 +13,13 @@ module Karst
       TOKEN_KEY = "karst.csrf_token"
       ACTIVE_KEY = "karst.browser_identity_active"
 
+      # The exact Devise/Warden scope the currently assumed identity was
+      # established under (see Identity.assume_browser), retained for the
+      # lifetime of the browser session so #clear can hand it straight back
+      # to Identity.clear_browser instead of that having to guess which of
+      # several selected sources produced the principal being cleared.
+      SCOPE_KEY = "karst.browser_identity_scope"
+
       def initialize(request)
         @request = request
       end
@@ -31,12 +38,13 @@ module Karst
         principal = Identity.resolve(model_name: params["principal_type"], id: params["principal_id"])
         raise Identity::Unavailable, "principal is not in the configured source" unless principal
 
-        Identity.assume_browser(@request, principal)
+        scope = Identity.assume_browser(@request, principal)
         # Authentication hooks may clear or replace the host session. Rebuild
         # Karst's control state only after that transition, and invalidate the
         # token which authorized it rather than carrying pre-assumption state
         # into the assumed identity.
         session[ACTIVE_KEY] = true
+        session[SCOPE_KEY] = scope&.to_s
         rotate_token!
         target
       end
@@ -44,8 +52,10 @@ module Karst
       def clear(params)
         verify_token!(params["csrf_token"])
         target = return_path(params["path"])
-        Identity.clear_browser(@request)
+        scope = session[SCOPE_KEY]
+        Identity.clear_browser(@request, scope: scope&.to_sym)
         session.delete(ACTIVE_KEY)
+        session.delete(SCOPE_KEY)
         target
       end
 

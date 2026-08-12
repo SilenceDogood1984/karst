@@ -3,6 +3,7 @@
 require "spec_helper"
 require "json"
 require "tmpdir"
+require "uri"
 require "rack/mock"
 require_relative "../support/test_application"
 require "karst/web/middleware"
@@ -17,6 +18,14 @@ end
 class KarstAccessPrincipal < ActiveRecord::Base
   scope :flagged, -> { where(behavior: "forbidden") }
   scope :working, -> { where(behavior: "ok") }
+end
+
+# A second, distinct Ruby class Devise could map -- deliberately backed by
+# the same table as KarstAccessPrincipal (no new migration needed) since
+# only the class identity, never any data of its own, matters to the
+# selection tests below.
+class KarstAccessSecondaryPrincipal < ActiveRecord::Base
+  self.table_name = "karst_access_principals"
 end
 
 class KarstAccessFixtureController < ActionController::Base
@@ -496,6 +505,117 @@ RSpec.describe "bounded access sweep Rails integration" do
 
       expect(page.body).to include("removed_scope", "no longer a discovered scope on this model — not used")
       expect(access_sweep_response.body).not_to include("Candidate populations")
+    end
+  end
+
+  # The same "developer never edits Ruby" workflow as approving a candidate
+  # population, one refusal boundary earlier: several Devise models detected
+  # and nothing explicit configured. Selecting which to test happens right
+  # at /karst, with no initializer required.
+  describe "resolving an ambiguous Devise setup at /karst" do
+    let(:origin) { "http://example.org" }
+
+    around do |example|
+      Dir.mktmpdir("karst-principal-selection-integration") do |dir|
+        @selection_path = File.join(dir, "tmp/karst/principal_source_selection.json")
+        example.run
+      end
+    end
+
+    before do
+      allow(Karst::Access::PrincipalSourceSelection).to receive(:path).and_return(@selection_path)
+      stub_const("Devise", Module.new)
+      mapping = Struct.new(:to, :name)
+      allow(Devise).to receive(:mappings).and_return(
+        member: mapping.new(KarstAccessPrincipal, :member),
+        admin: mapping.new(KarstAccessSecondaryPrincipal, :admin)
+      )
+      stub_const("Warden::Manager", Class.new)
+    end
+
+    after { Karst.config.principal_sources = nil }
+
+    def select_post(fields, origin_header: origin)
+      stack = Karst::Web::Middleware.new(KarstTestApplication)
+      pairs = [%w[operation select_principal_sources], *fields.map { |name| ["principal[]", name] }]
+      input = URI.encode_www_form(pairs)
+      env = { "REMOTE_ADDR" => "127.0.0.1", "CONTENT_TYPE" => "application/x-www-form-urlencoded", input: input }
+      env["HTTP_ORIGIN"] = origin_header if origin_header
+      Rack::MockRequest.new(stack).post("/karst?method=GET&path=%2Fdocuments", **env)
+    end
+
+    def karst_page
+      Rack::MockRequest.new(Karst::Web::Middleware.new(KarstTestApplication))
+                       .get("/karst?method=GET&path=%2Fdocuments", "REMOTE_ADDR" => "127.0.0.1")
+    end
+
+    def selected_names
+      JSON.parse(File.read(@selection_path))["selected"]
+    end
+
+    it "offers every Devise-detected model as a checkbox, with none preselected until saved" do
+      page = karst_page
+
+      expect(page.body).to include("Karst found 2 user types", "KarstAccessPrincipal", "KarstAccessSecondaryPrincipal")
+      expect(page.body).not_to include(" checked")
+    end
+
+    it "selects only one of several Devise-detected models" do
+      response = select_post(["KarstAccessPrincipal"])
+
+      expect(response.status).to eq(200)
+      expect(response.body).to include("Selection saved.")
+      expect(selected_names).to eq(["KarstAccessPrincipal"])
+      expect(Karst.config.principal_sources.keys).to eq([:member])
+    end
+
+    it "selects only the other of several Devise-detected models" do
+      select_post(["KarstAccessSecondaryPrincipal"])
+
+      expect(selected_names).to eq(["KarstAccessSecondaryPrincipal"])
+      expect(Karst.config.principal_sources.keys).to eq([:admin])
+    end
+
+    it "selects both models, keeping each as its own independently queryable source" do
+      select_post(%w[KarstAccessPrincipal KarstAccessSecondaryPrincipal])
+
+      expect(selected_names).to contain_exactly("KarstAccessPrincipal", "KarstAccessSecondaryPrincipal")
+      sources = Karst.config.principal_sources
+      expect(sources.keys).to contain_exactly(:member, :admin)
+      expect(sources[:member].record_klass).to eq(KarstAccessPrincipal)
+      expect(sources[:admin].record_klass).to eq(KarstAccessSecondaryPrincipal)
+    end
+
+    it "never persists a submitted name Devise itself does not currently map" do
+      select_post(["KarstAccessPrincipal", "System::Admin"])
+
+      expect(selected_names).to eq(["KarstAccessPrincipal"])
+    end
+
+    it "refuses a selection submitted from another origin, without writing anything" do
+      response = select_post(["KarstAccessPrincipal"], origin_header: "http://attacker.example")
+
+      expect(response.status).to eq(403)
+      expect(File.exist?(@selection_path)).to be(false)
+    end
+
+    it "falls back to ambiguous again once a selected mapping is no longer reported by Devise" do
+      select_post(%w[KarstAccessPrincipal KarstAccessSecondaryPrincipal])
+      expect(Karst.config.principal_sources.keys).to contain_exactly(:member, :admin)
+
+      allow(Devise).to receive(:mappings).and_return({})
+
+      expect(Karst.config.principal_sources).to be_nil
+      expect(Karst::Identity.setup_state.status).to eq(:unavailable)
+      expect(karst_page.body).to include("couldn't determine how this app authenticates")
+    end
+
+    it "keeps an explicit config.principal_sources ahead of a saved local selection" do
+      select_post(["KarstAccessPrincipal"])
+
+      Karst.config.principal_sources = { explicit: -> { KarstAccessSecondaryPrincipal.all } }
+
+      expect(Karst.config.principal_sources.keys).to eq([:explicit])
     end
   end
 end

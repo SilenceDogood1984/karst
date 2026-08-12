@@ -2,6 +2,7 @@
 
 require_relative "access/principal_source"
 require_relative "access/approved_populations"
+require_relative "access/selected_principal_sources"
 require_relative "access/artifact_source"
 require_relative "access/scenario"
 require_relative "identity/devise_support"
@@ -114,8 +115,11 @@ module Karst
     # config.principal_dimensions/config.principal_populations) wrapped as
     # one implicit :default source, otherwise -- when neither is configured
     # -- one inferred Devise model wrapped the same way (see
-    # Karst::Identity::DeviseSupport), or nil when none of those apply. A
-    # Hash of Symbol => PrincipalSource.
+    # Karst::Identity::DeviseSupport), otherwise -- with several Devise
+    # models and nothing explicit -- whatever a developer has locally
+    # selected at /karst (see Access::SelectedPrincipalSources, one source
+    # per selected model, each keyed by its own Devise scope), or nil when
+    # none of those apply. A Hash of Symbol => PrincipalSource.
     #
     # This is also where locally approved discovered populations (see
     # Karst::Access::ApprovedPopulations) join the effective configuration,
@@ -173,9 +177,13 @@ module Karst
       return default_principal_source(@principals) if @principals
 
       inferred = Identity::DeviseSupport.unambiguous_mapping
-      return nil unless inferred
+      return default_principal_source(-> { inferred.model.all }) if inferred
 
-      default_principal_source(-> { inferred.model.all })
+      # Several Devise models and nothing explicit: fall back to whatever a
+      # developer has locally selected at /karst (see
+      # Access::SelectedPrincipalSources), still nil when nothing has been
+      # selected or every selection has gone stale -- Karst never guesses.
+      Access::SelectedPrincipalSources.sources
     end
 
     def default_principal_source(records)

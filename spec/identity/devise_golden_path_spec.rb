@@ -190,6 +190,120 @@ RSpec.describe "Karst::Identity Devise/Warden golden path" do
       expect(proxy.user(:admin)).to be_nil
       expect(Karst::Identity.setup_state.status).to eq(:ready_mixed)
     end
+
+    # Karst never edits an initializer to resolve this ambiguity: a
+    # developer instead selects locally at /karst (see
+    # Karst::Access::PrincipalSourceSelection), and everything downstream --
+    # principal_sources, probe identity, browser identity, CLI, MCP -- picks
+    # it up with no further wiring.
+    describe "resolved through a locally selected principal source" do
+      before { allow(Karst::Access::ApprovedPopulations).to receive(:local_environment?).and_return(true) }
+
+      after { Karst::Access::PrincipalSourceSelection.replace([]) }
+
+      it "selects only the User model" do
+        Karst::Access::PrincipalSourceSelection.replace(["DeviseGoldenPathUser"])
+
+        sources = Karst::Identity.principal_sources
+
+        expect(sources.keys).to eq([:user])
+        expect(sources[:user].record_klass).to eq(DeviseGoldenPathUser)
+        expect(Karst::Identity.setup_state.status).to eq(:ready_automatic)
+      end
+
+      it "selects only the Admin model" do
+        Karst::Access::PrincipalSourceSelection.replace(["DeviseGoldenPathAdmin"])
+
+        sources = Karst::Identity.principal_sources
+
+        expect(sources.keys).to eq([:admin])
+        expect(sources[:admin].record_klass).to eq(DeviseGoldenPathAdmin)
+      end
+
+      it "selects both models as independently queryable sources, never one combined source" do
+        Karst::Access::PrincipalSourceSelection.replace(%w[DeviseGoldenPathUser DeviseGoldenPathAdmin])
+
+        sources = Karst::Identity.principal_sources
+
+        expect(sources.keys).to contain_exactly(:user, :admin)
+        expect(sources[:user].record_klass).to eq(DeviseGoldenPathUser)
+        expect(sources[:admin].record_klass).to eq(DeviseGoldenPathAdmin)
+        expect(Karst::Identity.browser_supported?).to be(true)
+        expect(Karst::Identity.setup_state.status).to eq(:ready_automatic)
+      end
+
+      it "assumes and clears each selected model's own Devise/Warden scope for probe identity" do
+        Karst::Access::PrincipalSourceSelection.replace(%w[DeviseGoldenPathUser DeviseGoldenPathAdmin])
+        user = DeviseGoldenPathUser.create!
+        admin = DeviseGoldenPathAdmin.create!
+        proxy = DeviseGoldenPathProxy.new
+
+        Karst::Identity.with(session_for(proxy), user) { expect(proxy.user(:user)).to eq(user) }
+        expect(proxy.user(:user)).to be_nil
+        expect(proxy.user(:admin)).to be_nil
+
+        Karst::Identity.with(session_for(proxy), admin) { expect(proxy.user(:admin)).to eq(admin) }
+        expect(proxy.user(:admin)).to be_nil
+        expect(proxy.user(:user)).to be_nil
+      end
+
+      it "assumes each selected model's own scope for browser identity and retains it to clear correctly" do
+        Karst::Access::PrincipalSourceSelection.replace(%w[DeviseGoldenPathUser DeviseGoldenPathAdmin])
+        admin = DeviseGoldenPathAdmin.create!
+        proxy = DeviseGoldenPathProxy.new
+        request = Struct.new(:env).new(session_for(proxy))
+
+        scope = Karst::Identity.assume_browser(request, admin)
+
+        expect(scope).to eq(:admin)
+        expect(proxy.user(:admin)).to eq(admin)
+
+        # Stopping must clear exactly the scope that was assumed -- not
+        # guess at "the" effective source, which no longer exists once more
+        # than one is selected.
+        Karst::Identity.clear_browser(request, scope: scope)
+        expect(proxy.user(:admin)).to be_nil
+      end
+
+      it "refuses to guess a scope for a bare clear with no stored scope and several selected sources" do
+        Karst::Access::PrincipalSourceSelection.replace(%w[DeviseGoldenPathUser DeviseGoldenPathAdmin])
+        proxy = DeviseGoldenPathProxy.new
+        request = Struct.new(:env).new(session_for(proxy))
+
+        expect { Karst::Identity.clear_browser(request) }.to raise_error(Karst::Identity::Unavailable)
+      end
+
+      it "reverts to ambiguous once every selected mapping is stale, never guessing" do
+        Karst::Access::PrincipalSourceSelection.replace(["DeviseGoldenPathStaffMember"])
+
+        expect { Karst::Identity.principals }.to raise_error(Karst::Identity::Unavailable)
+        expect(Karst::Identity.setup_state.status).to eq(:ambiguous)
+      end
+
+      it "ignores a hand-written entry naming a model Devise never mapped, never constantizing it" do
+        Karst::Access::PrincipalSourceSelection.replace(["Object"])
+
+        expect(Karst::Identity.setup_state.status).to eq(:ambiguous)
+      end
+
+      it "keeps an explicit config.principals ahead of a saved local selection" do
+        Karst::Access::PrincipalSourceSelection.replace(%w[DeviseGoldenPathUser DeviseGoldenPathAdmin])
+        Karst.config.principals = -> { DeviseGoldenPathUser.all }
+
+        expect(Karst::Identity.principal_sources.keys).to eq([:default])
+      ensure
+        Karst.config.principals = nil
+      end
+
+      it "keeps an explicit config.principal_sources ahead of a saved local selection" do
+        Karst::Access::PrincipalSourceSelection.replace(%w[DeviseGoldenPathUser DeviseGoldenPathAdmin])
+        Karst.config.principal_sources = { explicit: -> { DeviseGoldenPathUser.all } }
+
+        expect(Karst::Identity.principal_sources.keys).to eq([:explicit])
+      ensure
+        Karst.config.principal_sources = nil
+      end
+    end
   end
 
   describe "a nonstandard Devise model name" do

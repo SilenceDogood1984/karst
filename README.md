@@ -33,7 +33,7 @@ bin/rails server
 
 Open `/karst` in your browser.
 
-Using Devise with one user model? That's usually it — Karst finds it automatically through Devise's own routing metadata, with no configuration. If Karst finds more than one Devise model (or none), it says so directly on the `/karst` panel instead of guessing.
+Using Devise with one user model? That's usually it — Karst finds it automatically through Devise's own routing metadata, with no configuration. If Karst finds more than one Devise model, it asks you to pick which one(s) to test right there on the `/karst` panel — no initializer, no restart. If it finds none at all, it says so instead of guessing.
 
 Custom or non-Devise authentication needs a few lines of setup — see [Custom authentication](#custom-authentication) below.
 
