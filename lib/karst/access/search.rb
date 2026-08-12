@@ -54,6 +54,7 @@ module Karst
       # `initial` is the ordinary Access::Sweep::Result; `attempts` is one
       # PopulationAttempt per approved population, in configuration order,
       # including the ones deliberately not run.
+      # rubocop:disable Metrics/BlockLength
       Result = Value.define(:initial, :attempts) do
         def path
           initial.path
@@ -75,7 +76,30 @@ module Karst
         def population_request_count
           attempted.sum { |attempt| attempt.result.outcomes.size }
         end
+
+        # The winning evidence and its origin are exposed by Search itself so
+        # adapters never need to invent another definition of usable access.
+        def verified_outcome
+          all_outcomes.find { |outcome| Karst.config.usable_access_outcome.call(outcome) }
+        end
+
+        def verified_source
+          return nil unless verified_outcome
+          return { type: :sample, name: nil } if initial.outcomes.include?(verified_outcome)
+
+          attempt = attempts.find { |item| item.result&.outcomes&.include?(verified_outcome) }
+          { type: :population, name: attempt.name }
+        end
+
+        def request_count
+          initial.outcomes.size + population_request_count
+        end
+
+        def elapsed_ms
+          ([initial] + attempted.map(&:result)).sum(&:elapsed_ms).round(1)
+        end
       end
+      # rubocop:enable Metrics/BlockLength
 
       def initialize(path:, http_method: "GET", sources: nil, application: nil)
         @path = path
