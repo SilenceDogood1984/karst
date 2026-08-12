@@ -83,7 +83,15 @@ Runs the same search as `/karst` from a shell. Exit code `0` means a usable user
 
 ## Coding agents
 
+MCP support is optional. Add its runtime dependency to your application's
+Gemfile and install it before starting the server:
+
+```ruby
+gem "mcp", "~> 0.9.0"
+```
+
 ```bash
+bundle install
 bin/rails karst:mcp
 ```
 
