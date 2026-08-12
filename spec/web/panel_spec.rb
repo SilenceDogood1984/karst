@@ -118,7 +118,8 @@ RSpec.describe Karst::Web::Panel do
     it "notes when no user source is configured, without dominating the page" do
       body = render(nil, analyzed_route)
 
-      expect(body).to include("No user source is configured")
+      expect(body).to include("Karst couldn't determine how this app authenticates users")
+      expect(body).to include("Set up custom authentication")
       expect(body).not_to include("No principal source")
     end
 
@@ -422,7 +423,8 @@ RSpec.describe Karst::Web::Panel do
                                     csrf_token: "nonce").last.join
 
       expect(body).not_to include("<button type=\"submit\">Test as</button>")
-      expect(body).to include("Browser Test as is not configured")
+      expect(body).to include("Karst couldn't determine how this app authenticates users")
+      expect(body).to include("Set up custom authentication")
     end
 
     it "renders Test as for a usable principal once configured" do

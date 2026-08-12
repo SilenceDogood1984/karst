@@ -287,9 +287,16 @@ module Karst
         def principal_source_hint(sources)
           return "" if sources
 
-          message = Identity.setup_state.message ||
-                    "No user source is configured. Analyzing will report why nothing could be sampled."
-          "<p class=\"hint\">#{escape(message)}</p>"
+          state = Identity.setup_state
+          return "<p class=\"hint\">#{escape(state.message)}</p>" if state.status == :ambiguous
+
+          custom_auth_hint
+        end
+
+        def custom_auth_hint
+          url = "https://github.com/SilenceDogood1984/karst/blob/main/docs/advanced-configuration.md#custom-or-non-devise-authentication"
+          "<p class=\"hint\" role=\"alert\">Karst couldn't determine how this app authenticates users. " \
+            "<a href=\"#{url}\">Set up custom authentication</a></p>"
         end
 
         def hidden(name, value)
@@ -486,10 +493,10 @@ module Karst
         def test_as_hint(outcomes, csrf_token)
           return "" if outcomes.empty? || (Identity.browser_supported? && csrf_token)
 
-          message = Identity.setup_state.message ||
-                    "Browser Test as is not configured (config.assume_browser_identity / " \
-                    "config.clear_browser_identity)."
-          "<p class=\"hint\">#{escape(message)}</p>"
+          state = Identity.setup_state
+          return "<p class=\"hint\">#{escape(state.message)}</p>" if state.status == :ambiguous
+
+          custom_auth_hint
         end
 
         def usable_principal(outcome, result, csrf_token)
