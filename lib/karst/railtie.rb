@@ -3,9 +3,10 @@
 require "rails/railtie"
 
 module Karst
-  # Inserts Karst's development-only web surface and rake tasks. Karst
-  # installs no notification subscription, no eager-loaded state, and nothing
-  # that runs on an ordinary application request outside development.
+  # Inserts Karst's development-only web surface. Karst installs no
+  # notification subscription, no eager-loaded state, no rake tasks (its CLI
+  # ships as Rails::Command classes under lib/rails/commands instead), and
+  # nothing that runs on an ordinary application request outside development.
   class Railtie < Rails::Railtie
     # Must run before the middleware stack is built (a later Finisher
     # initializer), not in config.after_initialize, which runs after the stack
@@ -19,10 +20,6 @@ module Karst
       app.middleware.use(Web::Middleware)
 
       Rails.logger&.info("Karst: evidence at /karst")
-    end
-
-    rake_tasks do
-      load File.expand_path("../tasks/karst.rake", __dir__)
     end
   end
 
