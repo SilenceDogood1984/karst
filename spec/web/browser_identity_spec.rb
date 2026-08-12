@@ -33,9 +33,29 @@ RSpec.describe Karst::Web::BrowserIdentity do
   end
 
   it "establishes browser identity and returns the query-free local target" do
+    original_token = identity.token
     expect(identity.assume(params)).to eq("/documents/22/reader")
     expect(session).to include("user_id" => 27)
     expect(identity).to be_active
+    expect(identity.token).not_to eq(original_token)
+  end
+
+  it "re-establishes testing and CSRF state after the host clears its session" do
+    stale_token = identity.token
+    Karst.config.assume_browser_identity = lambda do |_request, selected|
+      session.clear
+      session["user_id"] = selected.id
+    end
+
+    identity.assume(params("csrf_token" => stale_token))
+    current_token = identity.token
+
+    expect(identity).to be_active
+    expect(current_token).not_to eq(stale_token)
+    expect { identity.clear("csrf_token" => stale_token, "path" => "/documents/22/reader") }
+      .to raise_error(Karst::Identity::Unavailable, /CSRF/)
+    expect(identity.clear("csrf_token" => current_token, "path" => "/documents/22/reader"))
+      .to eq("/documents/22/reader")
   end
 
   it "rejects invalid and out-of-scope principals" do
@@ -50,6 +70,7 @@ RSpec.describe Karst::Web::BrowserIdentity do
   it "rejects external return paths" do
     expect { identity.assume(params("path" => "https://example.com/steal")) }
       .to raise_error(Karst::Identity::Unavailable, /local application path/)
+    expect(session).not_to include("user_id")
   end
 
   it "requires a same-session nonce" do
@@ -64,6 +85,25 @@ RSpec.describe Karst::Web::BrowserIdentity do
     )
     expect(session).not_to include("user_id")
     expect(identity).not_to be_active
+  end
+
+  it "rejects an unsafe clear return path before invoking the host hook" do
+    identity.assume(params)
+
+    expect { identity.clear("csrf_token" => identity.token, "path" => "//example.com/steal") }
+      .to raise_error(Karst::Identity::Unavailable, /local application path/)
+    expect(session).to include("user_id" => 27)
+    expect(identity).to be_active
+  end
+
+  it "does not clear anything when browser identity hooks are unavailable" do
+    identity.assume(params)
+    Karst.config.clear_browser_identity = nil
+
+    expect { identity.clear("csrf_token" => identity.token, "path" => "/documents/22/reader") }
+      .to raise_error(Karst::Identity::Unavailable, /not configured/)
+    expect(session).to include("user_id" => 27)
+    expect(identity).to be_active
   end
 end
 # rubocop:enable Metrics/BlockLength

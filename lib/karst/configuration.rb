@@ -44,7 +44,10 @@ module Karst
       @assume_browser_identity = nil
       @clear_browser_identity = nil
       @access_sweep_limit = 25
-      @usable_access_outcome = ->(outcome) { outcome.status && (200..299).cover?(outcome.status) }
+      @usable_access_outcome = lambda do |outcome|
+        outcome.status == 200 && outcome_attribute_empty?(outcome, :exception_class) &&
+          outcome_attribute_empty?(outcome, :halted_callback)
+      end
       @principal_candidate_pool_size = 1_000
       @population_retry_limit = 3
       @principal_dimensions = {}
@@ -153,6 +156,15 @@ module Karst
       raise ArgumentError, "usable_access_outcome must be callable" unless policy.respond_to?(:call)
 
       @usable_access_outcome = policy
+    end
+
+    private
+
+    # Older/custom outcome-like values may expose only a status. An absent
+    # optional evidence field means Karst did not observe that evidence, just
+    # as an explicit nil does; it must not make the policy itself crash.
+    def outcome_attribute_empty?(outcome, attribute)
+      !outcome.respond_to?(attribute) || outcome.public_send(attribute).nil?
     end
   end
 end

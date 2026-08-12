@@ -9,6 +9,7 @@ require_relative "route_lookup"
 require_relative "../execution_context"
 require "rack/utils"
 require "rack/request"
+require "json"
 require "active_support/notifications"
 require_relative "../access/sweep"
 require_relative "../access/search"
@@ -188,9 +189,18 @@ module Karst
                when "test_as" then browser_identity.assume(params)
                when "stop_test_as" then browser_identity.clear(params)
                end
-        path && [303, { "location" => path, "cache-control" => "no-store" }, []]
+        path && identity_navigation_response(env, params, path)
       rescue Identity::Error
         [403, { "content-type" => "text/plain; charset=utf-8", "cache-control" => "no-store" }, ["Forbidden"]]
+      end
+
+      def identity_navigation_response(env, params, path)
+        if params["operation"] == "test_as" && env["HTTP_ACCEPT"].to_s.include?("application/json")
+          body = JSON.generate(location: path)
+          [200, { "content-type" => "application/json; charset=utf-8", "cache-control" => "no-store" }, [body]]
+        else
+          [303, { "location" => path, "cache-control" => "no-store" }, []]
+        end
       end
 
       def browser_token(browser_identity)

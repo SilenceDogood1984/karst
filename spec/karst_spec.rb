@@ -60,13 +60,14 @@ RSpec.describe Karst do
       end
     end
 
-    it "treats only observed 2xx statuses as usable by default and accepts a custom policy" do
+    it "treats only an observed 200 without contrary evidence as usable and accepts a custom policy" do
       configuration = configuration_class.new
       outcome = Struct.new(:status)
 
-      expect([200, 204, 299].map { |status| configuration.usable_access_outcome.call(outcome.new(status)) })
-        .to all(be_truthy)
-      expect([nil, 302, 401, 403].map { |status| configuration.usable_access_outcome.call(outcome.new(status)) })
+      expect(configuration.usable_access_outcome.call(outcome.new(200))).to be(true)
+      expect([nil, 204, 299, 302, 401, 403].map do |status|
+        configuration.usable_access_outcome.call(outcome.new(status))
+      end)
         .to all(be_falsey)
 
       configuration.usable_access_outcome = ->(observed) { observed.status == 302 }

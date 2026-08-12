@@ -62,9 +62,11 @@ RSpec.describe Karst::Web::Panel do
       expect(status).to eq(200)
       expect(headers).to include(
         "content-type" => "text/html; charset=utf-8", "cache-control" => "no-store",
-        "x-robots-tag" => "noindex, nofollow", "x-frame-options" => "DENY",
-        "content-security-policy" => "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'"
+        "x-robots-tag" => "noindex, nofollow", "x-frame-options" => "DENY"
       )
+      expect(headers["content-security-policy"]).to include("default-src 'none'", "style-src 'unsafe-inline'",
+                                                            "script-src 'sha256-", "connect-src 'self'",
+                                                            "frame-ancestors 'none'")
     end
   end
 
@@ -157,10 +159,10 @@ RSpec.describe Karst::Web::Panel do
       body = described_class.render(params: analyzed_route, access_result: access_result(outcomes),
                                     csrf_token: "nonce").last.join
 
-      expect(body).to include("<h2>Users who can use this URL — 2</h2>", "User #27", "Observed 200 OK", "User #28",
-                              "Observed 204 No Content", "Other observed outcomes — 3", "302 → /login — 1",
+      expect(body).to include("<h2>Users who can use this URL — 1</h2>", "User #27", "Observed 200 OK", "User #28",
+                              "204 No Content", "Other observed outcomes — 4", "302 → /login — 1",
                               "Exception: RuntimeError — 1")
-      expect(body.scan('<button type="submit">Test as</button>').size).to eq(2)
+      expect(body.scan('<button type="submit">Test as</button>').size).to eq(1)
       expect(body.index("User #27")).to be < body.index("<details>")
     end
 
@@ -183,6 +185,15 @@ RSpec.describe Karst::Web::Panel do
       expect(body).not_to include("Redirected because", "callback failed")
     end
 
+    it "keeps a halted 2xx response as non-usable observed evidence" do
+      outcome = access_outcome(id: 123, status: 204, halted_callback: :redirect_if_suspended)
+      body = described_class.render(params: analyzed_route, access_result: access_result([outcome])).last.join
+
+      expect(body).to include("Users who can use this URL — 0", "204 No Content",
+                              "Halted callback: redirect_if_suspended", "Not verified as usable")
+      expect(body).not_to include("suspended user", "caused the 404", "204 became 404")
+    end
+
     it "uses the configured usable-outcome presentation policy rather than reinventing it" do
       Karst.config.usable_access_outcome = ->(outcome) { outcome.status == 302 }
       body = described_class.render(params: analyzed_route,
@@ -191,7 +202,9 @@ RSpec.describe Karst::Web::Panel do
       expect(body).to include("<h2>Users who can use this URL — 1</h2>", "Observed 302 Found",
                               "Other observed outcomes — 0")
     ensure
-      Karst.config.usable_access_outcome = ->(outcome) { outcome.status && (200..299).cover?(outcome.status) }
+      Karst.config.usable_access_outcome = lambda do |outcome|
+        outcome.status == 200 && outcome.exception_class.nil? && outcome.halted_callback.nil?
+      end
     end
 
     it "reports a sweep exception without overclaiming" do
@@ -382,6 +395,10 @@ RSpec.describe Karst::Web::Panel do
                                     csrf_token: "nonce").last.join
 
       expect(body).to include("User #27", '<button type="submit">Test as</button>', 'value="/documents/22/reader"')
+      expect(body).to include("fetch(form.action", 'headers: { "Accept": "application/json" }',
+                              "window.location.assign(result.location)")
+      expect(described_class.render[1]["content-security-policy"]).to include("script-src 'sha256-",
+                                                                              "connect-src 'self'")
       expect(body).not_to include("Browser Test as is not configured")
     end
 

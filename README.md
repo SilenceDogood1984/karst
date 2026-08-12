@@ -128,15 +128,17 @@ grouped without response bodies.
 The panel promotes **usable principals** above the remaining observed outcomes
 so its primary answer is who can be used to test the current page. “Usable” is
 a host-configurable presentation policy over an observed HTTP outcome; it is
-not an authorization conclusion. By default, statuses from 200 through 299 are
-usable, while redirects, exceptions, and outcomes without a status are not.
+not an authorization conclusion. By default, an outcome is usable only when it
+is an observed 200 response with no observed exception and no observed halted
+callback. Other statuses, exceptions, and halted callbacks
+remain evidence, but are not stronger proof that the page can be used.
 Applications can narrowly replace that policy without changing or filtering
 the sweep evidence:
 
 ```ruby
 Karst.configure do |config|
   config.usable_access_outcome = lambda do |outcome|
-    outcome.status && (200..299).cover?(outcome.status)
+    outcome.status == 204 # An application-specific policy, if deliberately desired
   end
 end
 ```

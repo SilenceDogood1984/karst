@@ -228,8 +228,15 @@ RSpec.describe "Karst web middleware" do
         require "rack/session/cookie"
         principal = Struct.new(:id).new(27)
         Karst.config.principals = -> { [principal] }
-        Karst.config.assume_browser_identity = ->(request, selected) { request.session["user_id"] = selected.id }
-        Karst.config.clear_browser_identity = ->(request) { request.session.delete("user_id") }
+        Karst.config.assume_browser_identity = lambda do |request, selected|
+          request.session.clear
+          request.session["user_id"] = selected.id
+        end
+        clear_calls = 0
+        Karst.config.clear_browser_identity = lambda do |request|
+          clear_calls += 1
+          request.session.delete("user_id")
+        end
         descriptor = Karst::Identity.describe(principal)
         outcome = Karst::Access::Outcome.new(
           principal: descriptor, status: 200, redirect: nil, exception_class: nil,
@@ -251,13 +258,29 @@ RSpec.describe "Karst web middleware" do
         browser.post("/karst", operation: "access_sweep", method: "GET", path: "/documents/22/reader")
         token = browser.last_response.body[/name="csrf_token" value="([^"]+)"/, 1]
         abort "missing test-as token" unless token
+        browser.header("Accept", "application/json")
         browser.post("/karst", operation: "test_as", csrf_token: token, principal_type: descriptor.model_name,
                      principal_id: descriptor.id, path: "/documents/22/reader?secret=discarded")
-        abort "wrong return path" unless browser.last_response.status == 303 &&
-                                         browser.last_response["Location"] == "/documents/22/reader"
+        navigation_valid = browser.last_response.status == 200 &&
+                           browser.last_response.content_type.start_with?("application/json") &&
+                           JSON.parse(browser.last_response.body) == { "location" => "/documents/22/reader" }
+        abort "expected fetch navigation contract: \#{browser.last_response.status} " \
+              "\#{browser.last_response.content_type.inspect} \#{browser.last_response.body.inspect}" \
+          unless navigation_valid
+        browser.header("Accept", nil)
         browser.get("/documents/22/reader")
         abort "browser identity was not retained" unless browser.last_response.body == "user=27"
+        browser.get("/karst?path=%2Fdocuments%2F22%2Freader")
+        abort "testing mode was lost" unless browser.last_response.body.include?("Currently testing as")
+        current_token = browser.last_response.body[/name="csrf_token" value="([^"]+)"/, 1]
+        abort "missing rotated stop token" unless current_token && current_token != token
         browser.post("/karst", operation: "stop_test_as", csrf_token: token, path: "/documents/22/reader")
+        abort "stale token was accepted" unless browser.last_response.status == 403
+        browser.post("/karst", operation: "stop_test_as", csrf_token: current_token, path: "/documents/22/reader")
+        abort "stop failed" unless browser.last_response.status == 303
+        abort "clear hook count was not exactly one" unless clear_calls == 1
+        browser.get("/karst?path=%2Fdocuments%2F22%2Freader")
+        abort "testing mode remained active" if browser.last_response.body.include?("Currently testing as")
         browser.get("/documents/22/reader")
         abort "browser identity was not cleared" unless browser.last_response.body == "user=anonymous"
       RUBY

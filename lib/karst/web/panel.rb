@@ -3,6 +3,8 @@
 require "cgi"
 require "rack/utils"
 require "active_support/number_helper"
+require "base64"
+require "digest"
 
 module Karst
   module Web
@@ -11,7 +13,31 @@ module Karst
     # document.
     # rubocop:disable Metrics/ModuleLength
     module Panel
-      CONTENT_SECURITY_POLICY = "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'"
+      SCRIPT = <<~JS
+        document.addEventListener("submit", function(event) {
+          var form = event.target;
+          if (!form.matches("form.test-as")) return;
+          event.preventDefault();
+          fetch(form.action, {
+            method: "POST", body: new FormData(form), credentials: "same-origin",
+            headers: { "Accept": "application/json" }
+          }).then(function(response) {
+            if (!response.ok) throw new Error("Test as failed");
+            return response.json();
+          }).then(function(result) {
+            window.location.assign(result.location);
+          }).catch(function() {
+            window.alert("Karst could not change the browser identity. Reload and try again.");
+          });
+        });
+      JS
+      private_constant :SCRIPT
+
+      SCRIPT_HASH = Base64.strict_encode64(Digest::SHA256.digest(SCRIPT))
+      private_constant :SCRIPT_HASH
+
+      CONTENT_SECURITY_POLICY = "default-src 'none'; style-src 'unsafe-inline'; " \
+                                "script-src 'sha256-#{SCRIPT_HASH}'; connect-src 'self'; frame-ancestors 'none'".freeze
       private_constant :CONTENT_SECURITY_POLICY
 
       HEADERS = {
@@ -128,6 +154,7 @@ module Karst
             <!DOCTYPE html>
             <html lang="en"><head><meta charset="utf-8"><title>Karst</title>
             <style>#{STYLE}</style>
+            <script>#{SCRIPT}</script>
             </head><body>
             <h1>Karst</h1>
             #{page_body(params, access_result, csrf_token, browser_identity_active, route_lookup_limitation)}
@@ -510,7 +537,8 @@ module Karst
           title = outcome_title(first)
           labels = outcomes.map { |item| outcome_principal(item, path, csrf_token) }.join
           halt = halted_callback(first)
-          "<article class=\"scenario\"><h3>#{title} — #{outcomes.size}</h3>#{halt}<ul>#{labels}</ul></article>"
+          "<article class=\"scenario\"><h3>#{title} — #{outcomes.size}</h3>#{halt}" \
+            "<p>Not verified as usable.</p><ul>#{labels}</ul></article>"
         end
 
         def halted_callback(outcome)
