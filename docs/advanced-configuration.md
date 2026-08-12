@@ -21,7 +21,7 @@ end
 
 `config.principals` is called only by `Karst::Identity.principals` — Karst never enumerates, samples, or materializes its result itself. `assume_identity` and `clear_identity` must be configured together. This lets an app use a test-only login endpoint or any other session-local mechanism without ever handing Karst a password, email, token, or other credential.
 
-`bin/rails generate karst:install` scaffolds a `KarstIdentityController` with `create`/`destroy` actions raising `NotImplementedError` with a `TODO` — replace those with your app's real sign-in/sign-out code operating on the already-resolved principal Karst hands you. It also inserts development-only routes for that controller into `config/routes.rb`. None of this is required if you already have `Karst.configure` set up by hand.
+`bin/rails generate karst:install` is an optional escape hatch for custom authentication. You usually do not need this generator: conventional single-model Devise apps require no initializer, application controller, or Karst routes. The compatibility-preserving command scaffolds a compact initializer, a `KarstIdentityController` with explicit `TODO`s, and development-only routes. Replace the `TODO`s with your app's real sign-in/sign-out behavior. None of this is required if you already configure Karst by hand.
 
 Browser **Test as** needs a second, separate pair of hooks, because they mutate the real Rack request/session rather than an isolated probe session:
 

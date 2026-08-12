@@ -6,7 +6,7 @@ module Karst
   module Generators
     # `bin/rails generate karst:install`
     #
-    # Scaffolds a documented initializer plus the development-only probe
+    # Scaffolds a compact initializer plus the development-only probe
     # identity controller/routes a *custom* (non-Devise) identity
     # configuration can drive. See the generated files themselves for what
     # each seam is responsible for.
@@ -14,9 +14,8 @@ module Karst
     # This generator does not need to detect Devise/Warden itself: that
     # detection happens at runtime, from Devise's own routing metadata (see
     # Karst::Identity::DeviseSupport), not at generation time. A conventional
-    # single-model Devise application needs nothing from this generator's
-    # output beyond the initializer as generated -- see its "golden path"
-    # comment block. The identity controller and routes exist only for
+    # single-model Devise application needs nothing from this generator.
+    # The initializer, identity controller, and routes exist only for
     # applications that fall back to a custom `config.assume_identity` /
     # `config.clear_identity` pair.
     #
@@ -32,8 +31,7 @@ module Karst
     class InstallGenerator < ::Rails::Generators::Base
       source_root File.expand_path("templates", __dir__)
 
-      desc "Creates config/initializers/karst.rb, a development-only " \
-           "KarstIdentityController, and development-only probe routes."
+      desc "Scaffolds the custom-authentication escape hatch (not needed for conventional Devise apps)."
 
       DEVELOPMENT_ROUTES = <<~ROUTES
         if Rails.env.development?
@@ -45,10 +43,8 @@ module Karst
 
       NEXT_STEPS = <<~STEPS
 
-        Conventional single-model Devise apps: nothing else to do -- start
-        Rails and visit /karst.
-
-        Everyone else (ambiguous or no Devise model, custom authentication):
+        You usually do not need this generator. Use it only when Karst cannot
+        infer your application's custom authentication.
 
         1. Configure your principal source:
            config/initializers/karst.rb
@@ -59,11 +55,7 @@ module Karst
         3. Implement browser Test-as identity hooks:
            config/initializers/karst.rb
 
-        4. Start Rails and visit a page, then /karst.
-
-        5. Optional: browse and curate candidate populations (application
-           scopes like `User.system_admins`) at /karst/populations, or run
-           `bin/rails karst:populations` from the command line.
+        Then start Rails and visit /karst. See docs/advanced-configuration.md.
 
       STEPS
       private_constant :NEXT_STEPS
@@ -87,11 +79,9 @@ module Karst
 
       def post_install_message
         say ""
-        say "Karst installed.", :green
+        say "Karst custom-authentication scaffold created.", :green
         say NEXT_STEPS
-        say "If you configured a custom (non-Devise) identity, installation is not complete " \
-            "until the TODOs above are replaced with this application's real identity semantics " \
-            "-- Karst cannot infer them.", :yellow
+        say "Complete the TODOs with this application's real identity semantics.", :yellow
       end
     end
   end

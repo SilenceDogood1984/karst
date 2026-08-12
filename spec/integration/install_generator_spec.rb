@@ -70,7 +70,7 @@ RSpec.describe "karst:install generator" do
       run_generator
     end
 
-    it "documents every required hook as a placeholder" do
+    it "contains only the custom-authentication escape hatch" do
       content = read("config/initializers/karst.rb")
 
       expect(content).to include("Karst.configure do |config|")
@@ -80,19 +80,10 @@ RSpec.describe "karst:install generator" do
       end
     end
 
-    it "leaves every hook commented out instead of active by default" do
-      content = read("config/initializers/karst.rb")
-      active_lines = content.lines.reject { |line| line.strip.start_with?("#") || line.strip.empty? }
-
-      expect(active_lines.join).to eq("Karst.configure do |config|\nend\n")
-    end
-
-    it "promotes populations without generating legacy dimension setup" do
+    it "is substantially smaller than the former reference-manual initializer" do
       content = read("config/initializers/karst.rb")
 
-      expect(content).to include("config.principal_populations")
-      expect(content).not_to include("config.principal_dimensions")
-      expect(content).not_to include("dimensions:")
+      expect(content.lines.size).to be < 30
     end
 
     it "does not assume a host-specific session key" do
@@ -101,22 +92,10 @@ RSpec.describe "karst:install generator" do
       expect(content).not_to include("session_token")
     end
 
-    it "leads with the zero-config Devise/Warden golden path before any override example" do
+    it "states that conventional Devise needs no initializer" do
       content = read("config/initializers/karst.rb")
 
-      golden_path_index = content.index("Karst needs none of the configuration below")
-      first_override_index = content.index("config.principals = -> { User.all }")
-
-      expect(golden_path_index).not_to be_nil
-      expect(first_override_index).not_to be_nil
-      expect(golden_path_index).to be < first_override_index
-    end
-
-    it "does not instruct every application to configure five identity hooks" do
-      content = read("config/initializers/karst.rb")
-
-      expect(content).to include("Karst needs none of the configuration below")
-      expect(content).not_to include("Every hook below is commented out on purpose")
+      expect(content).to include("Karst usually requires no initializer for Devise")
     end
   end
 
@@ -126,19 +105,13 @@ RSpec.describe "karst:install generator" do
       run_generator
     end
 
-    it "is explicitly named and documents why the probe session needs it" do
+    it "is minimal and explicitly incomplete" do
       content = read("app/controllers/karst_identity_controller.rb")
 
       expect(content).to include("class KarstIdentityController < ApplicationController")
       expect(content).to include("skip_before_action :verify_authenticity_token, raise: false")
       expect(content).to include("TODO")
-    end
-
-    def not_configured_raise(action)
-      format(
-        'raise NotImplementedError, "KarstIdentityController#%<action>s has not been configured for this ' \
-        'application yet"', action: action
-      )
+      expect(content.lines.size).to be < 30
     end
 
     def executable_lines(body)
@@ -149,14 +122,16 @@ RSpec.describe "karst:install generator" do
       content = read("app/controllers/karst_identity_controller.rb")
 
       destroy_body = content[/def destroy\n(.*?)\n  end/m, 1]
-      expect(executable_lines(destroy_body)).to eq([not_configured_raise("destroy")])
+      expect(executable_lines(destroy_body)).to eq(
+        ['raise NotImplementedError, "Implement this application\'s custom Karst sign-out"']
+      )
 
       create_body = content[/def create\n(.*?)\n  end/m, 1]
       expect(executable_lines(create_body)).to eq(
         [
-          "principal = resolve_principal",
+          "principal = Karst::Identity.resolve(model_name: params[:principal_type], id: params[:principal_id])",
           "return head(:forbidden) unless principal",
-          not_configured_raise("create")
+          'raise NotImplementedError, "Implement this application\'s custom Karst sign-in"'
         ]
       )
     end
@@ -291,14 +266,15 @@ RSpec.describe "karst:install generator" do
     end
   end
 
-  it "prints post-install next steps without claiming installation is already complete" do
+  it "frames itself as an optional custom-authentication escape hatch" do
     seed_routes_file
     output = run_generator
 
-    expect(output).to include("Karst installed.")
+    expect(output).to include("You usually do not need this generator")
+    expect(output).to include("Karst custom-authentication scaffold created.")
     expect(output).to include("config/initializers/karst.rb")
     expect(output).to include("app/controllers/karst_identity_controller.rb")
-    expect(output).to include("TODOs")
+    expect(output).to include("Complete the TODOs")
   end
 end
 # rubocop:enable Metrics/BlockLength

@@ -127,7 +127,7 @@ Karst.configure do |config|
 end
 ```
 
-`bin/rails generate karst:install` scaffolds a documented initializer and a controller with `TODO`s for this — replace them with your app's real sign-in/sign-out code. It's optional scaffolding, never required; a conventional single-model Devise app needs none of it. Browser **Test as** needs a second, similar pair of hooks (`config.assume_browser_identity` / `config.clear_browser_identity`) — see [docs/advanced-configuration.md](docs/advanced-configuration.md).
+The compatibility-preserving `bin/rails generate karst:install` command optionally scaffolds this custom-authentication escape hatch. Replace its `TODO`s with your app's real sign-in/sign-out code. A conventional single-model Devise app needs none of its initializer, controller, or routes. Browser **Test as** needs a second, similar pair of hooks (`config.assume_browser_identity` / `config.clear_browser_identity`) — see [docs/advanced-configuration.md](docs/advanced-configuration.md).
 
 ## Safety
 
