@@ -48,6 +48,20 @@ RSpec.describe Karst::CLI::Verification do
     expect(text).not_to include("secret")
   end
 
+  it "does not serialize a framework-inferred authentication identifier" do
+    inferred = Descriptor.new(model_name: "User", id: 27,
+                              display_label: "user@example.com · User #27",
+                              authentication_key: :email,
+                              authentication_identifier: "user@example.com")
+    attributes = outcome.to_h
+    attributes[:principal] = inferred
+    item = Outcome.new(**attributes)
+    _code, text = run(SearchResult.new(initial: sweep([item]), attempts: []))
+
+    expect(JSON.parse(text).dig("verified_principal", "label")).to eq("User #27")
+    expect(text).not_to include("user@example.com")
+  end
+
   it "preserves population state, halted callback, write, and exception observations" do
     denied = outcome(status: 204, callback: :redirect_if_suspended, writes: 1)
     failed = outcome(status: nil, exception: "RuntimeError")

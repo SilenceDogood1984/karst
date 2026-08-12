@@ -22,7 +22,11 @@ module Karst
     class Unavailable < Error; end
     class ConfigurationError < Error; end
 
-    PrincipalDescriptor = Value.define(:model_name, :id, :display_label)
+    # authentication_* is presentation-only evidence. Machine serializers
+    # deliberately ignore it; it exists so local human interfaces can be
+    # useful without broadening JSON/MCP disclosure.
+    PrincipalDescriptor = Value.define(:model_name, :id, :display_label, :authentication_key,
+                                       :authentication_identifier)
 
     # Compact, inspectable report of why Karst's zero-config Devise/Warden
     # path is or isn't active. `status` is one of:
@@ -120,8 +124,9 @@ module Karst
           raise ConfigurationError, "config.principal_label must be callable"
         end
 
-        label = label_hook ? label_hook.call(principal) : "#{model_name} ##{id}"
-        PrincipalDescriptor.new(model_name: model_name, id: id, display_label: label)
+        label, key, identifier = label_attributes(principal, model_name, id, label_hook)
+        PrincipalDescriptor.new(model_name: model_name, id: id, display_label: label,
+                                authentication_key: key, authentication_identifier: identifier)
       end
 
       # Resolves only principals exposed by a configured source. In
@@ -187,6 +192,26 @@ module Karst
       end
 
       private
+
+      def label_attributes(principal, model_name, id, label_hook)
+        return [label_hook.call(principal), nil, nil] if label_hook
+
+        key, identifier = authentication_identifier(principal)
+        default = "#{model_name} ##{id}"
+        [identifier ? "#{identifier} · #{default}" : default, key, identifier]
+      end
+
+      def authentication_identifier(principal)
+        key = DeviseSupport.authentication_key_for(principal.class)
+        return [nil, nil] unless key && principal.respond_to?(key)
+
+        value = principal.public_send(key)
+        return [nil, nil] if value.nil? || value.to_s.empty?
+
+        [key, value.to_s]
+      rescue StandardError
+        [nil, nil]
+      end
 
       def resolve_within_source(source, model_name:, id:)
         records = source.evaluate

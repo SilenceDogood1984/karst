@@ -20,6 +20,20 @@ module Karst
       Mapping = Value.define(:model, :scope)
 
       class << self
+        # Returns the sole authentication key Devise declares for +model+.
+        # Multiple keys are intentionally treated as ambiguous: Karst cannot
+        # know which value is the useful login identity (or whether the
+        # combination itself is sensitive).
+        def authentication_key_for(model)
+          mapping = mapping_for(model)
+          return nil unless mapping && model.respond_to?(:authentication_keys)
+
+          keys = Array(model.authentication_keys).filter_map { |key| normalized_key(key) }.uniq
+          keys.first if keys.size == 1
+        rescue StandardError
+          nil
+        end
+
         def available?
           !!(defined?(Devise) && Devise.respond_to?(:mappings))
         end
@@ -54,6 +68,12 @@ module Karst
         end
 
         private
+
+        def normalized_key(key)
+          key.to_sym
+        rescue StandardError
+          nil
+        end
 
         def build(devise_mapping)
           model = devise_mapping.to if devise_mapping.respond_to?(:to)

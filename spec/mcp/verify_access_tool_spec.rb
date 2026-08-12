@@ -54,6 +54,17 @@ RSpec.describe Karst::Mcp::VerifyAccessTool do
     expect(response.content).to eq([{ type: "text", text: JSON.generate(document) }])
   end
 
+  it "cannot add a browser-only authentication identifier to privacy-bounded evidence" do
+    document = { schema_version: 1,
+                 verified_principal: { model: "User", id: 27, label: "User #27" } }
+    stub_evidence(document)
+
+    text = described_class.call(path: "/admin/imports/123").content.first[:text]
+
+    expect(text).to eq(JSON.generate(document))
+    expect(text).not_to include("user@example.com")
+  end
+
   it "marks the tool response as an MCP error when the evidence document is an error document" do
     document = { schema_version: 1,
                  error: { type: "input_error", message: "target must be a local application path" } }

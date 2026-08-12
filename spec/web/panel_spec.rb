@@ -520,6 +520,21 @@ RSpec.describe Karst::Web::Panel do
       expect(body).not_to include(hostile)
       expect(body).to include(CGI.escapeHTML(hostile))
     end
+
+    it "links a Devise-declared email while escaping its value" do
+      email = 'person+\"quoted\"@example.com'
+      descriptor = Karst::Identity::PrincipalDescriptor.new(
+        model_name: "User", id: 27, display_label: "#{email} · User #27",
+        authentication_key: :email, authentication_identifier: email
+      )
+      outcome = Karst::Access::Outcome.new(principal: descriptor, status: 200, redirect: nil,
+                                           exception_class: nil, writes_observed: false, write_count: 0,
+                                           elapsed_ms: 1.0, database_rollback_attempted: true)
+      body = described_class.render(params: analyzed_route, access_result: access_result([outcome])).last.join
+
+      expect(body).to include("<a href=\"mailto:#{CGI.escapeHTML(email)}\">#{CGI.escapeHTML(email)}</a> · User #27")
+      expect(body).not_to include("mailto:#{email}")
+    end
   end
 end
 # rubocop:enable Metrics/BlockLength
