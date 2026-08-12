@@ -363,8 +363,7 @@ module Karst
           nil
         end
 
-        # Mirrors Karst::Spec::Observer's own treatment of request paths: a
-        # query string can carry a token (password reset, OAuth callback,
+        # A query string can carry a token (password reset, OAuth callback,
         # signed URL), and this path is only ever contextual display evidence
         # in the panel, never route identity, so it is never worth the risk.
         def strip_query(value)

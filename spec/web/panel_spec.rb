@@ -6,7 +6,7 @@ require "karst/web/panel"
 
 # rubocop:disable Metrics/BlockLength
 RSpec.describe Karst::Web::Panel do
-  def render(_catalog = nil, params = {})
+  def render(params = {})
     described_class.render(params: params).last.join
   end
 
@@ -75,21 +75,21 @@ RSpec.describe Karst::Web::Panel do
 
   describe "route header" do
     it "shows the HTTP method and URL without controller/action terminology" do
-      body = render(nil, route.merge("method" => "GET", "path" => "/documents/22/reader"))
+      body = render(route.merge("method" => "GET", "path" => "/documents/22/reader"))
 
       expect(body).to include("<p class=\"route-path\">GET /documents/22/reader</p>")
       expect(body).not_to include("PagesController#index", "<label>Controller", "<label>Action")
     end
 
     it "omits the path line when no host request path is known" do
-      body = render(nil, route)
+      body = render(route)
 
       expect(body).to include("No URL selected yet.")
       expect(body).not_to include('<p class="route-path">', "PagesController#index")
     end
 
     it "shows a coherent empty state and an open route lookup when nothing is selected" do
-      body = render(nil)
+      body = render
 
       expect(body).to include("No URL selected yet.", "What URL are you trying to test?",
                               '<details class="route-lookup" open>', 'name="path"', 'name="method"',
@@ -98,7 +98,7 @@ RSpec.describe Karst::Web::Panel do
     end
 
     it "collapses the route lookup once a route is already known" do
-      body = render(nil, analyzed_route)
+      body = render(analyzed_route)
 
       expect(body).to include("Test a different URL")
       expect(body).not_to include('<details class="route-lookup" open>')
@@ -108,7 +108,7 @@ RSpec.describe Karst::Web::Panel do
   describe "primary analyze action" do
     it "renders Analyze as the obvious primary action with the sample count visible" do
       Karst.config.principals = -> { [] }
-      body = render(nil, analyzed_route)
+      body = render(analyzed_route)
 
       expect(body).to include('<button class="primary" type="submit">Who can use this? (test 25 users)</button>')
     ensure
@@ -116,7 +116,7 @@ RSpec.describe Karst::Web::Panel do
     end
 
     it "notes when no user source is configured, without dominating the page" do
-      body = render(nil, analyzed_route)
+      body = render(analyzed_route)
 
       expect(body).to include("Karst couldn't determine how this app authenticates users")
       expect(body).to include("Set up custom authentication")
@@ -132,7 +132,7 @@ RSpec.describe Karst::Web::Panel do
       allow(Karst::Access::PrincipalSampler).to receive(:representative_capable?).with(second_source)
                                                                                  .and_return(true)
 
-      body = render(nil, analyzed_route)
+      body = render(analyzed_route)
 
       expect(body).to include("Who can use this? (test 25 representative users)")
     ensure
@@ -140,14 +140,14 @@ RSpec.describe Karst::Web::Panel do
     end
 
     it "does not offer access analysis for non-GET routes" do
-      body = render(nil, route.merge("method" => "POST", "path" => "/documents/22"))
+      body = render(route.merge("method" => "POST", "path" => "/documents/22"))
 
       expect(body).to include("Access analysis is available for GET routes only.")
       expect(body).not_to include("Who can use this page?")
     end
 
     it "omits the access section entirely when no host path is known" do
-      body = render(nil, route)
+      body = render(route)
 
       expect(body).not_to include("Who can use this page?", "Access analysis is available for GET routes only.")
     end
@@ -492,10 +492,10 @@ RSpec.describe Karst::Web::Panel do
   end
 
   describe "legacy diagnostics" do
-    it "does not render diagnostics, spec evidence, runtime SQL, or controller/action controls" do
-      body = render(nil, analyzed_route)
+    it "does not render diagnostics, runtime SQL, or controller/action controls" do
+      body = render(analyzed_route)
 
-      expect(body).not_to include("Diagnostics", "Spec evidence", "Runtime SQL",
+      expect(body).not_to include("Diagnostics", "Runtime SQL",
                                   "Controller/action diagnostics", "<label>Controller", "<label>Action")
     end
   end
