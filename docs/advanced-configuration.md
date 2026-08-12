@@ -127,10 +127,6 @@ An approval only ever becomes executable for a model that is already a configure
 
 The review page can still generate a ready-to-paste `config.principal_populations = { ... }` (or `config.principal_sources = { ... }`) snippet from your approvals, under **Advanced: export approvals as Ruby** — useful for committing populations as reviewable code, or for CI, where machine-local approval state is deliberately not consulted.
 
-## Resource evidence
-
-When a usable user is found for a route with an `:id` segment (`/admin/imports/123`), Karst separately checks whether that exact resource and that exact user share a direct foreign-key relationship — for example, that `Document#22`'s `user_id` column equals `User#27`'s id. Only columns ending in `_id` are ever inspected, and only a direct column-value comparison is made — never a join or a `has_many` traversal, and no other attribute (name, email, token) is ever read. This is shown as **Related state** on a usable result when available, and simply omitted otherwise.
-
 ## Full configuration reference
 
 This is the entire public configuration surface. Every entry is either an escape hatch for an application Karst cannot infer, or a bound with a working default.
