@@ -21,6 +21,7 @@ require_relative "../access/population_approvals"
 require_relative "../access/approved_populations"
 require_relative "../access/principal_source_selection"
 require_relative "../access/population_approval"
+require_relative "../access/population_revocation"
 require_relative "../identity/devise_support"
 
 module Karst
@@ -51,9 +52,6 @@ module Karst
 
       POPULATIONS_PATH = "/karst/populations"
       private_constant :POPULATIONS_PATH
-
-      CANDIDATE_SEPARATOR = "::"
-      private_constant :CANDIDATE_SEPARATOR
 
       CONTEXT_KEY = :karst_web_request_context
       private_constant :CONTEXT_KEY
@@ -149,46 +147,28 @@ module Karst
         Access::PrincipalSourceSelection.replace(names)
       end
 
-      # Unlike every other operation Karst serves, approving writes local
-      # state that outlives the request, so every POST to this path must
+      # Revocation changes local state that outlives the request, so every
+      # POST to this path must
       # have come from Karst's own page. There is no Rack session to hang a
       # CSRF token on here (this page deliberately touches none), so the
       # check is same-origin rather than token-based; a cross-site form POST
-      # cannot forge Origin, so it cannot approve anything. GET -- the page
+      # cannot forge Origin, so it cannot revoke anything. GET -- the page
       # itself -- stays unauthenticated exactly like /karst.
       def call_populations(env)
         return forbidden unless approved_origin?(env)
 
         params = owned_params(env)
-        discovery = Access::PopulationDiscovery.new.call
-        saving = saving_approvals?(env, params)
-        record = saving ? save_approvals(discovery, params) : Access::PopulationApprovals.load
-        render_populations(discovery, record, saving)
+        revoking = env["REQUEST_METHOD"] == "POST" && params["operation"] == "revoke_population"
+        result = Access::PopulationRevocation.new(submitted: params["population"]).call if revoking
+        record = result&.record || Access::PopulationApprovals.load
+        render_populations(record, result&.revoked)
       end
 
-      def render_populations(discovery, record, saved)
+      def render_populations(record, revoked)
         Web::PopulationsPanel.render(
-          discovery: discovery, approved: record.entries, stale: stale_approvals(record),
-          storage_path: Access::PopulationApprovals.display_path, storage_error: record.error, saved: saved
+          approved: record.entries, stale: stale_approvals(record),
+          storage_path: Access::PopulationApprovals.display_path, storage_error: record.error, revoked: revoked
         )
-      end
-
-      def saving_approvals?(env, params)
-        env["REQUEST_METHOD"] == "POST" && params.key?("save_approvals")
-      end
-
-      # Only a candidate the *current* discovery result actually lists can
-      # ever be written, so the file cannot be seeded through this form with
-      # a model/scope pair Karst would refuse to confirm later anyway.
-      def save_approvals(discovery, params)
-        raw = Array(params["population"]).map(&:to_s)
-        entries = discovery.candidates.filter_map do |candidate|
-          next unless raw.include?(candidate_key(candidate))
-
-          Access::PopulationApprovals::Entry.new(model_name: candidate.model_name,
-                                                 method_name: candidate.method_name.to_s)
-        end
-        Access::PopulationApprovals.replace(entries)
       end
 
       def stale_approvals(record)

@@ -251,7 +251,7 @@ RSpec.describe "Karst MCP server, end to end against a real Rails application" d
   end
 
   # Part of the same contract as the panel: an approval made once at
-  # /karst/populations reaches every adapter, because every adapter reads
+  # An inline /karst approval reaches every adapter, because every adapter reads
   # the one effective principal-source configuration and none of them knows
   # the approval file exists.
   describe "locally approved candidate populations" do

@@ -252,15 +252,15 @@ RSpec.describe "bounded access sweep Rails integration" do
     Karst.config.principal_populations = nil
   end
 
-  it "serves the /karst/populations discovery page and finds a real, already-loaded application model" do
+  it "serves /karst/populations only as advanced approval management" do
     stack = Karst::Web::Middleware.new(KarstTestApplication)
     mock = Rack::MockRequest.new(stack)
 
     response = mock.get("/karst/populations", "REMOTE_ADDR" => "127.0.0.1")
 
     expect(response.status).to eq(200)
-    expect(response.body).to include("Candidate groups", "Available models", "KarstAccessPrincipal")
-    expect(response.body).to include("flagged") # the scope defined on KarstAccessPrincipal above
+    expect(response.body).to include("Manage population approvals", "No population approvals are stored")
+    expect(response.body).not_to include("flagged", "Approve selected")
   end
 
   it "falls through to the host application for a nonlocal request to /karst/populations" do
@@ -269,7 +269,7 @@ RSpec.describe "bounded access sweep Rails integration" do
 
     response = mock.get("/karst/populations", "REMOTE_ADDR" => "192.168.1.10")
 
-    expect(response.body).not_to include("Candidate groups", "Available models")
+    expect(response.body).not_to include("Manage population approvals")
   end
 
   it "does not promote population configuration from the main access analysis section" do
@@ -356,7 +356,7 @@ RSpec.describe "bounded access sweep Rails integration" do
 
     response = access_sweep_response
 
-    # KarstAccessPrincipal.flagged is discoverable at /karst/populations, and
+    # KarstAccessPrincipal.flagged is discoverable after this failed analysis, and
     # a usable "ok" record exists, but nothing unconfigured is ever run.
     expect(response.status).to eq(200)
     expect(response.body).to include("<h2>No verified usable user found</h2>")
@@ -429,7 +429,7 @@ RSpec.describe "bounded access sweep Rails integration" do
   # edited no Ruby configuration at all goes from "no verified usable user"
   # to an automatically searched candidate population, entirely through
   # /karst.
-  describe "approving a discovered candidate group at /karst/populations" do
+  describe "managing an existing population approval" do
     let(:origin) { "http://example.org" }
 
     around do |example|
@@ -442,120 +442,55 @@ RSpec.describe "bounded access sweep Rails integration" do
     before do
       allow(Karst::Access::PopulationApprovals).to receive(:path).and_return(@approvals_path)
       KarstAccessPrincipal.delete_all
-      3.times { KarstAccessPrincipal.create!(behavior: "forbidden") }
-      Karst.config.access_sweep_limit = 3
       Karst.config.principals = -> { KarstAccessPrincipal.where(behavior: "forbidden") }
+      Karst::Access::PopulationApprovals.replace(
+        [Karst::Access::PopulationApprovals::Entry.new(model_name: "KarstAccessPrincipal", method_name: "working")]
+      )
     end
 
-    after do
-      Karst.config.principals = nil
-      Karst.config.access_sweep_limit = 25
-    end
+    after { Karst.config.principals = nil }
 
-    def populations_post(input, origin_header: origin)
-      stack = Karst::Web::Middleware.new(KarstTestApplication)
+    def revoke_working(origin_header: origin)
       env = { "REMOTE_ADDR" => "127.0.0.1", "CONTENT_TYPE" => "application/x-www-form-urlencoded",
-              input: input }
-      env["HTTP_ORIGIN"] = origin_header if origin_header
-      Rack::MockRequest.new(stack).post("/karst/populations", **env)
+              "HTTP_ORIGIN" => origin_header,
+              input: "operation=revoke_population&population=KarstAccessPrincipal%3A%3Aworking" }
+      Rack::MockRequest.new(Karst::Web::Middleware.new(KarstTestApplication)).post("/karst/populations", **env)
     end
 
-    def approve_working
-      populations_post("save_approvals=1&population[]=KarstAccessPrincipal::working")
+    it "lists an existing approval without offering discovery or approval" do
+      page = Rack::MockRequest.new(Karst::Web::Middleware.new(KarstTestApplication))
+                              .get("/karst/populations", "REMOTE_ADDR" => "127.0.0.1")
+
+      expect(page.body).to include("KarstAccessPrincipal.working", "Revoke")
+      expect(page.body).not_to include("Candidate groups", "Approve selected", "type=\"checkbox\"")
     end
 
-    it "persists an approval as data a developer can read, without touching any initializer" do
-      response = approve_working
-
-      expect(response.status).to eq(200)
-      expect(response.body).to include("Approvals saved.", "Approved (1)")
-      expect(JSON.parse(File.read(@approvals_path)))
-        .to eq("version" => 1,
-               "approved" => [{ "model" => "KarstAccessPrincipal", "scope" => "working" }])
-      expect(Karst.config.principal_populations).to eq({})
-    end
-
-    it "searches the approved group automatically on the next analysis, with no Ruby configured" do
+    it "revokes exactly that persistent approval and stops subsequent retries" do
       usable = KarstAccessPrincipal.create!(behavior: "ok")
-      approve_working
-
-      response = access_sweep_response
-
-      expect(response.body).to include("Candidate populations", "working",
-                                       "KarstAccessPrincipal ##{usable.id} → 200 OK ✓")
-      expect(response.body).to include("<h2>Verified usable user</h2>")
-    end
-
-    it "never executes a discovered group that has not been approved" do
-      KarstAccessPrincipal.create!(behavior: "ok")
-
-      response = access_sweep_response
-
-      expect(response.body).to include("<h2>No verified usable user found</h2>")
-      expect(response.body).not_to include("Candidate populations")
-    end
-
-    it "offers inline approval only once an analysis found nothing usable" do
-      KarstAccessPrincipal.create!(behavior: "ok")
-
-      expect(access_sweep_response.body)
-        .to include("application-defined user groups for this principal source", "working",
-                    "Approve selected and retry")
-      expect(access_sweep_response.body).not_to include('href="/karst/populations"')
-    end
-
-    it "stops searching a group as soon as it is unapproved" do
-      usable = KarstAccessPrincipal.create!(behavior: "ok")
-      approve_working
       expect(access_sweep_response.body).to include("KarstAccessPrincipal ##{usable.id} → 200 OK ✓")
 
-      populations_post("save_approvals=1")
+      response = revoke_working
 
+      expect(response.body).to include("Approval revoked.", "No population approvals are stored")
       expect(JSON.parse(File.read(@approvals_path))["approved"]).to eq([])
-      expect(access_sweep_response.body).to include("<h2>No verified usable user found</h2>")
       expect(access_sweep_response.body).not_to include("Candidate populations")
     end
 
-    it "keeps every retry bound intact for an approved group" do
-      6.times { KarstAccessPrincipal.create!(behavior: "ok") }
-      Karst.config.population_retry_limit = 2
-      approve_working
-
-      response = access_sweep_response
-
-      # 3 sampled (access_sweep_limit) + exactly population_retry_limit
-      # probed from the approved group, out of the 6 rows it matches.
-      expect(response.body).to include("3 initial · 2 candidate population · 5 total")
-    ensure
-      Karst.config.population_retry_limit = 3
+    it "refuses cross-origin revocation without changing persistent state" do
+      expect(revoke_working(origin_header: "http://attacker.example").status).to eq(403)
+      expect(Karst::Access::PopulationApprovals.load.entries.map(&:display_label))
+        .to eq(["KarstAccessPrincipal.working"])
     end
 
-    it "refuses an approval submitted from another origin" do
-      response = populations_post("save_approvals=1&population[]=KarstAccessPrincipal::working",
-                                  origin_header: "http://attacker.example")
-
-      expect(response.status).to eq(403)
-      expect(File.exist?(@approvals_path)).to be(false)
-    end
-
-    it "approves nothing that current discovery does not itself list" do
-      populations_post("save_approvals=1&population[]=KarstAccessPrincipal::destroy_all")
-
-      expect(JSON.parse(File.read(@approvals_path))["approved"]).to eq([])
-    end
-
-    it "reports an approval whose scope no longer exists instead of executing anything" do
+    it "shows and safely revokes a stale approval" do
       Karst::Access::PopulationApprovals.replace(
         [Karst::Access::PopulationApprovals::Entry.new(model_name: "KarstAccessPrincipal",
                                                        method_name: "removed_scope")]
       )
-      KarstAccessPrincipal.create!(behavior: "ok")
-
       page = Rack::MockRequest.new(Karst::Web::Middleware.new(KarstTestApplication))
                               .get("/karst/populations", "REMOTE_ADDR" => "127.0.0.1")
 
       expect(page.body).to include("removed_scope", "no longer a discovered scope on this model — not used")
-      expect(access_sweep_response.body).not_to include("Candidate populations")
     end
   end
 
