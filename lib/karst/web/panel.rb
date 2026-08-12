@@ -96,6 +96,10 @@ module Karst
         .population-attempt .name{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-weight:600}
         .population-attempt.hit .name{color:#0f5132}
         .population-attempt.untried{color:#777}
+        .ordinary-sample{border:1px solid #ddd;border-radius:.5rem;padding:.8rem 1rem;margin:1rem 0}
+        .ordinary-sample h2{margin:0 0 .45rem}
+        .ordinary-sample details{margin:.55rem 0}
+        .write-warning{border:2px solid #b3261e;border-radius:.4rem;padding:.7rem .85rem;background:#fff7f6}
         small{color:#666}
         .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
         @media (max-width:480px){
@@ -124,6 +128,7 @@ module Karst
           .testing-banner{background:#3a2f0d;border-color:#6b5423;color:#f0e4c0}
           .hint{color:#d8a63d}
           .failed,.pending{border-left-color:#e5534b}
+          .write-warning{background:#321b1a}
         }
       CSS
       private_constant :STYLE
@@ -306,12 +311,10 @@ module Karst
         # found in the sample -- there is no second workflow to enter.
         def search_result(result, csrf_token)
           outcomes = result.all_outcomes
-          usable, other = outcomes.partition { |outcome| usable_outcome?(outcome) }
+          usable = outcomes.select { |outcome| usable_outcome?(outcome) }
           write_count = outcomes.count(&:writes_observed)
-          warning = write_count.positive? ? write_warning(write_count) : ""
-          "#{search_meta(result)}#{sample_summary(result)}#{warning}" \
-            "#{usable_outcomes(usable, result, csrf_token)}#{populations_section(result)}" \
-            "#{other_outcomes(other, result.path)}"
+          "#{usable_outcomes(usable, result, csrf_token)}#{ordinary_sample(result, csrf_token)}" \
+            "#{populations_section(result, csrf_token)}#{write_evidence(write_count)}#{search_meta(result)}"
         end
 
         # -- Automatic candidate-population retries ----------------------------
@@ -321,16 +324,17 @@ module Karst
         # than left to look like a failure. Only configured populations ever
         # reach this list; a name merely discovered at /karst/populations is
         # never executed automatically.
-        def populations_section(result)
+        def populations_section(result, csrf_token)
           return "" if result.attempts.empty?
 
-          rows = result.attempts.map { |attempt| population_attempt(attempt) }.join
+          rows = result.attempts.map { |attempt| population_attempt(attempt, result.path, csrf_token) }.join
           "<section class=\"populations\"><h2>Candidate populations</h2>#{rows}</section>"
         end
 
-        def population_attempt(attempt)
+        def population_attempt(attempt, path, csrf_token)
+          details = attempt.result ? observed_groups(attempt.result.outcomes, path, csrf_token) : ""
           "<div class=\"population-attempt #{attempt_class(attempt)}\">" \
-            "<span class=\"name\">#{escape(attempt.name)}</span> — #{attempt_state(attempt)}</div>"
+            "<span class=\"name\">#{escape(attempt.name)}</span><br>#{attempt_state(attempt)}#{details}</div>"
         end
 
         def attempt_class(attempt)
@@ -352,14 +356,13 @@ module Karst
 
         def population_hit(attempt)
           outcome = attempt.result.outcomes.find { |item| usable_outcome?(item) }
-          "#{escape(outcome.principal.display_label)} → #{outcome_title(outcome)} ✓"
+          "#{escape(attempt.result.outcomes.size)} #{users(attempt.result.outcomes.size)} tested<br>" \
+            "#{escape(outcome.principal.display_label)} → #{outcome_title(outcome)} ✓"
         end
 
         def population_miss(attempt)
           outcomes = attempt.result.outcomes
-          halt = dominant_halted_callback(outcomes)
-          note = halt ? " · halted at <code>#{escape(halt)}</code>" : ""
-          "#{escape(outcomes.size)} #{users(outcomes.size)} tried — none usable#{note}"
+          "#{escape(outcomes.size)} #{users(outcomes.size)} tested<br>none verified usable"
         end
 
         def population_unresolved(attempt)
@@ -404,11 +407,12 @@ module Karst
         # rubocop:enable Layout/LineLength, Metrics/AbcSize
 
         def search_meta(result)
-          tested = result.all_outcomes.size
-          seconds = escape(total_seconds(result))
-          "<p class=\"meta\">#{escape(tested)} #{users(tested)} tested#{candidate_pool_note(result.initial)}" \
-            "#{population_note(result)} · #{seconds}s · database rollback was attempted; other connections and " \
-            "non-database effects are not isolated.</p>"
+          initial = result.initial.outcomes.size
+          population = result.population_request_count
+          total = initial + population
+          "<p class=\"meta\"><strong>Request accounting:</strong> #{escape(initial)} initial · " \
+            "#{escape(population)} candidate population · #{escape(total)} total " \
+            "#{users(total)}/requests · #{escape(total_seconds(result))}s elapsed.</p>"
         end
 
         def total_seconds(result)
@@ -416,26 +420,25 @@ module Karst
           (total / 1000.0).round(2)
         end
 
-        def population_note(result)
-          attempted = result.attempted
-          return "" if attempted.empty?
-
-          count = result.population_request_count
-          " · including #{escape(count)} #{users(count)} from #{escape(attempted.size)} " \
-            "candidate population#{'s' unless attempted.size == 1}"
-        end
-
         # The ordinary sample's own result stays visible even when a
         # population later succeeded: "nothing recent worked, and here is
         # what stopped them" is the evidence that explains why a population
         # was tried at all.
-        def sample_summary(result)
+        def ordinary_sample(result, _csrf_token)
           outcomes = result.initial.outcomes
-          return "" if outcomes.empty? || outcomes.any? { |outcome| usable_outcome?(outcome) }
+          usable = outcomes.count { |outcome| usable_outcome?(outcome) }
+          result_text = usable.positive? ? "#{usable} verified usable" : "No verified usable user"
+          pool = ordinary_pool(result.initial)
+          "<section class=\"ordinary-sample\"><h2>Ordinary sample</h2>" \
+            "<p>#{escape(outcomes.size)} #{users(outcomes.size)} tested#{pool}<br>#{result_text}</p>" \
+            "<strong>Observed:</strong>#{observed_groups(outcomes, result.path, nil)}</section>"
+        end
 
-          halt = dominant_halted_callback(outcomes)
-          note = halt ? " · halted at <code>#{escape(halt)}</code>" : ""
-          "<p class=\"meta\">Sample: #{escape(outcomes.size)} recent #{users(outcomes.size)}, none usable#{note}</p>"
+        def ordinary_pool(initial)
+          return "" unless initial.candidate_pool_size
+
+          size = ActiveSupport::NumberHelper.number_to_delimited(initial.candidate_pool_size)
+          " from up to #{escape(size)} recent users"
         end
 
         # A bounded candidate pool is reported explicitly rather than left
@@ -448,8 +451,14 @@ module Karst
           " · candidate pool: up to #{escape(delimited)} most recent users"
         end
 
-        def write_warning(count)
-          "<p><strong>⚠ Database writes were observed during #{count} probes.</strong></p>"
+        def write_evidence(count)
+          return "<p class=\"meta\">Database writes observed: 0</p>" if count.zero?
+
+          "<div class=\"write-warning\" role=\"alert\"><strong>⚠ Database writes observed during " \
+            "#{escape(count)} #{count == 1 ? 'probe' : 'probes'}.</strong><br>" \
+            "Rollback was attempted on the same Active Record connection." \
+            "<br><small>Jobs, mail, external HTTP, files, Redis, and other database connections are not " \
+            "isolated by same-connection rollback.</small></div>"
         end
 
         def usable_outcome?(outcome)
@@ -460,12 +469,13 @@ module Karst
 
         def usable_outcomes(outcomes, result, csrf_token)
           body = if outcomes.empty?
-                   "<p>No sampled user produced a usable outcome.</p>"
+                   ""
                  else
                    usable_cards(outcomes,
                                 result, csrf_token)
                  end
-          "<section class=\"usable\"><h2>Users who can use this URL — #{outcomes.size}</h2>" \
+          heading = outcomes.empty? ? "No verified usable user found" : "Verified usable user"
+          "<section class=\"usable\"><h2>#{heading}</h2>" \
             "#{test_as_hint(outcomes, csrf_token)}#{body}</section>"
         end
 
@@ -529,10 +539,14 @@ module Karst
 
         # -- Other observed outcomes (collapsed) ---------------------------------
 
-        def other_outcomes(outcomes, path)
-          groups = outcomes.group_by { |item| [item.status, item.redirect, item.exception_class, item.halted_callback] }
-                           .map { |_key, grouped| outcome_group(grouped, path, nil) }.join
-          "<details><summary>Other observed outcomes — #{outcomes.size}</summary>#{groups}</details>"
+        def observed_groups(outcomes, path, csrf_token)
+          outcomes.group_by { |item| outcome_group_key(item) }
+                  .map { |_key, grouped| outcome_group(grouped, path, csrf_token) }.join
+        end
+
+        def outcome_group_key(item)
+          [item.status, item.redirect, item.exception_class, item.halted_callback,
+           item.writes_observed, item.write_count]
         end
 
         def outcome_group(outcomes, path, csrf_token)
@@ -540,8 +554,13 @@ module Karst
           title = outcome_title(first)
           labels = outcomes.map { |item| outcome_principal(item, path, csrf_token) }.join
           halt = halted_callback(first)
-          "<article class=\"scenario\"><h3>#{title} — #{outcomes.size}</h3>#{halt}" \
-            "<p>Not verified as usable.</p><ul>#{labels}</ul></article>"
+          usability = usable_outcome?(first) ? "Verified usable" : "Not verified as usable"
+          "<details><summary>#{title}#{halt_summary(first)} — #{outcomes.size}</summary>" \
+            "#{halt}<p>#{usability}</p><ul>#{labels}</ul></details>"
+        end
+
+        def halt_summary(outcome)
+          outcome.halted_callback ? " · halted at #{escape(outcome.halted_callback)}" : ""
         end
 
         def halted_callback(outcome)

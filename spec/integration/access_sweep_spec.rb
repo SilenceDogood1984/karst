@@ -238,11 +238,11 @@ RSpec.describe "bounded access sweep Rails integration" do
     response = access_sweep_response
 
     expect(response.status).to eq(200)
-    expect(response.body).to include("Sample: 3 recent users, none usable",
-                                     "halted at <code>halt_for_access_behavior</code>")
+    expect(response.body).to include("Ordinary sample", "3 users tested",
+                                     "halted at halt_for_access_behavior")
     expect(response.body).to include("Candidate populations", "working",
                                      "KarstAccessPrincipal ##{usable.id} → 200 OK ✓")
-    expect(response.body).to include("<h2>Users who can use this URL — 1</h2>")
+    expect(response.body).to include("<h2>Verified usable user</h2>")
   ensure
     Karst.config.principals = nil
     Karst.config.principal_populations = nil
@@ -260,8 +260,8 @@ RSpec.describe "bounded access sweep Rails integration" do
     response = access_sweep_response
 
     expect(response.status).to eq(200)
-    expect(response.body).to include("<h2>Users who can use this URL — 0</h2>")
-    expect(response.body).to include("redirected", "1 user tried — none usable")
+    expect(response.body).to include("<h2>No verified usable user found</h2>")
+    expect(response.body).to include("redirected", "1 user tested<br>none verified usable")
     expect(response.body).to include("missing", "no matching records")
   ensure
     Karst.config.principals = nil
@@ -278,7 +278,7 @@ RSpec.describe "bounded access sweep Rails integration" do
     response = access_sweep_response
 
     expect(response.status).to eq(200)
-    expect(response.body).to include("<h2>Users who can use this URL — 1</h2>")
+    expect(response.body).to include("<h2>Verified usable user</h2>")
     expect(response.body).not_to include("Candidate populations", "KarstAccessPrincipal ##{flagged.id}")
   ensure
     Karst.config.principals = nil
@@ -297,7 +297,7 @@ RSpec.describe "bounded access sweep Rails integration" do
     # KarstAccessPrincipal.flagged is discoverable at /karst/populations, and
     # a usable "ok" record exists, but nothing unconfigured is ever run.
     expect(response.status).to eq(200)
-    expect(response.body).to include("<h2>Users who can use this URL — 0</h2>")
+    expect(response.body).to include("<h2>No verified usable user found</h2>")
     expect(response.body).not_to include("Candidate populations")
   ensure
     Karst.config.principals = nil
