@@ -6,23 +6,29 @@ module Karst
   module Generators
     # `bin/rails generate karst:install`
     #
-    # Scaffolds the host-specific identity seams Karst cannot safely infer on
-    # its own: a documented initializer with placeholder identity hooks, a
-    # development-only probe identity controller, and the development-only
-    # routes that connect Karst's isolated probe session to it. See the
-    # generated files themselves for what each seam is responsible for.
+    # Scaffolds a documented initializer plus the development-only probe
+    # identity controller/routes a *custom* (non-Devise) identity
+    # configuration can drive. See the generated files themselves for what
+    # each seam is responsible for.
+    #
+    # This generator does not need to detect Devise/Warden itself: that
+    # detection happens at runtime, from Devise's own routing metadata (see
+    # Karst::Identity::DeviseSupport), not at generation time. A conventional
+    # single-model Devise application needs nothing from this generator's
+    # output beyond the initializer as generated -- see its "golden path"
+    # comment block. The identity controller and routes exist only for
+    # applications that fall back to a custom `config.assume_identity` /
+    # `config.clear_identity` pair.
     #
     # This generator is convenience/scaffolding only. Karst remains fully
     # configurable by hand (see README.md); nothing at runtime requires this
     # generator to have been run, and an application that already configures
     # Karst manually has no need to run it.
     #
-    # Deliberately does not attempt to detect or wire up Devise, Warden, or
-    # any other auth library -- see the "Future work" note in the generated
-    # initializer. Idempotent: running it again only touches files whose
-    # content actually changed, via Thor's own file-collision handling, and
-    # the routes insertion is a no-op once the exact same route block is
-    # already present.
+    # Idempotent: running it again only touches files whose content actually
+    # changed, via Thor's own file-collision handling, and the routes
+    # insertion is a no-op once the exact same route block is already
+    # present.
     class InstallGenerator < ::Rails::Generators::Base
       source_root File.expand_path("templates", __dir__)
 
@@ -38,6 +44,11 @@ module Karst
       private_constant :DEVELOPMENT_ROUTES
 
       NEXT_STEPS = <<~STEPS
+
+        Conventional single-model Devise apps: nothing else to do -- start
+        Rails and visit /karst.
+
+        Everyone else (ambiguous or no Devise model, custom authentication):
 
         1. Configure your principal source:
            config/initializers/karst.rb
@@ -78,8 +89,9 @@ module Karst
         say ""
         say "Karst installed.", :green
         say NEXT_STEPS
-        say "Installation is not complete until the TODOs above are replaced with " \
-            "this application's real identity semantics -- Karst cannot infer them.", :yellow
+        say "If you configured a custom (non-Devise) identity, installation is not complete " \
+            "until the TODOs above are replaced with this application's real identity semantics " \
+            "-- Karst cannot infer them.", :yellow
       end
     end
   end

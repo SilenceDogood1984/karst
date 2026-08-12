@@ -1,11 +1,21 @@
 # frozen_string_literal: true
 
 require_relative "value"
+require_relative "identity/devise_support"
 require_relative "identity/warden_adapter"
 
 module Karst
   # Framework-neutral identity seam for controlled probes. It deliberately
   # does not discover or enumerate principals; callers own that policy.
+  #
+  # For a conventional single-model Devise application, Karst can also infer
+  # everything below automatically from Devise's own routing metadata and
+  # Warden's public runtime API -- see DeviseSupport and WardenAdapter.
+  # Explicit configuration (config.principals/config.principal_sources,
+  # config.assume_identity/config.clear_identity,
+  # config.assume_browser_identity/config.clear_browser_identity) always
+  # overrides inference; inference never partially combines with explicit
+  # configuration for the same seam.
   # rubocop:disable Metrics/ModuleLength
   module Identity
     class Error < StandardError; end
@@ -13,6 +23,35 @@ module Karst
     class ConfigurationError < Error; end
 
     PrincipalDescriptor = Value.define(:model_name, :id, :display_label)
+
+    # Compact, inspectable report of why Karst's zero-config Devise/Warden
+    # path is or isn't active. `status` is one of:
+    #
+    #   :ready_automatic -- principal source, probe identity, and browser
+    #                        identity are all inferred; no configuration
+    #                        required.
+    #   :ready_mixed      -- at least one of principal source / probe
+    #                        identity / browser identity is explicitly
+    #                        configured and the rest are safely inferred
+    #                        (e.g. an explicit config.principals selecting
+    #                        one of several Devise models).
+    #   :ready_explicit   -- principal source, probe identity, and browser
+    #                        identity are all explicitly configured.
+    #   :ambiguous        -- more than one Devise model was detected and no
+    #                        explicit config.principals/principal_sources
+    #                        selects one.
+    #   :unavailable      -- Karst could not identify enough of an
+    #                        authentication integration to run the primary
+    #                        workflow without explicit configuration.
+    #
+    # `message` is nil whenever the caller's own local hint text already
+    # says everything Karst can usefully add (the two ready states, and
+    # :unavailable with no principal source at all -- every hint call site
+    # already has its own "nothing is configured" wording for that). It is
+    # populated only when Karst has something more specific to say: which
+    # Devise models are ambiguous, or that a principal source exists but
+    # probe/browser identity still couldn't be wired up automatically.
+    SetupState = Value.define(:status, :message)
 
     # Delegates identity operations to the application's configured hooks.
     class ConfiguredAdapter
@@ -35,18 +74,22 @@ module Karst
     class << self
       def principals
         source = Karst.config.principals
-        raise Unavailable, "no principal source is configured" unless source
-        raise ConfigurationError, "config.principals must be callable" unless source.respond_to?(:call)
+        return called_principal_source(source) if source
 
-        source.call
+        inferred = DeviseSupport.unambiguous_mapping
+        return inferred.model.all if inferred
+
+        raise Unavailable, "no principal source is configured"
       end
 
       # The effective, normalized principal population(s): a Hash of Symbol
-      # => Karst::Access::PrincipalSource, covering both a bare
-      # config.principals (wrapped as one implicit :default source) and an
-      # explicit config.principal_sources. Every multi-source-aware caller
-      # (Identity.resolve, PrincipalSelection, the panel) reads this instead
-      # of config.principals directly.
+      # => Karst::Access::PrincipalSource, covering an explicit
+      # config.principal_sources, a bare config.principals (wrapped as one
+      # implicit :default source), and -- when neither is configured -- one
+      # inferred Devise model (see Karst::Configuration#principal_sources).
+      # Every multi-source-aware caller (Identity.resolve,
+      # Access::PrincipalSelection, the panel) reads this instead of
+      # config.principals directly.
       def principal_sources
         sources = Karst.config.principal_sources
         raise Unavailable, "no principal source is configured" unless sources
@@ -55,7 +98,7 @@ module Karst
       end
 
       def with(session, principal)
-        active_adapter = adapter
+        active_adapter = adapter(principal)
         # The hook may establish identity and then raise, so cleanup becomes
         # mandatory before invoking it rather than only after it returns.
         assumed = true
@@ -106,20 +149,41 @@ module Karst
       end
 
       def browser_supported?
-        Karst.config.assume_browser_identity.respond_to?(:call) &&
-          Karst.config.clear_browser_identity.respond_to?(:call)
+        explicit_browser_hooks? || automatic_browser_identity_available?
       end
 
       def assume_browser(request, principal)
         raise Unavailable, "browser identity hooks are not configured" unless browser_supported?
 
-        Karst.config.assume_browser_identity.call(request, principal)
+        if explicit_browser_hooks?
+          Karst.config.assume_browser_identity.call(request, principal)
+        else
+          inferred_adapter(principal).assume(request, principal)
+        end
       end
 
       def clear_browser(request)
         raise Unavailable, "browser identity hooks are not configured" unless browser_supported?
 
-        Karst.config.clear_browser_identity.call(request)
+        if explicit_browser_hooks?
+          Karst.config.clear_browser_identity.call(request)
+        else
+          inferred_adapter(nil).clear(request)
+        end
+      end
+
+      # See SetupState above. Cheap and side-effect free: touches only
+      # already-established configuration/metadata plus, at most, calling a
+      # configured principals/principal_sources callable the same way the
+      # panel already does on every render to type-check its result (see
+      # Access::PrincipalSampler.representative_capable?) -- never to
+      # enumerate or query it.
+      def setup_state
+        return SetupState.new(status: :ambiguous, message: ambiguous_message) if ambiguous_principal_source?
+        return SetupState.new(status: :unavailable, message: nil) unless principal_source_ready?
+        return SetupState.new(status: :unavailable, message: unavailable_message) unless identity_channels_ready?
+
+        SetupState.new(status: ready_status, message: nil)
       end
 
       private
@@ -162,13 +226,35 @@ module Karst
         nil
       end
 
-      def adapter
+      def identity_channels_ready?
+        (explicit_probe_hooks? || automatic_identity_available?) &&
+          (explicit_browser_hooks? || automatic_browser_identity_available?)
+      end
+
+      # Only called once every channel is already known to be ready (see
+      # #identity_channels_ready? above), so this purely classifies *how*
+      # each one got there -- inferred, explicit, or a mix of both (see
+      # SetupState).
+      def ready_status
+        explicit = [!Karst.config.principals.nil?, explicit_probe_hooks?, explicit_browser_hooks?]
+        return :ready_automatic if explicit.none?
+        return :ready_explicit if explicit.all?
+
+        :ready_mixed
+      end
+
+      def called_principal_source(source)
+        raise ConfigurationError, "config.principals must be callable" unless source.respond_to?(:call)
+
+        source.call
+      end
+
+      def adapter(principal = nil)
         assume_hook = Karst.config.assume_identity
         clear_hook = Karst.config.clear_identity
         return configured_adapter(assume_hook, clear_hook) if assume_hook || clear_hook
-        return WardenAdapter.new if defined?(Warden::Manager)
 
-        raise Unavailable, "no identity hooks are configured and Warden is unavailable"
+        inferred_adapter(principal)
       end
 
       def configured_adapter(assume_hook, clear_hook)
@@ -177,6 +263,137 @@ module Karst
                 "config.assume_identity and config.clear_identity must both be callable"
         end
         ConfiguredAdapter.new(assume_hook, clear_hook)
+      end
+
+      # Builds a Warden-backed adapter for the automatic Devise/Warden path.
+      # With a specific `principal`, scope comes straight from that
+      # principal's own class -- the most direct evidence available, and
+      # correct even when a source mixes multiple Devise-mapped subclasses,
+      # regardless of how many principal_sources are configured. Without one
+      # (browser identity clear has no principal to hand back), scope falls
+      # back to the single effective principal source's model -- see
+      # #effective_principal_model. Devise loaded with no resolvable scope
+      # refuses to guess rather than risk operating under the wrong Warden
+      # scope.
+      def inferred_adapter(principal)
+        raise Unavailable, "no identity hooks are configured and Warden is unavailable" unless warden_available?
+        return WardenAdapter.new unless DeviseSupport.available?
+
+        scope = principal ? DeviseSupport.mapping_for(principal.class)&.scope : scope_for_effective_source
+        unless scope
+          raise Unavailable,
+                "Karst could not determine this principal's Devise/Warden scope automatically; " \
+                "configure config.assume_identity/config.clear_identity " \
+                "(or config.assume_browser_identity/config.clear_browser_identity)"
+        end
+
+        WardenAdapter.new(scope: scope)
+      end
+
+      # Probe-identity eligibility. Preserves the pre-existing bare-Warden
+      # fallback (no Devise, no scope) for a non-Devise application already
+      # relying on Karst's isolated integration session -- see WardenAdapter.
+      def automatic_identity_available?
+        return false unless warden_available?
+        return true unless DeviseSupport.available?
+
+        !scope_for_effective_source.nil?
+      end
+
+      # Browser-identity eligibility. Deliberately stricter than probe
+      # eligibility above: automatically mutating the developer's *real*
+      # browser session is only safe once Karst can prove the Devise
+      # scope -- a bare bootstrapped Warden proxy with no scope is never
+      # enough here, unlike the isolated probe session.
+      def automatic_browser_identity_available?
+        return false unless warden_available? && DeviseSupport.available?
+
+        !scope_for_effective_source.nil?
+      end
+
+      def scope_for_effective_source
+        model = effective_principal_model
+        model && DeviseSupport.mapping_for(model)&.scope
+      end
+
+      # The model backing the *single* effective principal source, when one
+      # can be determined without risk. Deliberately conservative once more
+      # than one Karst::Access::PrincipalSource is configured (an explicit
+      # multi-model config.principal_sources): resolving a scope with no
+      # principal in hand (see #inferred_adapter) would otherwise have to
+      # guess which configured source the missing principal belonged to.
+      # Per-principal scope resolution (the common case, with an actual
+      # principal instance already in hand) never goes through this path at
+      # all, and is unaffected by how many sources are configured.
+      def effective_principal_model
+        sources = safe_principal_sources
+        return nil unless sources && sources.size == 1
+
+        model_from_source(sources.values.first)
+      end
+
+      # A relation/class, exactly the same type-check the panel already
+      # relies on for representative sampling, or the class of the first
+      # element of an already materialized Array (safe to inspect without
+      # issuing a query; evaluating the source callable itself is the same
+      # already-accepted pattern the panel uses every render, see
+      # Access::PrincipalSampler.representative_capable?). An unmaterialized
+      # Enumerable/lazy source yields nil rather than guessing further --
+      # automatic Warden scope resolution is unavailable there, by design
+      # (see Identity::DeviseSupport and README).
+      def model_from_source(source)
+        records = source.evaluate
+        active_record_model_from(records) || (records.first.class if records.is_a?(Array) && !records.empty?)
+      rescue StandardError
+        nil
+      end
+
+      def active_record_model_from(records)
+        return records.klass if defined?(ActiveRecord::Relation) && records.is_a?(ActiveRecord::Relation)
+        return records if defined?(ActiveRecord::Base) && records.is_a?(Class) && records < ActiveRecord::Base
+
+        nil
+      end
+
+      def safe_principal_sources
+        principal_sources
+      rescue Error
+        nil
+      end
+
+      def warden_available?
+        defined?(Warden::Manager)
+      end
+
+      def explicit_probe_hooks?
+        !!(Karst.config.assume_identity || Karst.config.clear_identity)
+      end
+
+      def explicit_browser_hooks?
+        Karst.config.assume_browser_identity.respond_to?(:call) &&
+          Karst.config.clear_browser_identity.respond_to?(:call)
+      end
+
+      def ambiguous_principal_source?
+        return false if Karst.config.principals || Karst.config.configured_principal_sources
+
+        DeviseSupport.mappings.size > 1
+      end
+
+      def principal_source_ready?
+        !Karst.config.principals.nil? || !Karst.config.configured_principal_sources.nil? ||
+          !DeviseSupport.unambiguous_mapping.nil?
+      end
+
+      def ambiguous_message
+        names = DeviseSupport.mappings.map { |mapping| mapping.model.name }.sort.join(", ")
+        "Karst detected multiple Devise models (#{names}). Configure config.principals explicitly."
+      end
+
+      def unavailable_message
+        "Karst found a principal source but could not automatically wire up probe/browser identity for it. " \
+          "Configure config.assume_identity/config.clear_identity and " \
+          "config.assume_browser_identity/config.clear_browser_identity."
       end
 
       def model_name_for(principal)
