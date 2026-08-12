@@ -16,7 +16,7 @@ require "karst"
 # rubocop:disable Metrics/BlockLength
 RSpec.describe "Karst MCP server over real stdio" do
   # rubocop:disable Metrics/MethodLength
-  def fixture_script
+  def fixture_script(enabled: true)
     harness = File.expand_path("../support/test_application", __dir__)
     <<~RUBY
       require #{harness.inspect}
@@ -78,19 +78,25 @@ RSpec.describe "Karst MCP server over real stdio" do
 
       warn("karst-mcp-fixture: deliberate stderr line, must never reach stdout")
 
+      #{'Karst.configure { |config| config.enabled = false }' unless enabled}
+
       Karst::Mcp::Server.run!
     RUBY
   end
   # rubocop:enable Metrics/MethodLength
 
-  def run_requests(*requests)
+  def run_requests(*requests, enabled: true)
     stdin_data = requests.map { |request| JSON.generate(request) }.join("\n") << "\n"
 
     Open3.capture3(
       { "RAILS_ENV" => "test" },
-      RbConfig.ruby, "-I#{File.expand_path('../../lib', __dir__)}", "-e", fixture_script,
+      RbConfig.ruby, "-I#{File.expand_path('../../lib', __dir__)}", "-e", fixture_script(enabled: enabled),
       stdin_data: stdin_data
     )
+  end
+
+  def tools_list_request(id: 1)
+    { jsonrpc: "2.0", id: id, method: "tools/list", params: {} }
   end
 
   def initialize_request(id: 1)
@@ -157,6 +163,74 @@ RSpec.describe "Karst MCP server over real stdio" do
       expect(document["verified_usable"]).to be(true)
       expect(document.dig("sample", "users_tested")).to eq(2)
     end
+  end
+
+  it "exposes exactly the intended Karst surface -- verify_access, and nothing that resembles Test As" do
+    stdout, _stderr, status = run_requests(
+      initialize_request(id: 1),
+      { jsonrpc: "2.0", method: "notifications/initialized" },
+      tools_list_request(id: 2)
+    )
+
+    expect(status).to be_success
+    frame = stdout.each_line.map { |line| JSON.parse(line) }.find { |item| item["id"] == 2 }
+    tools = frame.dig("result", "tools")
+
+    expect(tools.map { |tool| tool["name"] }).to eq(["verify_access"])
+    schema_properties = tools.first.dig("inputSchema", "properties").keys
+    expect(schema_properties).to contain_exactly("path", "method")
+  end
+
+  it "fails safely on an external URL instead of probing it, reporting a structured error rather than " \
+     "crashing the process" do
+    stdout, _stderr, status = run_requests(
+      initialize_request(id: 1),
+      { jsonrpc: "2.0", method: "notifications/initialized" },
+      tool_call_request(id: 2, arguments: { path: "http://evil.example.com" })
+    )
+
+    expect(status).to be_success
+    frame = stdout.each_line.map { |line| JSON.parse(line) }.find { |item| item["id"] == 2 }
+    document = JSON.parse(frame.dig("result", "content", 0, "text"))
+
+    expect(frame.dig("result", "isError")).to be(true)
+    expect(document.dig("error", "type")).to eq("input_error")
+    expect(document.dig("error", "message")).to match(/local application path/)
+  end
+
+  it "never lets a client-supplied principal id or type choose who is probed" do
+    stdout, _stderr, status = run_requests(
+      initialize_request(id: 1),
+      { jsonrpc: "2.0", method: "notifications/initialized" },
+      tool_call_request(id: 2, arguments: { path: "/karst_mcp_stdio/secret",
+                                            principal_id: 999_999, principal_type: "KarstMcpStdioUser" })
+    )
+
+    expect(status).to be_success
+    frame = stdout.each_line.map { |line| JSON.parse(line) }.find { |item| item["id"] == 2 }
+    # The tool's own signature accepts only path/method: an unknown argument
+    # never silently selects a principal -- it is refused as a structured
+    # tool error (a real Ruby ArgumentError from the unexpected keyword,
+    # caught by MCP::Server itself), never a 500 or a corrupted protocol
+    # frame.
+    expect(frame.dig("result", "isError")).to be(true)
+    expect(frame.dig("result", "content", 0, "text")).to include("principal_id")
+  end
+
+  it "refuses to verify when config.enabled is false, the same off switch every other adapter honors" do
+    stdout, _stderr, status = run_requests(
+      initialize_request(id: 1),
+      { jsonrpc: "2.0", method: "notifications/initialized" },
+      tool_call_request(id: 2, arguments: { path: "/karst_mcp_stdio/secret" }),
+      enabled: false
+    )
+
+    expect(status).to be_success
+    frame = stdout.each_line.map { |line| JSON.parse(line) }.find { |item| item["id"] == 2 }
+    document = JSON.parse(frame.dig("result", "content", 0, "text"))
+
+    expect(frame.dig("result", "isError")).to be(true)
+    expect(document.dig("error", "message")).to match(/disabled/)
   end
 end
 # rubocop:enable Metrics/BlockLength

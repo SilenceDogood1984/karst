@@ -66,11 +66,24 @@ jobs:
           bundler-cache: true
           cache-version: rails-${{ matrix.rails }}
       - name: Run Rails integration specs
-        run: bundle exec rspec spec/integration --exclude-pattern "spec/integration/devise_golden_path_integration_spec.rb"
+        run: |
+          bundle exec rspec spec/integration --exclude-pattern \
+            "spec/integration/{devise_golden_path_integration_spec.rb,multi_devise_golden_path_integration_spec.rb,custom_auth_golden_path_integration_spec.rb}"
       # Separate process: this spec boots a second, real Rails::Application
-      # (with the real `devise` gem) alongside KarstTestApplication, and two
-      # independently booted Rails::Application instances are not safe to
-      # share Rails::Engine's own class-level initialization state within
-      # one process -- see bin/test-rails.
+      # (with the real `devise` gem, and Active Record) alongside
+      # KarstTestApplication, and two independently booted
+      # Rails::Application instances that both mount active_record/railtie
+      # are not safe to share Rails::Engine's own class-level
+      # initialization state within one process -- see bin/test-rails.
       - name: Run Devise/Warden golden-path smoke test (no Karst configuration)
         run: bundle exec rspec spec/integration/devise_golden_path_integration_spec.rb
+      # Same reason, its own process again: a real multi-mapping Devise
+      # application cannot share a process with the single-model one above
+      # either -- see bin/test-rails.
+      - name: Run multi-Devise golden-path smoke test (no Karst configuration)
+        run: bundle exec rspec spec/integration/multi_devise_golden_path_integration_spec.rb
+      # Same reason again: this fixture also mounts active_record/railtie on
+      # its own Rails::Application (custom, non-Devise authentication), so
+      # it gets the same isolated process -- see bin/test-rails.
+      - name: Run custom-auth golden-path smoke test (no Karst configuration)
+        run: bundle exec rspec spec/integration/custom_auth_golden_path_integration_spec.rb

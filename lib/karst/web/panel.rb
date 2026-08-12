@@ -266,12 +266,19 @@ module Karst
         # otherwise looks entirely blank. Mirrors analyze_form's own hint so
         # selecting a model or reading the custom-auth pointer works
         # identically whether or not a route is already selected.
+        #
+        # The save notice itself is rendered unconditionally, exactly like
+        # analyze_form's own -- a selection saved from the bare /karst page
+        # (no route picked yet) that happens to resolve the ambiguity right
+        # away must still say so, rather than have the confirmation vanish
+        # the moment `sources` becomes truthy.
         def setup_notice_section(state)
           sources = principal_sources
-          return "" if sources
+          notice = principal_source_selection_notice(state)
+          return notice if sources
 
           heading = "<h2 class=\"sr-only\">Access analysis</h2>"
-          body = "#{principal_source_selection_notice(state)}#{principal_source_hint(sources)}"
+          body = "#{notice}#{principal_source_hint(sources)}"
           "<section class=\"access\">#{heading}#{body}</section>"
         end
 

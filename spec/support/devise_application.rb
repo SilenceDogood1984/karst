@@ -58,6 +58,13 @@ end
 # own ActiveSupport.on_load(:active_record) hook, which Devise::Engine's
 # initializers register but do not fire until this application actually
 # initializes.
+#
+# Schema-creation logging goes straight to $stdout by default -- harmless
+# under RSpec, but this fixture is exactly the shape a future MCP-over-real-
+# Devise subprocess spec would reuse, where that output would corrupt the
+# stdio protocol stream (see spec/support/multi_devise_application.rb).
+ActiveRecord::Migration.verbose = false
+
 ActiveRecord::Schema.define do
   create_table :karst_devise_users, force: true do |t|
     t.string :email, null: false, default: ""

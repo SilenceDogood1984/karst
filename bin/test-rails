@@ -4,18 +4,24 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 DEVISE_SPEC="spec/integration/devise_golden_path_integration_spec.rb"
+MULTI_DEVISE_SPEC="spec/integration/multi_devise_golden_path_integration_spec.rb"
+CUSTOM_AUTH_SPEC="spec/integration/custom_auth_golden_path_integration_spec.rb"
+ISOLATED_SPECS_PATTERN="spec/integration/{devise_golden_path_integration_spec.rb,multi_devise_golden_path_integration_spec.rb,custom_auth_golden_path_integration_spec.rb}"
 
 for version in 6_1 7_0 7_1 7_2 8_0; do
   export BUNDLE_GEMFILE="$PWD/gemfiles/rails_${version}.gemfile"
   export EXPECTED_RAILS_VERSION="${version/_/.}"
   bundle install
-  bundle exec rspec spec/integration --exclude-pattern "$DEVISE_SPEC"
-  # Run separately, its own process: it boots a second, real
-  # Rails::Application (with the real `devise` gem) alongside
-  # KarstTestApplication, and Rails::Engine's own class-level
+  bundle exec rspec spec/integration --exclude-pattern "$ISOLATED_SPECS_PATTERN"
+  # Run separately, each its own process: every one of these boots a real
+  # Rails::Application that mounts active_record/railtie (two of them also
+  # mount the real `devise` gem), and Rails::Engine's own class-level
   # initialization state is not safe to share between two independently
-  # booted applications in one process (a second real Rails::Application
-  # boot in the same process as KarstTestApplication raises a FrozenError
-  # deep in Rails::Engine's own initializer, unrelated to Karst).
+  # booted Active-Record-backed applications in one process (a second such
+  # Rails::Application boot in the same process as KarstTestApplication, or
+  # as another one of these three, raises a FrozenError deep in
+  # Rails::Engine's own initializer, unrelated to Karst).
   bundle exec rspec "$DEVISE_SPEC"
+  bundle exec rspec "$MULTI_DEVISE_SPEC"
+  bundle exec rspec "$CUSTOM_AUTH_SPEC"
 done
