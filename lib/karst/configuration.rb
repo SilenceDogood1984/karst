@@ -15,8 +15,8 @@ module Karst
   # Process-level settings that control Karst's implemented behavior.
   #
   # An ordinary application sets none of this. A single-model Devise app is
-  # inferred outright, candidate populations are approved locally at
-  # /karst/populations rather than written here, and every limit below
+  # inferred outright, candidate populations are approved inline at /karst
+  # rather than written here, and every limit below
   # already has a bounded default. `enabled` is not normal configuration
   # either -- it is an off switch for exceptional cases (a shared
   # development environment, a CI job that boots Rails but must never run
@@ -83,7 +83,7 @@ module Karst
                    "actually runs, and no longer keeps a process-wide sql.active_record buffer",
       principal_dimensions: "sampling states are derived from the schema automatically; there is " \
                             "nothing to declare, and rare users are reached through candidate " \
-                            "populations approved at /karst/populations",
+                            "populations approved after a failed /karst analysis",
       artifact_source: "artifact scenarios were removed; Karst analyzes routes, not record sweeps",
       access_scenario: "artifact scenarios were removed; Karst analyzes routes, not record sweeps"
     }.freeze
@@ -110,8 +110,8 @@ module Karst
     #     auditors: -> { User.auditors }
     #   }
     #
-    # This is the committed-to-source form of what /karst/populations already
-    # captures locally, and is needed only where machine-local approval state
+    # This is the committed-to-source form of what /karst captures locally,
+    # and is needed only where machine-local approval state
     # is deliberately not consulted (CI) or where populations should be
     # reviewable code. Karst never infers that a population grants access or
     # produces any UI state; it only tries records from it (see
