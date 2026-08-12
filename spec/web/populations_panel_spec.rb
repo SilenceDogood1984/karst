@@ -22,6 +22,10 @@ RSpec.describe Karst::Web::PopulationsPanel do
     )
   end
 
+  def entry(model_name, method_name)
+    Karst::Access::PopulationApprovals::Entry.new(model_name: model_name, method_name: method_name)
+  end
+
   def render(**kwargs)
     described_class.render(**kwargs).last.join
   end
@@ -46,15 +50,14 @@ RSpec.describe Karst::Web::PopulationsPanel do
 
       expect(body.scan('<details class="model-group"').size).to eq(150)
       expect(body.scan('<details class="model-group" data-model="Model0" open').size).to eq(0)
-      expect(body.scan("3 scopes").size).to eq(150)
+      expect(body.scan("3 groups").size).to eq(150)
       expect(body).to include("Model0", "Model149")
     end
 
-    it "opens only the model group(s) that currently have a selected candidate" do
+    it "opens only the model group(s) that currently have an approved candidate" do
       groups = [group("User", %i[system_admins auditors]), group("Subscription", [:renewable])]
-      selected = [candidate("User", :system_admins)]
 
-      body = render(discovery: discovery(groups), selected: selected)
+      body = render(discovery: discovery(groups), approved: [entry("User", "system_admins")])
 
       expect(body).to match(/<details class="model-group" data-model="User" open>/)
       expect(body).not_to match(/<details class="model-group" data-model="Subscription" open>/)
@@ -74,42 +77,124 @@ RSpec.describe Karst::Web::PopulationsPanel do
       body = render(discovery: discovery([group("User", [:system_admins])]))
 
       expect(body).to include('<input type="search" id="karst-population-search"')
-      expect(body).to include("karst-population-search")
       expect(body).to match(/<script nonce="[0-9a-f]+">/)
-      expect(body).to include("Search scopes or models")
+      expect(body).to include("Search groups or models")
     end
   end
 
-  describe "selection surfaced first" do
-    it "lists the current selection, grouped by model, above the full browsable list" do
-      groups = [group("User", %i[system_admins auditors])]
-      selected = [candidate("User", :system_admins), candidate("User", :auditors)]
-
-      body = render(discovery: discovery(groups), selected: selected)
-
-      expect(body).to include("Selected (2)")
-      expect(body.index("Selected (2)")).to be < body.index("Available models")
-      expect(body).to include('<input type="checkbox" name="population[]" value="User::system_admins" checked>')
-    end
-
-    it "reports zero selected without claiming a population is unusable" do
+  describe "approval as the primary workflow" do
+    it "explains what approving does without claiming a group grants access" do
       body = render(discovery: discovery([group("User", [:system_admins])]))
 
-      expect(body).to include("Selected (0)", "No populations selected yet.")
+      expect(body).to include("Approving a group lets Karst try a few existing users from it")
+      expect(body).to match(/when the ordinary sample\s+fails/)
+      expect(body).to include("only running an analysis against a route")
+      expect(body).not_to include("authorization", "permission", "admin role")
     end
 
-    it "shows a principal-source badge only for a model matching a configured source" do
+    it "offers one explicit approve action carrying the checkbox state" do
+      body = render(discovery: discovery([group("User", %i[system_admins auditors])]))
+
+      expect(body).to include('<button type="submit" name="save_approvals" value="1" class="primary">' \
+                              "Approve selected groups</button>")
+      expect(body).to include('<input type="checkbox" name="population[]" value="User::system_admins">')
+    end
+
+    it "checks exactly the approved candidates and lists them above the browsable list" do
+      groups = [group("User", %i[system_admins auditors])]
+
+      body = render(discovery: discovery(groups), approved: [entry("User", "system_admins")])
+
+      expect(body).to include("Approved (1)")
+      expect(body.index("Approved (1)")).to be < body.index("Available models")
+      expect(body).to include('<input type="checkbox" name="population[]" value="User::system_admins" checked>')
+      expect(body).to include('<input type="checkbox" name="population[]" value="User::auditors">')
+    end
+
+    it "reports zero approvals without claiming a group is unusable" do
+      body = render(discovery: discovery([group("User", [:system_admins])]))
+
+      expect(body).to include("Approved (0)", "No groups approved yet.")
+    end
+
+    it "confirms a save so approving is visibly durable, and never claims one that did not happen" do
+      groups = [group("User", [:system_admins])]
+
+      expect(render(discovery: discovery(groups), saved: true)).to include("Approvals saved.")
+      expect(render(discovery: discovery(groups))).not_to include("Approvals saved.")
+    end
+
+    it "keeps Preview and the Ruby export on a separate form, so neither can save an approval" do
+      body = render(discovery: discovery([group("User", [:system_admins])]))
+
+      expect(body).to include('<form id="karst-secondary" method="post" action="/karst/populations"></form>')
+      expect(body).to include('<button type="submit" form="karst-secondary" name="preview" ' \
+                              'value="User::system_admins">Preview</button>')
+      expect(body).to include('form="karst-secondary" name="generate_snippet"')
+    end
+
+    it "shows a user-source badge only for a model matching a configured source" do
       groups = [group("User", [:system_admins], principal_source: :default), group("Subscription", [:renewable])]
 
       body = render(discovery: discovery(groups))
 
-      expect(body).to include("principal source: default")
+      expect(body).to include("user source: default")
       expect(body.scan('class="badge"').size).to eq(1)
     end
   end
 
-  describe "configuration snippet" do
-    it "renders the generated snippet in a readonly textarea with a copy control" do
+  describe "approval storage" do
+    it "says where approvals live and how to reset them" do
+      body = render(discovery: discovery([]), storage_path: "tmp/karst/approved_populations.json")
+
+      expect(body).to include("tmp/karst/approved_populations.json", "Delete that file to reset every approval",
+                              "no user data, no Ruby")
+    end
+
+    it "surfaces a rejected approval file instead of silently approving nothing" do
+      body = render(discovery: discovery([]), storage_error: "tmp/karst/approved_populations.json is not JSON")
+
+      expect(body).to include('role="alert"', "tmp/karst/approved_populations.json is not JSON")
+    end
+  end
+
+  describe "stale approvals" do
+    it "marks an approval whose scope is no longer discovered as unused, rather than hiding it" do
+      stale = [[entry("User", "system_admins"), :not_discovered]]
+
+      body = render(discovery: discovery([group("User", [:auditors])]), approved: [entry("User", "system_admins")],
+                    stale: stale)
+
+      expect(body).to include("no longer a discovered scope on this model — not used")
+    end
+
+    it "marks an approval on a model that is not a configured user source as unused" do
+      stale = [[entry("Subscription", "renewable"), :no_principal_source]]
+
+      body = render(discovery: discovery([group("Subscription", [:renewable])]),
+                    approved: [entry("Subscription", "renewable")], stale: stale)
+
+      expect(body).to include("not part of a configured user source — not used")
+    end
+
+    it "leaves a live approval unmarked" do
+      body = render(discovery: discovery([group("User", [:system_admins])]),
+                    approved: [entry("User", "system_admins")], stale: [])
+
+      expect(body).not_to include("not used")
+    end
+  end
+
+  describe "advanced Ruby export" do
+    it "keeps snippet generation available but out of the primary flow" do
+      body = render(discovery: discovery([group("User", [:system_admins])]))
+
+      expect(body).to include("Advanced: export approvals as Ruby")
+      expect(body.index("Approve selected groups")).to be < body.index("Advanced: export approvals as Ruby")
+      expect(body).not_to include("<textarea")
+    end
+
+    it "renders a generated snippet in a readonly textarea with a copy control" do
       snippet = Karst::Access::PopulationConfigSnippet.generate(
         [candidate("User", :system_admins, principal_source: :default)]
       )
@@ -117,98 +202,37 @@ RSpec.describe Karst::Web::PopulationsPanel do
       body = render(discovery: discovery([group("User", [:system_admins], principal_source: :default)]),
                     snippet: snippet)
 
-      expect(body).to include("Configuration snippet", "config.principal_populations", "id=\"karst-copy-snippet\"")
-      expect(body).to include("<textarea id=\"karst-snippet-code\" readonly>")
+      expect(body).to include("config.principal_populations", 'id="karst-copy-snippet"')
+      expect(body).to include('<textarea id="karst-snippet-code" readonly>')
     end
 
-    it "discloses, rather than silently drops, a selected population with no matching principal source" do
+    it "discloses, rather than silently drops, an approval with no matching user source" do
       snippet = Karst::Access::PopulationConfigSnippet.generate([candidate("Subscription", :renewable)])
 
       body = render(discovery: discovery([group("Subscription", [:renewable])]), snippet: snippet)
 
-      expect(body).to include("not part of a configured principal source", "Subscription.renewable")
-    end
-
-    it "omits the snippet section entirely when nothing has been generated yet" do
-      body = render(discovery: discovery([group("User", [:system_admins])]))
-
-      expect(body).not_to include("Configuration snippet")
-    end
-  end
-
-  describe "bounded preview" do
-    let(:preview_record_class) do
-      Class.new do
-        def self.name
-          "User"
-        end
-
-        def self.primary_key
-          "id"
-        end
-
-        attr_reader :id
-
-        def initialize(id)
-          @id = id
-        end
-      end
-    end
-
-    it "shows only the bounded preview records for the exact candidate previewed" do
-      preview = Karst::Access::PopulationPreview::Result.new(
-        model_name: "User", method_name: "system_admins", resolved: true,
-        records: [preview_record_class.new(1)], error: nil
-      )
-
-      body = render(discovery: discovery([group("User", %i[system_admins auditors])]), preview: preview)
-
-      expect(body).to include("Preview (up to 3): User #1")
-    end
-
-    it "reports a failed preview honestly instead of pretending success" do
-      preview = Karst::Access::PopulationPreview::Result.new(
-        model_name: "User", method_name: "system_admins", resolved: false, records: [],
-        error: "did not resolve to a usable ActiveRecord::Relation for User"
-      )
-
-      body = render(discovery: discovery([group("User", [:system_admins])]), preview: preview)
-
-      expect(body).to include("Preview: did not resolve to a usable ActiveRecord::Relation for User.")
-    end
-
-    it "reports an empty result honestly rather than as a failure" do
-      preview = Karst::Access::PopulationPreview::Result.new(
-        model_name: "User", method_name: "system_admins", resolved: true, records: [], error: nil
-      )
-
-      body = render(discovery: discovery([group("User", [:system_admins])]), preview: preview)
-
-      expect(body).to include("Preview: no matching records currently.")
+      expect(body).to include("not part of a configured user source", "Subscription.renewable")
     end
   end
 
   describe "discovery limitations" do
-    it "discloses direct-model discovery and the concern limitation" do
-      body = render(discovery: discovery([]))
-
-      expect(body).to include("Candidate scopes", "declared directly in application model source",
-                              "Scopes contributed by concerns may not appear")
-    end
-
-    it "surfaces an honest load warning instead of silently under-reporting models" do
+    it "discloses the concern limitation and an honest load warning" do
       body = render(discovery: discovery([], load_warning: "The application could not be fully loaded"))
 
-      expect(body).to include("The application could not be fully loaded")
+      expect(body).to include("Candidate groups", "The application could not be fully loaded")
     end
 
-    it "escapes a hostile load warning instead of rendering it as markup" do
-      hostile = "<script>alert(1)</script>"
+    it "escapes hostile model, scope, and warning text instead of rendering it as markup" do
+      hostile_scope = :"</label><script>alert(1)</script>"
+      hostile_model = "User<script>alert(2)</script>"
 
-      body = render(discovery: discovery([], load_warning: hostile))
+      body = render(discovery: discovery([group(hostile_model, [hostile_scope])],
+                                         load_warning: "<script>alert(3)</script>"),
+                    approved: [entry(hostile_model, hostile_scope.to_s)])
 
-      expect(body).not_to include(hostile)
-      expect(body).to include(CGI.escapeHTML(hostile))
+      expect(body).not_to include("<script>alert(1)</script>", "<script>alert(2)</script>",
+                                  "<script>alert(3)</script>")
+      expect(body).to include(CGI.escapeHTML(hostile_scope.to_s), CGI.escapeHTML(hostile_model))
     end
   end
 end

@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "spec_helper"
+require "stringio"
+require "tmpdir"
 require_relative "../support/test_application"
 require "karst/mcp/server"
 
@@ -222,6 +224,93 @@ RSpec.describe "Karst MCP server, end to end against a real Rails application" d
     expect(outcome).to include("writes_observed" => true, "write_count" => 1, "database_rollback_attempted" => true)
     expect(document.dig("sample", "database_isolation")).to eq("same_connection_rollback_attempted")
     expect(writer.reload.visits).to eq(0)
+  end
+
+  # Part of the same contract as the panel: an approval made once at
+  # /karst/populations reaches every adapter, because every adapter reads
+  # the one effective principal-source configuration and none of them knows
+  # the approval file exists.
+  describe "locally approved candidate populations" do
+    around do |example|
+      Dir.mktmpdir("karst-mcp-approval") do |dir|
+        @approvals_path = File.join(dir, "tmp/karst/approved_populations.json")
+        example.run
+      end
+    end
+
+    before do
+      allow(Karst::Access::PopulationApprovals).to receive(:path).and_return(@approvals_path)
+      3.times { KarstMcpPrincipal.create!(behavior: "forbidden") }
+      Karst.config.access_sweep_limit = 3
+      Karst.config.principals = -> { KarstMcpPrincipal.where(behavior: "forbidden") }
+    end
+
+    def approve(model_name, method_name)
+      Karst::Access::PopulationApprovals.replace(
+        [Karst::Access::PopulationApprovals::Entry.new(model_name: model_name, method_name: method_name)]
+      )
+    end
+
+    it "searches an approved group through verify_access with no Ruby configuration at all" do
+      working = KarstMcpPrincipal.create!(behavior: "ok")
+      approve("KarstMcpPrincipal", "workers")
+
+      document, = call_tool(path: "/mcp_documents/1")
+
+      expect(Karst.config.principal_populations).to eq({})
+      expect(document["verified_usable"]).to be(true)
+      expect(document.dig("verified_principal", "id")).to eq(working.id)
+      expect(document["source"]).to eq("type" => "population", "name" => "workers")
+    end
+
+    it "produces identical CLI evidence for the same approval" do
+      # One principal per stage: grouped outcomes are keyed by their own
+      # timings, so a multi-user sample groups differently between two real
+      # runs for reasons that have nothing to do with approval.
+      KarstMcpPrincipal.delete_all
+      KarstMcpPrincipal.create!(behavior: "forbidden")
+      KarstMcpPrincipal.create!(behavior: "ok")
+      approve("KarstMcpPrincipal", "workers")
+
+      document, = call_tool(path: "/mcp_documents/1")
+      cli_document = JSON.parse(JSON.generate(Karst::CLI::Verification.new(path: "/mcp_documents/1").evidence))
+
+      expect(strip_elapsed(cli_document)).to eq(strip_elapsed(document))
+      expect(cli_document["populations"]).to contain_exactly(include("name" => "workers", "state" => "usable"))
+    end
+
+    it "prints the approved population in the CLI's human output" do
+      KarstMcpPrincipal.create!(behavior: "ok")
+      approve("KarstMcpPrincipal", "workers")
+      output = StringIO.new
+
+      code = Karst::CLI::Verification.new(path: "/mcp_documents/1", output: output).call
+
+      expect(code).to eq(0)
+      expect(output.string).to include("Candidate populations", "workers: usable")
+    end
+
+    it "executes nothing for an approval current discovery does not confirm" do
+      KarstMcpPrincipal.create!(behavior: "ok")
+      approve("KarstMcpPrincipal", "delete_all")
+
+      document, = call_tool(path: "/mcp_documents/1")
+
+      expect(document["verified_usable"]).to be(false)
+      expect(document["populations"]).to eq([])
+      expect(KarstMcpPrincipal.count).to eq(4)
+    end
+
+    it "ignores the approval file entirely outside a local environment" do
+      KarstMcpPrincipal.create!(behavior: "ok")
+      approve("KarstMcpPrincipal", "workers")
+      allow(Karst::Access::ApprovedPopulations).to receive(:local_environment?).and_return(false)
+
+      document, = call_tool(path: "/mcp_documents/1")
+
+      expect(document["verified_usable"]).to be(false)
+      expect(document["populations"]).to eq([])
+    end
   end
 
   def strip_elapsed(value)

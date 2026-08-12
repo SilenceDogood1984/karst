@@ -20,12 +20,17 @@ module Karst
     # bounded records. Search only decides what to run next and records what
     # it chose not to run.
     #
-    # Approval boundary: the populations considered here come exclusively
-    # from configuration -- config.principal_populations, or a
-    # config.principal_sources[...] :populations entry. A name merely
-    # *discovered* by Karst::Access::PopulationDiscovery is never executed
-    # automatically; discovery only ever produces text for a developer to
-    # copy into their own configuration.
+    # Approval boundary: the populations considered here are exactly the
+    # ones on the Karst::Access::PrincipalSource objects handed to this
+    # class -- which means either explicit configuration
+    # (config.principal_populations, or a config.principal_sources[...]
+    # :populations entry) or a candidate a developer explicitly approved
+    # locally, folded into the same configuration by
+    # Karst::Access::ApprovedPopulations. A name merely *discovered* by
+    # Karst::Access::PopulationDiscovery, and never approved, is never
+    # executed. Search itself deliberately cannot tell the two apart and
+    # never reads approval state: whatever produced this source's
+    # populations already had to answer for them.
     # rubocop:disable Metrics/ClassLength
     class Search
       # Why a population contributed nothing, kept explicit rather than
@@ -136,7 +141,9 @@ module Karst
 
       # Configuration order, across sources and then within each source --
       # Ruby Hashes preserve insertion order, so this is exactly the order
-      # the application declared, never a heuristic ranking.
+      # the application declared (explicitly configured populations first,
+      # then locally approved ones in their own stable model/scope order),
+      # never a heuristic ranking.
       def approved
         @approved ||= @sources.flat_map do |source_name, source|
           source.populations.map { |name, callable| [source_name, name, callable, source] }
