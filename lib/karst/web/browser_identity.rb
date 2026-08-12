@@ -32,6 +32,12 @@ module Karst
         session[ACTIVE_KEY] == true
       end
 
+      # Rack-boundary forms which persist Karst state share the same
+      # synchronizer token as Test As rather than inventing a second token.
+      def verify_csrf!(submitted)
+        verify_token!(submitted)
+      end
+
       def assume(params)
         verify_token!(params["csrf_token"])
         target = return_path(params["path"])

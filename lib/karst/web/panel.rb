@@ -2,6 +2,7 @@
 
 require "cgi"
 require "rack/utils"
+require "active_support"
 require "active_support/number_helper"
 require "base64"
 require "digest"
@@ -93,6 +94,7 @@ module Karst
         .population-attempt.hit .name{color:#0f5132}
         .population-attempt.untried{color:#777}
         .candidate-review{font-size:.9rem;color:#444;margin:.5rem 0 0}
+        .candidate-review label{display:flex;flex-direction:row;align-items:center;font-size:.9rem;margin:.35rem 0}
         .ordinary-sample{border:1px solid #ddd;border-radius:.5rem;padding:.8rem 1rem;margin:1rem 0}
         .ordinary-sample h2{margin:0 0 .45rem}
         .ordinary-sample details{margin:.55rem 0}
@@ -143,11 +145,12 @@ module Karst
       class << self
         # rubocop:disable Metrics/ParameterLists
         def render(params: {}, access_result: nil, csrf_token: nil, browser_identity_active: false,
-                   route_lookup_limitation: nil, unapproved_candidate_count: nil,
+                   route_lookup_limitation: nil, unapproved_candidates: [], population_approval_error: nil,
                    principal_source_selection_saved: false, principal_source_selection_error: nil)
           state = { csrf_token: csrf_token, browser_identity_active: browser_identity_active,
                     route_lookup_limitation: route_lookup_limitation,
-                    unapproved_candidate_count: unapproved_candidate_count,
+                    unapproved_candidates: unapproved_candidates,
+                    population_approval_error: population_approval_error,
                     principal_source_selection_saved: principal_source_selection_saved,
                     principal_source_selection_error: principal_source_selection_error }
           [200, HEADERS.dup, [document(params, access_result, state)]]
@@ -506,7 +509,7 @@ module Karst
         def usable_outcomes(outcomes, result, state)
           csrf_token = state[:csrf_token]
           body = if outcomes.empty?
-                   candidate_review(state[:unapproved_candidate_count])
+                   candidate_review(state, result)
                  else
                    usable_cards(outcomes,
                                 result, csrf_token)
@@ -520,14 +523,34 @@ module Karst
         # contextual action, shown only when the analysis found nothing
         # usable and unapproved application-defined groups actually exist on
         # a configured user source. Deliberately not a configuration
-        # workflow -- it says what Karst found and offers to show it, and
-        # names nothing it has not been approved to run.
-        def candidate_review(count)
-          return "" unless count&.positive?
+        # workflow -- it names only the candidates which may be explicitly
+        # approved in this result, and never executes them merely by rendering.
+        def candidate_review(state, result)
+          candidates = state[:unapproved_candidates]
+          return "" if candidates.empty? || !state[:csrf_token]
 
-          "<p class=\"candidate-review\">Karst found #{escape(count)} application-defined user " \
-            "#{count == 1 ? 'group' : 'groups'} that could be tried. " \
-            "<a href=\"/karst/populations\">Review candidate groups</a></p>"
+          fields = candidates.map { |candidate| candidate_checkbox(candidate) }.join
+          "<form class=\"candidate-review\" method=\"post\" action=\"/karst\">#{approval_alert(state)}" \
+            "<p>Karst found application-defined user groups for this principal source. " \
+            "Select only the populations Karst may try, then rerun this analysis:</p>#{fields}" \
+            "#{candidate_form_fields(state, result)}" \
+            "<button type=\"submit\">Approve selected and retry</button></form>"
+        end
+
+        def candidate_form_fields(state, result)
+          hidden("operation", "approve_populations") + hidden("csrf_token", state[:csrf_token]) +
+            hidden("path", result.path) + hidden("method", result.http_method)
+        end
+
+        def approval_alert(state)
+          error = state[:population_approval_error]
+          "<p class=\"hint\" role=\"alert\">#{escape(error)}</p>" if error
+        end
+
+        def candidate_checkbox(candidate)
+          key = [candidate.principal_source, candidate.model_name, candidate.method_name].join("::")
+          "<label><input type=\"checkbox\" name=\"population[]\" value=\"#{escape(key)}\">" \
+            "#{escape(candidate.method_name)} <small>(#{escape(candidate.model_name)})</small></label>"
         end
 
         def usable_cards(outcomes, result, csrf_token)
