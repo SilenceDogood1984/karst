@@ -271,15 +271,7 @@ module Karst
           # `sources` truthy must still tell the developer it worked, rather
           # than have the confirmation vanish the moment it stops being
           # needed.
-          "#{principal_source_selection_notice(state)}#{form}#{scenario_forms}#{principal_source_hint(sources)}"
-        end
-
-        def scenario_forms
-          Karst.config.access_scenarios.values.map do |scenario|
-            fields = hidden("operation", "artifact_sweep") + hidden("scenario", scenario.name)
-            label = "Analyze artifact scenario: #{scenario.name}"
-            "<form action=\"/karst\" method=\"post\">#{fields}<button type=\"submit\">#{escape(label)}</button></form>"
-          end.join
+          "#{principal_source_selection_notice(state)}#{form}#{principal_source_hint(sources)}"
         end
 
         # Only ever type-checks each configured source's evaluated records
@@ -370,9 +362,6 @@ module Karst
           return "" unless result
           return "<p>Analysis unavailable: #{escape(result.message)}</p>" if result.is_a?(StandardError)
 
-          csrf_token = state[:csrf_token]
-          return scenario_result(result, csrf_token) if result.respond_to?(:scenario_name)
-
           search_result(result, state)
         end
 
@@ -453,30 +442,6 @@ module Karst
         def users(count)
           count == 1 ? "user" : "users"
         end
-
-        def scenario_result(result, csrf_token)
-          matches, mismatches = result.outcomes.partition(&:match)
-          cards = matches.map { |outcome| verified_context(outcome, csrf_token) }.join
-          summary = "<details><summary>Failed candidates — #{mismatches.size}</summary></details>"
-          meta = "<p class=\"meta\">#{result.outcomes.size} combinations tested (limit #{result.combination_limit}; " \
-                 "artifact candidates limited to #{result.artifact_candidate_limit}).</p>"
-          "#{meta}<section class=\"usable\"><h2>Verified context — #{matches.size}</h2>#{cards}</section>#{summary}"
-        end
-
-        # rubocop:disable Layout/LineLength, Metrics/AbcSize
-        def verified_context(outcome, csrf_token)
-          marker = if outcome.expected.key?(:body_includes)
-                     outcome.body_marker_observed ? " · expected marker observed" : " · expected marker absent"
-                   else
-                     ""
-                   end
-          expected = outcome.expected.map { |key, value| "#{key}=#{value}" }.join(", ")
-          action = test_as_form(outcome.principal, outcome.path, csrf_token)
-          "<article class=\"usable-principal\"><h4><span>#{principal_label(outcome.principal)}</span>#{action}</h4>" \
-            "<p><strong>#{escape(outcome.artifact.display_label)}</strong></p><p><code>GET #{escape(outcome.path)}</code></p>" \
-            "<p>Expected #{escape(expected)} · Observed #{escape(outcome.status || outcome.exception_class)}#{marker} · Match yes</p></article>"
-        end
-        # rubocop:enable Layout/LineLength, Metrics/AbcSize
 
         def search_meta(result)
           initial = result.initial.outcomes.size
@@ -592,7 +557,7 @@ module Karst
         # outcome and above any resource evidence, never a card of its own --
         # so it augments a usable principal without competing with Test as,
         # the observed outcome, or resource evidence for attention. Sampling
-        # evidence, not an authorization claim: see PrincipalDimension.
+        # evidence, not an authorization claim: see PrincipalSampler.
         def sampled_for(outcome)
           reasons = outcome.sampling_reasons
           return "" if reasons.nil? || reasons.empty?

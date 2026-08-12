@@ -489,123 +489,14 @@ RSpec.describe Karst::Access::PrincipalSampler do
     end
   end
 
-  describe "configured dimensions" do
-    def dimensions(hash)
-      Karst::Access::PrincipalDimension.normalize(hash)
-    end
-
-    def reasons_for(result, id)
-      result.candidates.find { |candidate| candidate.principal.id == id }.reasons
-    end
-
-    before do
-      DimensionPrincipal.delete_all
-    end
-
-    it "deliberately represents at least one record for each configured attribute-dimension value within " \
-       "the limit, ahead of simply filling with the majority value" do
-      900.times { DimensionPrincipal.create!(role: "responder") }
-      6.times { DimensionPrincipal.create!(role: "local_admin") }
-      3.times { DimensionPrincipal.create!(role: "group_admin") }
-      2.times { DimensionPrincipal.create!(role: "reseller") }
-      DimensionPrincipal.create!(role: "system_admin")
-
-      result = described_class.new(source: DimensionPrincipal.all, limit: 10,
-                                   dimensions: dimensions(role: :role)).call
-
-      selected_roles = result.principals.map(&:role).uniq
-      expect(selected_roles).to include("local_admin", "group_admin", "reseller", "system_admin")
-      local_admin_candidate = result.candidates.find { |candidate| candidate.principal.role == "local_admin" }
-      expect(local_admin_candidate.reasons).to include("role=local_admin")
-    end
-
-    it "represents a configured boolean predicate (`premium?`) exactly like the real boolean column, without " \
-       "a duplicate reason from generic schema discovery" do
-      47.times { DimensionPrincipal.create!(premium: false) }
-      premium = DimensionPrincipal.create!(premium: true)
-
-      result = described_class.new(source: DimensionPrincipal.all, limit: 10,
-                                   dimensions: dimensions(premium: :premium?)).call
-
-      expect(result.principals.map(&:id)).to include(premium.id)
-      reasons = reasons_for(result, premium.id)
-      expect(reasons.count("premium=true")).to eq(1)
-    end
-
-    it "represents a configured callable dimension, bounded to the already-fetched candidate pool" do
-      47.times { DimensionPrincipal.create!(plan: "standard") }
-      reseller = DimensionPrincipal.create!(plan: "reseller")
-      dimension = dimensions(reseller: ->(record) { record.plan == "reseller" })
-
-      result = described_class.new(source: DimensionPrincipal.all, limit: 10, dimensions: dimension).call
-
-      expect(result.principals.map(&:id)).to include(reseller.id)
-      expect(reasons_for(result, reseller.id)).to include("reseller=true")
-    end
-
-    it "represents a computed predicate with no backing column, evaluated in Ruby over the bounded pool" do
-      47.times { DimensionPrincipal.create!(role: "responder") }
-      admin = DimensionPrincipal.create!(role: "system_admin")
-
-      result = described_class.new(source: DimensionPrincipal.all, limit: 10,
-                                   dimensions: dimensions(admin: :system_admin?)).call
-
-      expect(result.principals.map(&:id)).to include(admin.id)
-      expect(reasons_for(result, admin.id)).to include("admin=true")
-    end
-
-    it "prioritizes configured dimensions over generic schema heuristics when both could otherwise apply" do
-      47.times { DimensionPrincipal.create!(role: "responder", premium: false) }
-      minority = DimensionPrincipal.create!(role: "responder", premium: true)
-
-      # Only 3 slots: without configured-dimension priority, generic
-      # discovery over two low-cardinality columns (role, premium) would
-      # already exhaust the limit before the configured dimension's own
-      # target-lookup queries ever ran.
-      result = described_class.new(source: DimensionPrincipal.all, limit: 3,
-                                   dimensions: dimensions(premium: :premium)).call
-
-      expect(result.principals.map(&:id)).to include(minority.id)
-    end
-
-    it "still runs generic schema discovery for columns no configured dimension names, once room remains" do
-      47.times { DimensionPrincipal.create!(role: "responder", premium: false) }
-      premium_minority = DimensionPrincipal.create!(role: "responder", premium: true)
-
-      result = described_class.new(source: DimensionPrincipal.all, limit: 10,
-                                   dimensions: dimensions(role: :role)).call
-
-      expect(result.principals.map(&:id)).to include(premium_minority.id)
-    end
-
-    it "behaves exactly as before when no dimensions are configured" do
-      47.times { DimensionPrincipal.create!(role: "responder") }
-
-      result = described_class.new(source: DimensionPrincipal.all, limit: 5).call
-
-      expect(result.strategy).to eq(:representative)
-      expect(result.principals.size).to eq(5)
-    end
-
-    it "never issues more queries than the declared budget once configured dimensions are added" do
-      60.times { |i| DimensionPrincipal.create!(role: %w[responder local_admin group_admin][i % 3], plan: "p#{i}") }
-      dimension = dimensions(role: :role, admin: :system_admin?, reseller: ->(record) { record.plan == "p0" })
-
-      queries = sql_queries do
-        described_class.new(source: DimensionPrincipal.all, limit: 10, dimensions: dimension).call
-      end
-
-      expect(queries.size).to be <= described_class.query_budget(10)
-    end
-  end
-
-  # Candidate populations deliberately have no surface here any more: they
-  # are Karst::Access::Search's second stage (see spec/access/search_spec.rb).
-  # What this file still pins is that removing them did not weaken ordinary
-  # sampling, and that generic schema guessing stays a fallback rather than a
-  # supplement.
-  describe "generic stratification as a fallback" do
-    it "still surfaces a minority schema state when no dimension is configured" do
+  # Neither configured dimensions nor candidate populations have any surface
+  # here. Populations are Karst::Access::Search's second stage (see
+  # spec/access/search_spec.rb); dimensions are gone entirely, so schema
+  # discovery is the whole of stratification rather than a fallback for
+  # applications that declared nothing. What this file pins is that neither
+  # removal weakened ordinary sampling.
+  describe "schema-derived stratification" do
+    it "still surfaces a minority schema state with nothing configured at all" do
       SamplerPrincipal.delete_all
       295.times { |i| SamplerPrincipal.create!(premium: false, status: :active, tenant_id: i) }
       premium = SamplerPrincipal.create!(premium: true, status: :active, tenant_id: 900)
@@ -615,21 +506,21 @@ RSpec.describe Karst::Access::PrincipalSampler do
       expect(result.principals.map(&:id)).to include(premium.id)
     end
 
-    it "does not add generic schema guesses on top of configured dimensions" do
+    it "reports schema-derived reasons as sampling evidence" do
       SamplerPrincipal.delete_all
       10.times { SamplerPrincipal.create!(premium: false, status: :active, tenant_id: 1) }
       10.times { SamplerPrincipal.create!(premium: true, status: :canceled, tenant_id: 2) }
-      dimensions = Karst::Access::PrincipalDimension.normalize(plan: :status)
 
-      result = described_class.new(source: SamplerPrincipal.all, limit: 25, dimensions: dimensions).call
+      result = described_class.new(source: SamplerPrincipal.all, limit: 25).call
 
-      reasons = result.candidates.flat_map(&:reasons).uniq
-      expect(reasons).to all(start_with("plan="))
+      expect(result.candidates.flat_map(&:reasons)).to include(a_string_matching(/\Apremium=/))
     end
 
-    it "accepts no populations argument at all" do
-      expect { described_class.new(source: SamplerPrincipal.all, populations: {}) }
-        .to raise_error(ArgumentError, /unknown keyword: :?populations/)
+    it "accepts neither a dimensions nor a populations argument" do
+      %i[dimensions populations].each do |keyword|
+        expect { described_class.new(source: SamplerPrincipal.all, keyword => {}) }
+          .to raise_error(ArgumentError, /unknown keyword: :?#{keyword}/)
+      end
     end
   end
 end

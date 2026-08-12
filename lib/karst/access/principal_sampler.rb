@@ -2,15 +2,19 @@
 
 require_relative "../value"
 require_relative "sweep"
-require_relative "principal_dimension"
 require_relative "sensitive_attribute_names"
 
 module Karst
   module Access
     # Selects a small candidate set without ever scanning the full principal
-    # relation: one bounded recent pool, stratified in memory by whatever
-    # states the application declared, with schema-derived states as a
-    # best-effort fallback when it declared none.
+    # relation: one bounded recent pool, stratified in memory by coarse
+    # states derived from the schema itself -- boolean and enum columns,
+    # nullable-foreign-key presence, and low-cardinality scalars, minus
+    # anything PII- or tenancy-shaped. Nothing here is configurable: an
+    # application that needs a specific rare user reaches it through a
+    # candidate population (Karst::Access::CandidatePopulation), which is
+    # named, reportable evidence, rather than by tuning how the ordinary
+    # sample spreads.
     #
     # Application-authored *populations* deliberately do not live here. They
     # are a second search stage owned by Karst::Access::Search, which runs
@@ -41,11 +45,10 @@ module Karst
       end
 
       def initialize(source:, limit: Karst.config.access_sweep_limit,
-                     pool_size: Karst.config.principal_candidate_pool_size, dimensions: {})
+                     pool_size: Karst.config.principal_candidate_pool_size)
         @source = source
         @limit = limit
         @pool_size = pool_size
-        @dimensions = dimensions
         @queries = 0
         @query_budget = self.class.query_budget
       end
@@ -80,19 +83,13 @@ module Karst
                    candidate_pool_size: nil)
       end
 
-      # rubocop:disable Metrics/MethodLength
       def representative_sample(relation)
         klass = relation.klass
         primary_key = single_primary_key!(klass)
         pool = recent_pool(relation, klass, primary_key)
         selected = {}
 
-        dimensions = configured_dimensions(pool)
-        # Generic schema guesses are the fallback for an application that has
-        # declared no states of its own -- never a supplement to the ones it
-        # did declare.
-        dimensions = generic_dimensions(pool, klass) if dimensions.empty?
-        apply_dimensions(pool, primary_key, dimensions, selected)
+        apply_dimensions(pool, primary_key, generic_dimensions(pool, klass), selected)
         fill_remaining(pool, primary_key, selected)
 
         candidates = selected.values
@@ -100,7 +97,6 @@ module Karst
                    strategy: :representative, queries: @queries, candidate_pool_size: @pool_size)
       end
 
-      # rubocop:enable Metrics/MethodLength
       def recent_pool(relation, klass, primary_key)
         return [] unless query_allowed?
 
@@ -121,19 +117,6 @@ module Karst
 
       def query_allowed?
         @queries < @query_budget
-      end
-
-      def configured_dimensions(pool)
-        @dimensions.values.filter_map do |dimension|
-          values = pool.group_by { |record| dimension.value_for(record) }
-          next unless useful_values?(values)
-
-          values.sort_by { |value, _| value.to_s }.map do |value, _|
-            dimension_value("#{dimension.name}=#{dimension.format_value(value)}") do |record|
-              dimension.value_for(record) == value
-            end
-          end
-        end
       end
 
       def generic_dimensions(pool, klass)
@@ -165,7 +148,18 @@ module Karst
         values = pool.map { |record| record.public_send(column.name) }.uniq
         return unless values.size.between?(2, CARDINALITY_CUTOFF)
 
-        values.sort_by(&:to_s).map { |value| equality_value(column, value, value.inspect) }
+        values.sort_by(&:to_s).map { |value| equality_value(column, value, format_value(value)) }
+      end
+
+      # Booleans/nil render as `true`/`false`/`nil`; everything else (a role
+      # string, an enum key, a plan tier) renders plainly -- so a `role`
+      # column reads `role=local_admin`, not the quoted `role="local_admin"`
+      # a blind #inspect would produce.
+      def format_value(value)
+        case value
+        when true, false, nil then value.inspect
+        else value.to_s
+        end
       end
 
       # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity
@@ -240,10 +234,6 @@ module Karst
 
       def dimension_value(reason, &matcher)
         DimensionValue.new(reason: reason, matcher: matcher)
-      end
-
-      def useful_values?(values)
-        values.size.between?(2, CARDINALITY_CUTOFF)
       end
     end
     # rubocop:enable Metrics/ClassLength

@@ -135,14 +135,14 @@ RSpec.describe "multiple configured principal sources" do
     expect(Karst::Identity.resolve(model_name: "MultiSourceReader", id: 500)).to eq(reader)
   end
 
-  it "threads PrincipalSampler's dimension evidence through Sweep's outcomes, tagged by source" do
+  it "threads PrincipalSampler's schema-derived evidence through Sweep's outcomes, tagged by source" do
     47.times { MultiSourceAuthor.create!(behavior: "ok", premium: false) }
     premium_author = MultiSourceAuthor.create!(behavior: "ok", premium: true)
     47.times { MultiSourceReader.create!(behavior: "ok", role: "responder") }
     admin_reader = MultiSourceReader.create!(behavior: "ok", role: "system_admin")
     Karst.config.principal_sources = {
-      authors: { records: -> { MultiSourceAuthor.all }, dimensions: { premium: :premium } },
-      readers: { records: -> { MultiSourceReader.all }, dimensions: { role: :role } }
+      authors: { records: -> { MultiSourceAuthor.all } },
+      readers: { records: -> { MultiSourceReader.all } }
     }
     Karst.config.access_sweep_limit = 10
 

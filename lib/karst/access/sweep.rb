@@ -67,6 +67,7 @@ module Karst
 
       def call
         raise Unavailable, "access sweeps are development-only" unless Rails.env.development?
+        raise Unavailable, "Karst is disabled (config.enabled)" unless Karst.enabled?
 
         require "action_dispatch/testing/integration" unless defined?(ActionDispatch::Integration::Session)
 

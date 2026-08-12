@@ -17,8 +17,8 @@ end
 class SelectionAuthor < PrincipalSelectionFixtureRecord; end
 class SelectionReader < PrincipalSelectionFixtureRecord; end
 
-def selection_source(name, klass, dimensions: {})
-  Karst::Access::PrincipalSource.new(name: name, records: -> { klass.all }, dimensions: dimensions)
+def selection_source(name, klass, populations: {})
+  Karst::Access::PrincipalSource.new(name: name, records: -> { klass.all }, populations: populations)
 end
 
 # rubocop:disable Metrics/BlockLength
@@ -190,14 +190,18 @@ RSpec.describe Karst::Access::PrincipalSelection do
       expect(result).not_to respond_to(:populations)
     end
 
-    it "carries each source's configured dimensions through independently" do
+    # Stratification is schema-derived per source now, with nothing to
+    # configure -- what still matters is that each source is sampled
+    # independently, so a minority state in one is never hidden by the
+    # other's row distribution.
+    it "stratifies each source independently over its own schema" do
       47.times { SelectionAuthor.create!(premium: false) }
       premium_author = SelectionAuthor.create!(premium: true)
       47.times { SelectionReader.create!(role: "responder") }
       admin_reader = SelectionReader.create!(role: "system_admin")
       sources = {
-        authors: selection_source(:authors, SelectionAuthor, dimensions: { premium: :premium }),
-        readers: selection_source(:readers, SelectionReader, dimensions: { role: :role })
+        authors: selection_source(:authors, SelectionAuthor),
+        readers: selection_source(:readers, SelectionReader)
       }
 
       result = described_class.new(sources: sources, limit: 10).call

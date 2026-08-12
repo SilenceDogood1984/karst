@@ -3,11 +3,9 @@
 require "rails/railtie"
 
 module Karst
-  # Installs Karst after application initializers have configured it, and
-  # separately inserts Karst's development-only web surface. These are kept as
-  # two independent initializers on purpose: capture subscription and HTTP
-  # exposure are separate concerns with separate lifecycles, even though both
-  # happen to be Rails integration points.
+  # Inserts Karst's development-only web surface and rake tasks. Karst
+  # installs no notification subscription, no eager-loaded state, and nothing
+  # that runs on an ordinary application request outside development.
   class Railtie < Rails::Railtie
     # Must run before the middleware stack is built (a later Finisher
     # initializer), not in config.after_initialize, which runs after the stack
@@ -21,10 +19,6 @@ module Karst
       app.middleware.use(Web::Middleware)
 
       Rails.logger&.info("Karst: evidence at /karst")
-    end
-
-    config.after_initialize do
-      Karst.subscribe! if Karst.enabled?
     end
 
     rake_tasks do

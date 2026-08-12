@@ -58,15 +58,15 @@ RSpec.configure do |config|
     # as a bare VERSION-only module even in a run where no spec file has
     # required the full library -- `defined?(Karst)` alone can't tell those
     # apart.
-    next unless defined?(Karst) && Karst.respond_to?(:unsubscribe!)
+    next unless defined?(Karst) && Karst.respond_to?(:config)
 
-    Karst.unsubscribe!
-    configuration = Karst.const_get(:Configuration, false).new
-    configuration.enabled = false
-    Karst.instance_variable_set(:@config, configuration)
-    %i[@buffer @subscription].each do |variable|
-      Karst.remove_instance_variable(variable) if Karst.instance_variable_defined?(variable)
-    end
+    # Drop the memoized configuration rather than replacing it with one built
+    # here: config.enabled now gates Karst's whole development surface and is
+    # derived from Rails.env, and an after hook runs while the example's own
+    # Rails stubs are still installed. Letting the next example construct its
+    # Configuration lazily means each one sees its own Rails state, not the
+    # previous example's leftovers.
+    Karst.remove_instance_variable(:@config) if Karst.instance_variable_defined?(:@config)
   end
 end
 # rubocop:enable Metrics/BlockLength

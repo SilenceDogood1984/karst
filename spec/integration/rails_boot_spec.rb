@@ -1,132 +1,52 @@
 # frozen_string_literal: true
 
-# rubocop:disable Metrics/BlockLength
-
 require "spec_helper"
 require "open3"
 require "rbconfig"
 require_relative "../support/test_application"
 
+# rubocop:disable Metrics/BlockLength
 RSpec.describe "Rails integration harness" do
-  before do
-    Karst.config.enabled = true
-    Karst.subscribe!
-  end
+  before { Karst.config.enabled = true }
 
-  it "applies configuration before one stable automatic subscription on the intended Rails series" do
+  it "applies application initializer configuration during boot on the intended Rails series" do
     expect(defined?(Karst)).to eq("constant")
     expect(KarstTestApplication.initializer_ran).to be(true)
-    expect(KarstTestApplication.subscribed_during_initializer).to be(false)
     expect(Rails.application.initialized?).to be(true)
     expect(Rails.gem_version.segments.first(2).join(".")).to eq(ENV.fetch("EXPECTED_RAILS_VERSION"))
     expect(Karst).to be_enabled
-    expect(Karst).to be_subscribed
-    expect(KarstTestApplication.subscription_handle_after_initialization).not_to be_nil
-    expect(KarstTestApplication.listener_count_after_initialization).to eq(1)
-    expect(KarstTestApplication.owned_listener_count).to eq(1)
+  end
 
+  it "survives a reload cycle without accumulating state" do
     previous_count = KarstTestApplication.prepare_count
-    subscription_handle = KarstTestApplication.owned_subscription_handle
+    listeners = KarstTestApplication.sql_listener_count
 
     KarstTestApplication.run_prepare_cycle
 
     expect(KarstTestApplication.prepare_count).to be > previous_count
-    expect(KarstTestApplication.owned_subscription_handle).to equal(subscription_handle)
-    expect(KarstTestApplication.owned_listener_count).to eq(1)
+    expect(KarstTestApplication.sql_listener_count).to eq(listeners)
   end
 
-  it "converts a synthetic SQL notification to the minimal immutable event shape" do
-    Karst.buffer.clear
-
-    ActiveSupport::Notifications.instrument(
-      "sql.active_record",
-      sql: "SELECT 1",
-      name: "Karst integration probe"
-    )
-
-    expect(Karst.buffer.to_a).to contain_exactly(
-      an_instance_of(Karst::Sql::Event).and(
-        have_attributes(
-          name: "Karst integration probe",
-          sql: "SELECT 1",
-          cached: false,
-          duration_ms: be_a(Float),
-          monotonic_started_at: be_a(Float)
-        )
-      )
-    )
-    event = Karst.buffer.to_a.last
-    expect(event.members).to eq(%i[name sql cached duration_ms monotonic_started_at])
-    expect(event).to be_frozen
-    expect(event.name).to be_frozen
-    expect(event.sql).to be_frozen
+  # Karst captured every sql.active_record notification process-wide in an
+  # earlier product direction. Nothing reports that evidence now, so a full
+  # Rails boot must not reintroduce that subscription lifecycle. The exact
+  # "requiring Karst adds no sql.active_record listener" check runs in a
+  # clean process in spec/karst_spec.rb, where Rails' own Active Record log
+  # subscriber is not there to be confused for Karst's.
+  it "exposes no runtime SQL capture surface after a full Rails boot" do
+    %i[buffer window subscribe! unsubscribe! subscribed?].each do |method|
+      expect(Karst).not_to respond_to(method)
+    end
+    expect(defined?(Karst::Sql)).to be_nil
   end
 
-  it "captures an immutable SQL event from a real Active Record query" do
-    ActiveRecord::Schema.define do
-      create_table :karst_integration_widgets, force: true do |table|
-        table.string :name
-      end
-    end
-    widget_model = Class.new(ActiveRecord::Base) do
-      self.table_name = "karst_integration_widgets"
-    end
-    widget_model.create!(name: "first")
-    Karst.buffer.clear
-
-    widget_model.where(name: "first").to_a
-
-    event = Karst.buffer.to_a.find do |candidate|
-      candidate.sql.include?("SELECT") && candidate.sql.include?("karst_integration_widgets")
-    end
-    expect(event).to be_a(Karst::Sql::Event)
-    expect(event.sql).to include("karst_integration_widgets")
-    expect(event.duration_ms).to be >= 0
-    expect(event.sql).to be_frozen
-    expect(event.name).to be_nil.or be_frozen
-    expect(event).to be_frozen
-  end
-
-  it "derives a Window with grouped shapes from real, repeated Active Record queries" do
-    ActiveRecord::Schema.define do
-      create_table :karst_integration_widgets, force: true do |table|
-        table.string :name
-      end
-    end
-    widget_model = Class.new(ActiveRecord::Base) do
-      self.table_name = "karst_integration_widgets"
-    end
-    widget_model.create!(name: "first")
-    widget_model.create!(name: "second")
-    Karst.buffer.clear
-
-    widget_model.where(name: "first").to_a
-    widget_model.where(name: "second").to_a
-    widget_model.where(name: "third").to_a
-
-    window = Karst.window
-
-    expect(window.event_count).to be > 0
-    expect(window.event_count).to eq(window.shapes.sum(&:count) + window.declined.size)
-    expect(window.shapes).not_to be_empty
-
-    widget_shape = window.shapes.find { |shape| shape.canonical_sql.include?("karst_integration_widgets") }
-    expect(widget_shape).not_to be_nil
-    expect(widget_shape.count).to be >= 2
-    expect(widget_shape.samples).not_to be_empty
-    expect(widget_shape.samples).to all(be_a(Karst::Sql::Event))
-    expect(widget_shape.samples).to all(be_frozen)
-  end
-
-  it "remains unsubscribed when application initializer configuration disables Karst" do
+  it "boots cleanly, and stays off, when application initializer configuration disables Karst" do
     harness = File.expand_path("../support/test_application", __dir__)
     script = <<~RUBY
       require #{harness.inspect}
-      abort "configuration initializer did not run before subscription" unless KarstTestApplication.subscribed_during_initializer == false
+      abort "configuration initializer did not run" unless KarstTestApplication.initializer_ran
       abort "Karst is enabled" if Karst.enabled?
-      abort "Karst subscribed" if Karst.subscribed?
       Rails.application.reloader.prepare!
-      abort "prepare cycle subscribed Karst" if Karst.subscribed?
       ActiveSupport::Notifications.instrument("sql.active_record", sql: "SELECT 1")
     RUBY
 
@@ -141,5 +61,4 @@ RSpec.describe "Rails integration harness" do
     expect(status).to be_success, output
   end
 end
-
 # rubocop:enable Metrics/BlockLength

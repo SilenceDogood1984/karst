@@ -14,7 +14,6 @@ require "active_support/notifications"
 require_relative "../access/sweep"
 require_relative "../access/search"
 require_relative "../access/principal_selection"
-require_relative "../access/scenario_sweep"
 require_relative "../access/candidate_population"
 require_relative "../access/population_discovery"
 require_relative "../access/population_approvals"
@@ -265,7 +264,6 @@ module Karst
       # name can be executed.
       def analyze(env, params)
         return nil unless env["REQUEST_METHOD"] == "POST"
-        return scenario_analyze(params) if params["operation"] == "artifact_sweep"
         return nil unless params["operation"] == "access_sweep"
 
         Access::Search.new(path: params["path"], http_method: params["method"],
@@ -290,20 +288,6 @@ module Karst
         count.positive? ? count : nil
       rescue StandardError
         nil
-      end
-
-      def scenario_analyze(params)
-        scenario = Karst.config.access_scenarios[params["scenario"].to_s.to_sym]
-        raise ArgumentError, "unknown access scenario" unless scenario
-
-        sampled = Access::PrincipalSelection.new(sources: Identity.principal_sources).call
-        Access::ScenarioSweep.new(scenario: scenario, principals: sampled.principals,
-                                  candidate_pool_size: sampled.candidate_pool_size,
-                                  sampling_reasons: sampling_reasons(sampled)).call
-      end
-
-      def sampling_reasons(sampled)
-        sampled.candidates.to_h { |candidate| [candidate.principal, candidate.reasons] }
       end
 
       def mutate_browser_identity(env, params, browser_identity)
@@ -342,8 +326,10 @@ module Karst
       # Re-checked per request as defense in depth: the middleware is only
       # inserted into the stack in development (see Railtie), but this keeps
       # that guarantee independent of how or when the middleware was inserted.
+      # config.enabled is read live rather than at insertion time, so turning
+      # Karst off never depends on initializer ordering.
       def development?
-        Rails.env.development?
+        Rails.env.development? && Karst.enabled?
       end
 
       class << self

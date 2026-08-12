@@ -56,7 +56,7 @@ Karst found 3 application-defined user groups that could be tried. [ Review cand
 
 Open `/karst/populations`, check the groups Karst may try (`system_admins`, `auditors`, ...), and press **Approve**. From then on, approved groups are searched automatically — through `/karst`, the CLI, and MCP alike — until one produces a usable user. Approving is a hint, never a claim: Karst only reports that a user was *sampled from* `system_admins`, never that the group is what granted access.
 
-Prefer configuring populations by hand instead (or need this to apply outside your own machine, e.g. in CI)? `config.principal_populations` still works exactly as before and always takes precedence over an approval of the same name — see [docs/advanced-configuration.md](docs/advanced-configuration.md#curating-candidate-populations) for discovery, approval, and precedence details.
+Need populations committed as reviewable code, or applied outside your own machine (CI)? `config.principal_populations` does that and always takes precedence over an approval of the same name — see [docs/advanced-configuration.md](docs/advanced-configuration.md#curating-candidate-populations) for discovery, approval, and precedence details.
 
 ## What Karst shows you
 
@@ -99,15 +99,15 @@ Claude Code or another [MCP](https://modelcontextprotocol.io) client can call `v
 
 ## Configuration
 
+Usually, you don't. A conventional Devise app needs no initializer at all: the user model comes from Devise's own routing metadata, sampling states come from your schema, and candidate populations are approved at `/karst/populations` rather than written down.
+
+The one option worth knowing is the off switch:
+
 ```ruby
-Karst.configure do |config|
-  config.enabled = true              # on by default in development and test
-  config.access_sweep_limit = 25     # users tried per search (max 100)
-  config.principal_populations = { system_admins: -> { User.system_admins } } # optional -- see below
-end
+Karst.configure { |config| config.enabled = false }  # on by default in development and test
 ```
 
-More settings — multiple user models, sampling dimensions, artifact scenarios, the runtime SQL buffer — are in [docs/advanced-configuration.md](docs/advanced-configuration.md).
+Everything else is for exceptional applications — custom authentication, several user models, populations committed as code for CI, and a few bounds most developers never touch. All of it lives in [docs/advanced-configuration.md](docs/advanced-configuration.md).
 
 ## Custom authentication
 
@@ -133,7 +133,7 @@ That rollback only covers writes made through the same Active Record connection.
 
 ## Compatibility
 
-Ruby 2.7+, Rails 6.1+. Every core capability (`/karst`, CLI, MCP, evidence capture) works across that whole range; the page-local badge needs Rack 3 (Rails 7.1+) and is simply absent on Rails 6.1/7.0 — `/karst` itself is unaffected. See [ARCHITECTURE.md](ARCHITECTURE.md#compatibility-policy) for the CI-backed matrix.
+Ruby 2.7+, Rails 6.1+. Every core capability (`/karst`, CLI, MCP, access search) works across that whole range; the page-local badge needs Rack 3 (Rails 7.1+) and is simply absent on Rails 6.1/7.0 — `/karst` itself is unaffected. See [ARCHITECTURE.md](ARCHITECTURE.md#compatibility-policy) for the CI-backed matrix.
 
 ## Contributing
 

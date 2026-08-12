@@ -4,8 +4,8 @@ module Karst
   module Access
     # Shared, deliberately conservative name-based PII filter used everywhere
     # Karst decides whether an attribute name is safe to inspect or display --
-    # both generic schema discovery (PrincipalSampler) and explicitly
-    # configured evidence (PrincipalDimension). Column/attribute names are
+    # schema-derived sampling states (PrincipalSampler) above all.
+    # Column/attribute names are
     # never PII-inspected, only compared (case-insensitive, underscore-
     # tokenized) against this list. False positives (skipping a safe name)
     # are free; false negatives are not, so this stays a single source of

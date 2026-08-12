@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require "logger" # see Karst::Subscription for why this must precede active_support on Rails 6.1
+require "logger" # see lib/karst.rb for why this must precede active_support on Rails 6.1
 require "active_support"
 require "active_support/notifications"
 require_relative "../execution_context"

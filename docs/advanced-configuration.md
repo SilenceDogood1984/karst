@@ -1,6 +1,8 @@
 # Advanced configuration
 
-This document covers Karst configuration beyond the golden path in [README.md](../README.md): custom authentication, multiple user models, curating candidate populations, artifact scenarios, resource evidence, and the full configuration reference. See [ARCHITECTURE.md](../ARCHITECTURE.md) for how these pieces are implemented.
+Almost nothing here is part of installing Karst. A conventional single-model Devise application configures none of it — see [README.md](../README.md). This document is for the exceptions: custom authentication, identity spread across several models, populations committed as code, and a few bounds an ordinary developer should never need to change. See [ARCHITECTURE.md](../ARCHITECTURE.md) for how these pieces are implemented.
+
+If you are looking for an option that used to be here, check [Removed configuration](#removed-configuration) at the end.
 
 ## Custom or non-Devise authentication
 
@@ -68,13 +70,13 @@ Some apps represent identity as more than one model (`Author`, `Reader`) rather 
 ```ruby
 Karst.configure do |config|
   config.principal_sources = {
-    authors: { records: -> { Author.all }, dimensions: { premium: :premium? }, populations: { admins: -> { Author.admins } } },
+    authors: { records: -> { Author.all }, populations: { admins: -> { Author.admins } } },
     readers: -> { Reader.all }
   }
 end
 ```
 
-Each source is a name plus a lazily-evaluated `records:` callable, and optional `dimensions:`/`populations:` of its own. Sources are never merged together — Karst keeps each independently queryable and never confuses `Author #12` with `Reader #12`. `config.principals` (plus `config.principal_dimensions`/`config.principal_populations`) remains fully supported; it's normalized internally into one implicit `:default` source, so this is additive, not a breaking change to the simple form in the main README.
+Each source is a name plus a lazily-evaluated `records:` callable, and optional `populations:` of its own. Those are the only two keys a source spec accepts; anything else raises `ArgumentError` rather than being quietly ignored. Sources are never merged together — Karst keeps each independently queryable and never confuses `Author #12` with `Reader #12`. `config.principals` (plus `config.principal_populations`) remains fully supported; it's normalized internally into one implicit `:default` source, so this is additive, not a breaking change to the simple form in the main README.
 
 Candidates are split across sources within one overall `access_sweep_limit`: every non-empty source gets at least one candidate, and the rest fill round-robin so one source running dry never starves another.
 
@@ -97,28 +99,15 @@ Checking one model behaves exactly like a single-model Devise app always has. Ch
 
 The selection is saved to `tmp/karst/principal_source_selection.json`, relative to `Rails.root` — the same machine-local, git-ignored, development/test-only mechanism candidate-population approval already uses (see [Curating candidate populations](#curating-candidate-populations) below): a bare model name, nothing else, revalidated against Devise's own current `Devise.mappings` on every read. A selected model Devise no longer maps (removed, renamed) is silently dropped rather than trusted, and if that empties the selection entirely, Karst is ambiguous again and asks once more. An explicitly configured `config.principals`/`config.principal_sources` always wins outright over a saved selection, exactly like it wins over Devise inference. Once saved, `/karst`, `bin/rails karst:verify`, and the MCP `verify_access` tool all pick it up automatically, with no separate wiring — and both return the same actionable, structured error before anything is selected.
 
-## Representative sampling and dimensions
+## Representative sampling
 
-When `config.principals` (or a source's `records:`) returns an Active Record relation, Karst doesn't just take whichever rows sort first — it tries to cover a handful of different observed states within one bounded, recent pool (`principal_candidate_pool_size`, default 1,000 rows, one query).
+Nothing here is configurable — it is documented so you can read Karst's output, not so you can tune it.
 
-By default it looks for boolean columns, enum columns, presence/absence of a nullable foreign key, and low-cardinality scalar columns (2–10 distinct values), in memory, over that one pool. Anything that looks like PII by name (email, phone, address, token, password, and similar) is excluded outright, as is anything shaped like a tenant/account/organization foreign key.
+When `config.principals` (or a source's `records:`) returns an Active Record relation, Karst doesn't just take whichever rows sort first. It fetches one bounded, recent pool (`principal_candidate_pool_size`, default 1,000 rows, exactly one query) and then, in memory over that pool, tries to cover a handful of different observed states: boolean columns, enum columns, presence/absence of a nullable foreign key, and low-cardinality scalar columns (2–10 distinct values). Anything that looks like PII by name (email, phone, address, token, password, and similar) is excluded outright, as is anything shaped like a tenant/account/organization foreign key.
 
-You can tell it explicitly which states matter instead of relying on that schema guess:
+That produces the `Sampled for: role=local_admin` line next to a usable user. It is sampling evidence, never an authorization claim — Karst never states or implies that the role is what let the request through.
 
-```ruby
-Karst.configure do |config|
-  config.principals = -> { User.all }
-  config.principal_dimensions = {
-    role: :role,
-    system_admin: :system_admin?,
-    reseller: ->(user) { user.plan == "reseller" }
-  }
-end
-```
-
-Each dimension is a plain attribute, a boolean predicate method, or a callable of one argument. A dimension named (or reading an attribute named) like `email`, `phone`, `token`, or similar is rejected with `ArgumentError` as soon as it's configured — dimensions are for coarse state, not identity data. Configured dimensions replace the schema guess entirely; they're never combined. This shapes the *ordinary sample* only — candidate populations (below) are a separate, later search stage.
-
-A dimension or population is sampling evidence, never an authorization claim — Karst may report `role=local_admin` next to a usable user; it never states or implies that the role is what let the request through.
+When the right user is too rare for this to reach — a role held by three people out of 400,000 — that is what candidate populations are for, and they are a separate, later search stage with its own reporting.
 
 ## Curating candidate populations
 
@@ -142,59 +131,58 @@ The review page can still generate a ready-to-paste `config.principal_population
 
 When a usable user is found for a route with an `:id` segment (`/admin/imports/123`), Karst separately checks whether that exact resource and that exact user share a direct foreign-key relationship — for example, that `Document#22`'s `user_id` column equals `User#27`'s id. Only columns ending in `_id` are ever inspected, and only a direct column-value comparison is made — never a join or a `has_many` traversal, and no other attribute (name, email, token) is ever read. This is shown as **Related state** on a usable result when available, and simply omitted otherwise.
 
-## Explicit artifact scenarios
-
-Beyond "which user can reach this route," you can define scenarios over other application records ("can any recent import be opened cross-account by an admin who doesn't own it?"):
-
-```ruby
-Karst.configure do |config|
-  config.artifact_source(:imports, limit: 100) do
-    Import.order(created_at: :desc)
-  end
-
-  config.access_scenario(
-    :cross_admin_import,
-    artifact: :imports,
-    path: ->(import) { "/admin/imports/#{import.id}" },
-    expect: { status: 404 },
-    combination_limit: 25,
-    stop_on_match: true
-  )
-end
-```
-
-`expect` accepts `status`, an exact query-free `redirect`, and `body_includes`; all given predicates must match. Artifact sources take a limit from 1–1,000; a scenario caps actual user × artifact requests at `combination_limit` (1–100). `stop_on_match: true` (the default) returns after the first verified match. Every request still uses a fresh session and a rolled-back transaction.
-
-## Runtime SQL evidence
-
-Independent of access search, Karst keeps a small, bounded, in-process buffer of recent `sql.active_record` events (default capacity 2,000, oldest evicted first, cleared on restart):
-
-```ruby
-Karst.buffer.to_a
-window = Karst.window
-```
-
-`Karst.window` snapshots the buffer once into an immutable `Karst::Sql::Window`: `shapes` (grouped, aggregated query shapes, most frequent first), `declined` (events Karst couldn't safely group), and `saturated` (true if the buffer was full, meaning older events may already be gone). The `/karst` panel shows this under **Diagnostics**, alongside spec-observed scenarios for the current controller/action when a scenario catalog is present.
-
 ## Full configuration reference
 
+This is the entire public configuration surface. Every entry is either an escape hatch for an application Karst cannot infer, or a bound with a working default.
+
+### Normal
+
 ```ruby
-Karst.configure do |config|
-  config.enabled = true                    # default: development/test only
-  config.buffer_size = 2_000                # SQL event buffer capacity
-  config.access_sweep_limit = 25            # users tried per search (max 100)
-  config.principal_candidate_pool_size = 1_000  # recent-row pool for sampling (max 10_000)
-  config.population_retry_limit = 3         # records tried per population (max 10)
-  config.usable_access_outcome = ->(outcome) { outcome.status == 200 && ... } # default policy
-end
+config.enabled = true    # default: development/test only
 ```
 
-`usable_access_outcome` lets you redefine what counts as "usable" without changing what evidence is captured — for example, treating a `204` as usable for an API endpoint. The default is: HTTP 200, no observed exception, no halted callback.
+The single switch that turns Karst's whole development surface off — `/karst`, the page badge, `bin/rails karst:verify`, and the MCP `verify_access` tool all refuse to run when it is false. Karst is off in production regardless.
+
+### Escape hatches
+
+| Option | For |
+| --- | --- |
+| `principals` | Custom or non-Devise authentication ([above](#custom-or-non-devise-authentication)) |
+| `assume_identity` / `clear_identity` | Signing a probe session in and out; must be configured together |
+| `assume_browser_identity` / `clear_browser_identity` | Browser **Test as** under custom authentication |
+| `principal_label` | A display label for a non-Active-Record principal |
+| `principal_sources` | Identity spread across several models ([above](#multiple-user-models-configprincipal_sources)) |
+| `principal_populations` | Populations committed as reviewable code, or needed in CI ([above](#curating-candidate-populations)) |
+
+### Bounds
+
+Defaults are chosen to be safe on a large application; changing them is rarely the right fix.
+
+```ruby
+config.access_sweep_limit = 25                # users tried per search (1–100)
+config.principal_candidate_pool_size = 1_000  # recent-row pool for sampling (1–10,000)
+config.population_retry_limit = 3             # records tried per population (1–10)
+config.usable_access_outcome = ->(outcome) { outcome.status == 200 && ... }
+```
+
+Each numeric bound raises `ArgumentError` outside its range rather than clamping. `usable_access_outcome` lets you redefine what counts as "usable" without changing what evidence is captured — for example, treating a `204` as usable for an API endpoint. The default is: HTTP 200, no observed exception, no halted callback.
+
+## Removed configuration
+
+Karst is pre-1.0 and prefers a clean surface to accumulated accidental complexity. These options existed in earlier product directions and are gone. Setting one raises `Karst::RemovedConfiguration` (a `NoMethodError`) naming the removal — Karst never silently ignores a removed option or reinterprets it as something else.
+
+| Removed | Why, and what to do instead |
+| --- | --- |
+| `config.principal_dimensions` | Sampling states are derived from your schema automatically ([above](#representative-sampling)); there is nothing to declare. A user too rare for the ordinary sample is reached through a candidate population, which reports itself as evidence. |
+| `config.artifact_source` / `config.access_scenario` | Artifact scenarios swept application records rather than routes, and had no place in the current product. Karst analyzes routes. |
+| `config.buffer_size` | Runtime SQL capture is gone: Karst kept a process-wide `sql.active_record` buffer that no Karst surface reported any more. `Karst.buffer`, `Karst.window`, `Karst::Sql::*`, and `Karst.subscribe!`/`unsubscribe!`/`subscribed?` are removed with it. Karst now installs no notification subscriber at boot, so it costs a host application nothing per query. Database writes during a probe are still observed and reported — that has always used its own scoped, per-probe subscription. |
+
+A `dimensions:` key inside a `config.principal_sources` spec raises `ArgumentError` for the same reason.
 
 ## Safety detail
 
 - `/karst`, the badge, and browser Test As only run for loopback requests (and, under WSL, the single detected host-side gateway a Windows browser appears from) while `Rails.env.development?` is true. Forwarding headers and other private-network addresses are never trusted.
 - Every probe runs inside `ActiveRecord::Base.transaction(requires_new: true)` and is always rolled back. This only isolates writes made through the same Active Record connection in that request — not jobs, mail, external HTTP calls, files, Redis, or other database connections.
-- Population and dimension callables are evaluated inside that same rollback-only transaction; a population whose callable itself performs a write is rejected even though rollback was attempted, because Karst observed `INSERT`/`UPDATE`/`DELETE` SQL from it.
+- Population callables are evaluated inside that same rollback-only transaction; a population whose callable itself performs a write is rejected even though rollback was attempted, because Karst observed `INSERT`/`UPDATE`/`DELETE` SQL from it.
 - Every search is bounded: at most `access_sweep_limit` requests for the ordinary sample, and the automatic population retry stage can add at most that many again — so enabling populations can roughly double a search's cost, never more.
 - Karst never looks up a user outside a configured principal source. Submitting an arbitrary model name/id to **Test as** resolves nothing unless that model is one of your configured sources.
