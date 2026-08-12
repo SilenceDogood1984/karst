@@ -448,14 +448,6 @@ module Karst
           "could not be resolved#{detail}"
         end
 
-        def dominant_halted_callback(outcomes)
-          tally = Hash.new(0)
-          outcomes.filter_map(&:halted_callback).each { |callback| tally[callback] += 1 }
-          return nil if tally.empty?
-
-          tally.max_by { |_callback, count| count }.first
-        end
-
         def users(count)
           count == 1 ? "user" : "users"
         end
@@ -493,16 +485,6 @@ module Karst
 
           size = ActiveSupport::NumberHelper.number_to_delimited(initial.candidate_pool_size)
           " from up to #{escape(size)} recent users"
-        end
-
-        # A bounded candidate pool is reported explicitly rather than left
-        # implicit, so this never reads as "every user was searched."
-        def candidate_pool_note(result)
-          size = result.candidate_pool_size
-          return "" unless size
-
-          delimited = ActiveSupport::NumberHelper.number_to_delimited(size)
-          " · candidate pool: up to #{escape(delimited)} most recent users"
         end
 
         def write_evidence(count)

@@ -18,8 +18,6 @@ require_relative "../access/candidate_population"
 require_relative "../access/population_discovery"
 require_relative "../access/population_approvals"
 require_relative "../access/approved_populations"
-require_relative "../access/population_preview"
-require_relative "../access/population_config_snippet"
 require_relative "../access/principal_source_selection"
 require_relative "../identity/devise_support"
 
@@ -144,15 +142,12 @@ module Karst
         discovery = Access::PopulationDiscovery.new.call
         saving = saving_approvals?(env, params)
         record = saving ? save_approvals(discovery, params) : Access::PopulationApprovals.load
-        render_populations(discovery, params, record, saving)
+        render_populations(discovery, record, saving)
       end
 
-      def render_populations(discovery, params, record, saved)
-        approved = approved_candidates(discovery, record)
-        snippet = Access::PopulationConfigSnippet.generate(approved) if params["generate_snippet"]
+      def render_populations(discovery, record, saved)
         Web::PopulationsPanel.render(
           discovery: discovery, approved: record.entries, stale: stale_approvals(record),
-          snippet: snippet, preview: population_preview(discovery, params),
           storage_path: Access::PopulationApprovals.display_path, storage_error: record.error, saved: saved
         )
       end
@@ -173,13 +168,6 @@ module Karst
                                                  method_name: candidate.method_name.to_s)
         end
         Access::PopulationApprovals.replace(entries)
-      end
-
-      # Discovery candidates (which carry principal-source metadata the
-      # snippet generator needs) for the approved entries that are still
-      # discovered at all.
-      def approved_candidates(discovery, record)
-        discovery.candidates.select { |candidate| record.approved?(candidate.model_name, candidate.method_name) }
       end
 
       def stale_approvals(record)
@@ -211,17 +199,6 @@ module Karst
 
       def forbidden
         [403, { "content-type" => "text/plain; charset=utf-8", "cache-control" => "no-store" }, ["Forbidden"]]
-      end
-
-      def population_preview(discovery, params)
-        key = params["preview"].to_s
-        return nil if key.empty?
-
-        candidate = discovery.candidates.find { |item| candidate_key(item) == key }
-        return nil unless candidate
-
-        Access::PopulationPreview.call(model_name: candidate.model_name, method_name: candidate.method_name,
-                                       discovery_result: discovery)
       end
 
       def candidate_key(candidate)

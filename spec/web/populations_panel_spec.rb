@@ -16,12 +16,6 @@ RSpec.describe Karst::Web::PopulationsPanel do
     Karst::Access::PopulationDiscovery::Result.new(model_groups: groups, load_warning: load_warning)
   end
 
-  def candidate(model_name, method_name, principal_source: nil)
-    Karst::Access::PopulationDiscovery::Candidate.new(
-      model_name: model_name, method_name: method_name, principal_source: principal_source
-    )
-  end
-
   def entry(model_name, method_name)
     Karst::Access::PopulationApprovals::Entry.new(model_name: model_name, method_name: method_name)
   end
@@ -124,15 +118,6 @@ RSpec.describe Karst::Web::PopulationsPanel do
       expect(render(discovery: discovery(groups))).not_to include("Approvals saved.")
     end
 
-    it "keeps Preview and the Ruby export on a separate form, so neither can save an approval" do
-      body = render(discovery: discovery([group("User", [:system_admins])]))
-
-      expect(body).to include('<form id="karst-secondary" method="post" action="/karst/populations"></form>')
-      expect(body).to include('<button type="submit" form="karst-secondary" name="preview" ' \
-                              'value="User::system_admins">Preview</button>')
-      expect(body).to include('form="karst-secondary" name="generate_snippet"')
-    end
-
     it "shows a user-source badge only for a model matching a configured source" do
       groups = [group("User", [:system_admins], principal_source: :default), group("Subscription", [:renewable])]
 
@@ -182,36 +167,6 @@ RSpec.describe Karst::Web::PopulationsPanel do
                     approved: [entry("User", "system_admins")], stale: [])
 
       expect(body).not_to include("not used")
-    end
-  end
-
-  describe "advanced Ruby export" do
-    it "keeps snippet generation available but out of the primary flow" do
-      body = render(discovery: discovery([group("User", [:system_admins])]))
-
-      expect(body).to include("Advanced: export approvals as Ruby")
-      expect(body.index("Approve selected groups")).to be < body.index("Advanced: export approvals as Ruby")
-      expect(body).not_to include("<textarea")
-    end
-
-    it "renders a generated snippet in a readonly textarea with a copy control" do
-      snippet = Karst::Access::PopulationConfigSnippet.generate(
-        [candidate("User", :system_admins, principal_source: :default)]
-      )
-
-      body = render(discovery: discovery([group("User", [:system_admins], principal_source: :default)]),
-                    snippet: snippet)
-
-      expect(body).to include("config.principal_populations", 'id="karst-copy-snippet"')
-      expect(body).to include('<textarea id="karst-snippet-code" readonly>')
-    end
-
-    it "discloses, rather than silently drops, an approval with no matching user source" do
-      snippet = Karst::Access::PopulationConfigSnippet.generate([candidate("Subscription", :renewable)])
-
-      body = render(discovery: discovery([group("Subscription", [:renewable])]), snippet: snippet)
-
-      expect(body).to include("not part of a configured user source", "Subscription.renewable")
     end
   end
 
