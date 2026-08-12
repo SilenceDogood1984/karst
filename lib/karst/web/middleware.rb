@@ -5,6 +5,7 @@ require_relative "panel"
 require_relative "populations_panel"
 require_relative "badge"
 require_relative "browser_identity"
+require_relative "csrf"
 require_relative "route_lookup"
 require_relative "../execution_context"
 require "rack/utils"
@@ -84,8 +85,10 @@ module Karst
         selection, denied = principal_source_selection_result(env, params)
         return denied if denied
 
-        browser_identity = BrowserIdentity.new(Rack::Request.new(env))
-        approval, denied = inline_population_approval_result(env, params, browser_identity)
+        request = Rack::Request.new(env)
+        csrf = Csrf.new(request)
+        browser_identity = BrowserIdentity.new(request, csrf: csrf)
+        approval, denied = inline_population_approval_result(env, params, csrf)
         return denied if denied
 
         identity_response = mutate_browser_identity(env, params, browser_identity)
@@ -94,7 +97,7 @@ module Karst
         result = analyze(env, params, approval: approval)
         candidates = inline_population_candidates(result)
         Panel.render(params: params, access_result: result, route_lookup_limitation: lookup&.limitation,
-                     csrf_token: browser_token(browser_identity),
+                     csrf_token: csrf_token(csrf),
                      browser_identity_active: browser_identity_active?(browser_identity),
                      unapproved_candidates: candidates, population_approval_error: approval&.error,
                      principal_source_selection_saved: !selection.nil? && selection.error.nil?,
@@ -122,16 +125,16 @@ module Karst
         env["REQUEST_METHOD"] == "POST" && params["operation"] == "select_principal_sources"
       end
 
-      def inline_population_approval_result(env, params, browser_identity)
+      def inline_population_approval_result(env, params, csrf)
         return [nil, nil] unless env["REQUEST_METHOD"] == "POST" && params["operation"] == "approve_populations"
         return [nil, forbidden] unless approved_origin?(env)
 
-        browser_identity.verify_csrf!(params["csrf_token"])
+        csrf.verify!(params["csrf_token"])
         discovery = Access::PopulationDiscovery.new.call
         approval = Access::PopulationApproval.new(discovery: discovery, principal_sources: Identity.principal_sources,
                                                   submitted: params["population"]).call
         [approval, nil]
-      rescue Identity::Error
+      rescue Csrf::InvalidToken, Identity::Error
         [nil, forbidden]
       end
 
@@ -305,9 +308,9 @@ module Karst
         end
       end
 
-      def browser_token(browser_identity)
-        browser_identity.token
-      rescue Identity::Error
+      def csrf_token(csrf)
+        csrf.token
+      rescue Csrf::InvalidToken
         nil
       end
 

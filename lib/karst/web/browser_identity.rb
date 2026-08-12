@@ -1,16 +1,13 @@
 # frozen_string_literal: true
 
-require "securerandom"
 require "uri"
-require "active_support/security_utils"
+require_relative "csrf"
 
 module Karst
   module Web
-    # State-changing browser identity operations and their same-session CSRF
-    # token. Rails controller CSRF is unavailable because /karst is served at
-    # the Rack boundary, before Action Controller dispatch.
+    # State-changing browser identity operations. Synchronizer-token behavior
+    # belongs to Web::Csrf and is shared with other Rack-boundary forms.
     class BrowserIdentity
-      TOKEN_KEY = "karst.csrf_token"
       ACTIVE_KEY = "karst.browser_identity_active"
 
       # The exact Devise/Warden scope the currently assumed identity was
@@ -20,22 +17,17 @@ module Karst
       # several selected sources produced the principal being cleared.
       SCOPE_KEY = "karst.browser_identity_scope"
 
-      def initialize(request)
+      def initialize(request, csrf: Csrf.new(request))
         @request = request
+        @csrf = csrf
       end
 
       def token
-        session[TOKEN_KEY] ||= SecureRandom.hex(32)
+        @csrf.token
       end
 
       def active?
         session[ACTIVE_KEY] == true
-      end
-
-      # Rack-boundary forms which persist Karst state share the same
-      # synchronizer token as Test As rather than inventing a second token.
-      def verify_csrf!(submitted)
-        verify_token!(submitted)
       end
 
       def assume(params)
@@ -74,14 +66,13 @@ module Karst
       end
 
       def verify_token!(submitted)
-        expected = session[TOKEN_KEY]
-        valid = expected && submitted && expected.bytesize == submitted.bytesize &&
-                ActiveSupport::SecurityUtils.secure_compare(expected, submitted)
-        raise Identity::Unavailable, "invalid Karst CSRF token" unless valid
+        @csrf.verify!(submitted)
+      rescue Csrf::InvalidToken => e
+        raise Identity::Unavailable, e.message
       end
 
       def rotate_token!
-        session[TOKEN_KEY] = SecureRandom.hex(32)
+        @csrf.rotate!
       end
 
       # A blank path is not a caller error: the panel renders this same
