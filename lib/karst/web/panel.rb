@@ -370,7 +370,7 @@ module Karst
         def population_hit(attempt)
           outcome = attempt.result.outcomes.find { |item| usable_outcome?(item) }
           "#{escape(attempt.result.outcomes.size)} #{users(attempt.result.outcomes.size)} tested<br>" \
-            "#{escape(outcome.principal.display_label)} → #{outcome_title(outcome)} ✓"
+            "#{principal_label(outcome.principal)} → #{outcome_title(outcome)} ✓"
         end
 
         def population_miss(attempt)
@@ -413,7 +413,7 @@ module Karst
                    end
           expected = outcome.expected.map { |key, value| "#{key}=#{value}" }.join(", ")
           action = test_as_form(outcome.principal, outcome.path, csrf_token)
-          "<article class=\"usable-principal\"><h4><span>#{escape(outcome.principal.display_label)}</span>#{action}</h4>" \
+          "<article class=\"usable-principal\"><h4><span>#{principal_label(outcome.principal)}</span>#{action}</h4>" \
             "<p><strong>#{escape(outcome.artifact.display_label)}</strong></p><p><code>GET #{escape(outcome.path)}</code></p>" \
             "<p>Expected #{escape(expected)} · Observed #{escape(outcome.status || outcome.exception_class)}#{marker} · Match yes</p></article>"
         end
@@ -524,7 +524,7 @@ module Karst
           writes = outcome.writes_observed ? " — ⚠ #{escape(outcome.write_count)} database writes observed" : ""
           action = test_as_form(outcome.principal, result.path, csrf_token)
           evidence = resource_evidence(outcome, result)
-          "<article class=\"usable-principal\"><h4><span>#{escape(outcome.principal.display_label)}#{writes}</span>" \
+          "<article class=\"usable-principal\"><h4><span>#{principal_label(outcome.principal)}#{writes}</span>" \
             "#{action}</h4><p>#{outcome_title(outcome, prefix: 'Observed ')} · " \
             "#{escape(outcome.elapsed_ms)}ms</p>#{sampled_for(outcome)}#{evidence}</article>"
         end
@@ -611,7 +611,7 @@ module Karst
         def outcome_principal(item, path, csrf_token)
           writes = item.writes_observed ? " — ⚠ #{escape(item.write_count)} database writes observed" : ""
           action = test_as_form(item.principal, path, csrf_token)
-          "<li>#{escape(item.principal.display_label)} — #{escape(item.elapsed_ms)}ms#{writes}#{action}</li>"
+          "<li>#{principal_label(item.principal)} — #{escape(item.elapsed_ms)}ms#{writes}#{action}</li>"
         end
 
         def test_as_form(principal, path, csrf_token)
@@ -626,6 +626,19 @@ module Karst
         def status_title(status)
           phrase = Rack::Utils::HTTP_STATUS_CODES[status]
           phrase ? "#{escape(status)} #{escape(phrase)}" : escape(status)
+        end
+
+        def principal_label(principal)
+          identifier = principal.respond_to?(:authentication_identifier) && principal.authentication_identifier
+          key = principal.respond_to?(:authentication_key) && principal.authentication_key
+          return escape(principal.display_label) unless identifier
+
+          identity = if key == :email
+                       "<a href=\"mailto:#{escape(identifier)}\">#{escape(identifier)}</a>"
+                     else
+                       escape(identifier)
+                     end
+          "#{identity} · #{escape(principal.model_name)} ##{escape(principal.id)}"
         end
 
         def escape(value)

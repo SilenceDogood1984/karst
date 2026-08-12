@@ -108,7 +108,16 @@ module Karst
       end
 
       def principal(value)
-        { model: value.model_name.to_s, id: primitive_id(value.id), label: value.display_label.to_s }
+        # JSON is also the MCP contract. Framework-inferred login identifiers
+        # must never cross that machine-readable boundary. An application-
+        # authored principal_label remains explicit configuration and keeps
+        # its longstanding serialization behavior.
+        label = if Karst.config.principal_label
+                  value.display_label.to_s
+                else
+                  "#{value.model_name} ##{value.id}"
+                end
+        { model: value.model_name.to_s, id: primitive_id(value.id), label: label }
       end
 
       def primitive_id(value)

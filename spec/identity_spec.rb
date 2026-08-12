@@ -6,6 +6,7 @@ require "active_record"
 require "karst"
 
 KarstIdentitySpecPrincipal = Struct.new(:id)
+KarstIdentityDevisePrincipal = Struct.new(:id, :email, :username, :name)
 
 # A dedicated, isolated Active Record connection -- deliberately not
 # ActiveRecord::Base itself -- so this file's schema/fixtures can never
@@ -71,6 +72,48 @@ RSpec.describe Karst::Identity do
 
     expect(described_class.describe(principal).display_label).to eq("Test account 4")
     expect(calls).to eq(1)
+  end
+
+  it "uses a sole Devise-declared email authentication key in its human label" do
+    stub_const("Devise", Module.new)
+    mapping = Struct.new(:to, :name).new(KarstIdentityDevisePrincipal, :user)
+    allow(Devise).to receive(:mappings).and_return(user: mapping)
+    allow(KarstIdentityDevisePrincipal).to receive(:authentication_keys).and_return([:email])
+
+    descriptor = described_class.describe(KarstIdentityDevisePrincipal.new(27, "user@example.com", nil, "Secret"))
+
+    expect(descriptor).to have_attributes(display_label: "user@example.com · KarstIdentityDevisePrincipal #27",
+                                          authentication_key: :email,
+                                          authentication_identifier: "user@example.com")
+  end
+
+  it "supports a nonstandard sole auth key but fails closed for nil, missing, and multiple keys" do
+    stub_const("Devise", Module.new)
+    mapping = Struct.new(:to, :name).new(KarstIdentityDevisePrincipal, :user)
+    allow(Devise).to receive(:mappings).and_return(user: mapping)
+    principal = KarstIdentityDevisePrincipal.new(8, "hidden@example.com", "login-8", "Secret")
+
+    allow(KarstIdentityDevisePrincipal).to receive(:authentication_keys).and_return([:username])
+    expect(described_class.describe(principal).display_label).to start_with("login-8 ·")
+    principal.username = nil
+    expect(described_class.describe(principal).display_label).to eq("KarstIdentityDevisePrincipal #8")
+    allow(KarstIdentityDevisePrincipal).to receive(:authentication_keys).and_return(%i[email username])
+    expect(described_class.describe(principal).display_label).to eq("KarstIdentityDevisePrincipal #8")
+    allow(KarstIdentityDevisePrincipal).to receive(:authentication_keys).and_return([:unknown])
+    expect(described_class.describe(principal).display_label).to eq("KarstIdentityDevisePrincipal #8")
+  end
+
+  it "does not read arbitrary attributes and explicit principal_label prevents auth-key reads" do
+    stub_const("Devise", Module.new)
+    mapping = Struct.new(:to, :name).new(KarstIdentityDevisePrincipal, :user)
+    allow(Devise).to receive(:mappings).and_return(user: mapping)
+    allow(KarstIdentityDevisePrincipal).to receive(:authentication_keys).and_return([:email])
+    principal = KarstIdentityDevisePrincipal.new(2, "hidden@example.com", nil, "Secret")
+    expect(principal).not_to receive(:name)
+    expect(principal).not_to receive(:email)
+    Karst.config.principal_label = ->(_record) { "Configured account" }
+
+    expect(described_class.describe(principal).display_label).to eq("Configured account")
   end
 
   it "clears an assumed identity after success and after a request exception" do

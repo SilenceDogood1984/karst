@@ -40,6 +40,27 @@ When both are configured, every usable user in the results gets a **Test as** bu
 
 Because `/karst` is served at the Rack boundary, before Action Controller, Rails' authenticity-token helpers aren't available there. Karst instead stores a random nonce in the existing Rack session and requires a constant-time match on every identity-changing POST. This path is local-development-only, requires a writable host session, never accepts an external return URL, and stays inactive unless both browser hooks are configured.
 
+## Authentication identifiers in local human output
+
+Without `config.principal_label`, Karst normally labels a principal `Model #id`.
+For a Devise-mapped model, Karst may make the **local HTML panel and human CLI**
+more recognizable by reading the model's single, explicitly declared
+`authentication_keys` field (for example, `email`) and showing
+`user@example.com · User #27`. Email is a `mailto:` link in HTML.
+
+This is deliberately evidence-based rather than a column-name heuristic. Karst
+does not scan for `name`, `phone`, `address`, tokens, passwords, or likely login
+columns. No identifier is read when Devise is unavailable, the principal's
+model is not mapped by Devise, the declared key is missing, its value is nil or
+empty, or Devise declares multiple authentication keys. Multiple keys fail
+closed because Karst cannot determine which key is appropriate to disclose.
+
+Framework-inferred identifiers are **never serialized in `--json` output or MCP
+output**; those interfaces retain `Model #id`. A callable
+`config.principal_label` still overrides inference completely, is not being
+deprecated here, and remains explicit application consent for that configured
+label to appear in all existing outputs.
+
 ## Multiple user models: `config.principal_sources`
 
 Some apps represent identity as more than one model (`Author`, `Reader`) rather than one `User` with a role column:
