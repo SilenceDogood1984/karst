@@ -245,7 +245,7 @@ module Karst
 
         # rubocop:disable Metrics/ParameterLists
         def access_section(http_method, path, controller, action, result, state)
-          return "" if path.empty? || state[:route_lookup_limitation]
+          return setup_notice_section(state) if path.empty? || state[:route_lookup_limitation]
 
           context = hidden("controller", controller) + hidden("action", action) +
                     hidden("method", http_method) + hidden("path", path)
@@ -258,6 +258,22 @@ module Karst
           "<section class=\"access\">#{heading}#{body}#{access_result(result, state)}</section>"
         end
         # rubocop:enable Metrics/ParameterLists
+
+        # A developer with several Devise models (or no automatic
+        # authentication integration at all) needs to know that before
+        # picking a URL to analyze -- not only after submitting the route
+        # lookup form, which they would have no reason to do while /karst
+        # otherwise looks entirely blank. Mirrors analyze_form's own hint so
+        # selecting a model or reading the custom-auth pointer works
+        # identically whether or not a route is already selected.
+        def setup_notice_section(state)
+          sources = principal_sources
+          return "" if sources
+
+          heading = "<h2 class=\"sr-only\">Access analysis</h2>"
+          body = "#{principal_source_selection_notice(state)}#{principal_source_hint(sources)}"
+          "<section class=\"access\">#{heading}#{body}</section>"
+        end
 
         def analyze_form(context, state)
           sources = principal_sources

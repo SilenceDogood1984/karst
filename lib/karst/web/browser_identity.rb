@@ -78,7 +78,17 @@ module Karst
         session[TOKEN_KEY] = SecureRandom.hex(32)
       end
 
+      # A blank path is not a caller error: the panel renders this same
+      # hidden field for "Stop testing as" from a plain /karst visit with no
+      # ?path= in the query string (bookmarked, or reached without a route
+      # already selected) -- exactly what happens right after Test As
+      # navigates the browser away to the tested page and a developer comes
+      # back to /karst directly. Falling back to /karst itself keeps that
+      # button working instead of raising and leaving the assumed identity
+      # active.
       def return_path(value)
+        return "/karst" if value.to_s.empty?
+
         raw = value.to_s.split("?", 2).first
         uri = URI.parse(raw)
         valid = uri.relative? && raw.start_with?("/") && !raw.start_with?("//")

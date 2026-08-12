@@ -66,4 +66,11 @@ jobs:
           bundler-cache: true
           cache-version: rails-${{ matrix.rails }}
       - name: Run Rails integration specs
-        run: bundle exec rspec spec/integration
+        run: bundle exec rspec spec/integration --exclude-pattern "spec/integration/devise_golden_path_integration_spec.rb"
+      # Separate process: this spec boots a second, real Rails::Application
+      # (with the real `devise` gem) alongside KarstTestApplication, and two
+      # independently booted Rails::Application instances are not safe to
+      # share Rails::Engine's own class-level initialization state within
+      # one process -- see bin/test-rails.
+      - name: Run Devise/Warden golden-path smoke test (no Karst configuration)
+        run: bundle exec rspec spec/integration/devise_golden_path_integration_spec.rb

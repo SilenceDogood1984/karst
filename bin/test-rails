@@ -3,9 +3,19 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+DEVISE_SPEC="spec/integration/devise_golden_path_integration_spec.rb"
+
 for version in 6_1 7_0 7_1 7_2 8_0; do
   export BUNDLE_GEMFILE="$PWD/gemfiles/rails_${version}.gemfile"
   export EXPECTED_RAILS_VERSION="${version/_/.}"
   bundle install
-  bundle exec rspec spec/integration
+  bundle exec rspec spec/integration --exclude-pattern "$DEVISE_SPEC"
+  # Run separately, its own process: it boots a second, real
+  # Rails::Application (with the real `devise` gem) alongside
+  # KarstTestApplication, and Rails::Engine's own class-level
+  # initialization state is not safe to share between two independently
+  # booted applications in one process (a second real Rails::Application
+  # boot in the same process as KarstTestApplication raises a FrozenError
+  # deep in Rails::Engine's own initializer, unrelated to Karst).
+  bundle exec rspec "$DEVISE_SPEC"
 done
