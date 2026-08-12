@@ -85,8 +85,6 @@ module Karst
         details{border:1px solid #e2e2e2;border-radius:.4rem;padding:.6rem .8rem;margin:.75rem 0}
         details summary{cursor:pointer;font-weight:600}
         details[open]>summary{margin-bottom:.5rem}
-        .scenario{border:1px solid #ddd;border-radius:.4rem;padding:.75rem;margin:.6rem 0}
-        .scenario h4{margin:.1rem 0}
         .evidence{display:flex;gap:1rem;flex-wrap:wrap;font-size:.9rem}
         .label{font-size:.72rem;font-weight:700;text-transform:uppercase;color:#666}
         .failed,.pending{border-left:4px solid #b3261e}
@@ -125,7 +123,6 @@ module Karst
           .usable-principal button[type=submit]{background:#2e7d52;border-color:#2e7d52;color:#0b1a12}
           .related-state{background:#1c1d20;border-color:#3a3b3e}
           details{border-color:#2c2d31}
-          .scenario{border-color:#33343a}
           .testing-banner{background:#3a2f0d;border-color:#6b5423;color:#f0e4c0}
           .hint{color:#d8a63d}
           .failed,.pending{border-left-color:#e5534b}

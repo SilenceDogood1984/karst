@@ -15,8 +15,7 @@ require "karst"
 # process_action.action_controller notifications, real Content-Type/
 # Content-Disposition/Content-Security-Policy headers) rather than
 # hand-constructed Rack triples. `config.root` points at a fresh temp
-# directory so Karst::Spec::Catalog's default path (Rails.root-relative)
-# is both real and disposable.
+# directory so all generated files are disposable.
 BADGE_APP_ROOT = Dir.mktmpdir("karst-badge-app")
 
 class BadgePagesController < ActionController::Base

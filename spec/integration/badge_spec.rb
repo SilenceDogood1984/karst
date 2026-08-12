@@ -62,7 +62,7 @@ RSpec.describe "Karst page-local badge" do
   end
 
   describe "dynamic route identity" do
-    it "shares one catalog identity across different dynamic ids on the same route" do
+    it "shares one route identity across different dynamic ids on the same route" do
       output, status = run_script(script: <<~RUBY)
         #{mock_setup}
         one = MOCK.get("/badge_pages/1", "REMOTE_ADDR" => "127.0.0.1")
@@ -170,70 +170,6 @@ RSpec.describe "Karst page-local badge" do
             abort "expected a badge link even without styling"
           end
         end
-      RUBY
-
-      expect(status).to be_success, output
-    end
-  end
-
-  describe "catalog integration" do
-    it "shows a quiet label for missing/invalid catalogs and an unrelated route, without breaking the host page" do
-      output, status = run_script(script: <<~RUBY)
-        #{mock_setup}
-
-        missing = MOCK.get("/badge_pages/1", "REMOTE_ADDR" => "127.0.0.1")
-        abort "expected 200 with no catalog artifact yet" unless missing.status == 200
-        abort "expected a quiet label for a missing catalog" if BUFFERABLE && !missing.body.include?(">Karst<")
-
-        scenarios_path = Rails.root.join("tmp", "karst", "scenarios.json")
-        FileUtils.mkdir_p(File.dirname(scenarios_path))
-        File.write(scenarios_path, "not valid json")
-
-        invalid = MOCK.get("/badge_pages/1", "REMOTE_ADDR" => "127.0.0.1")
-        abort "expected 200 with a malformed catalog artifact" unless invalid.status == 200
-        abort "expected a quiet label for an invalid catalog" if BUFFERABLE && !invalid.body.include?(">Karst<")
-      RUBY
-
-      expect(status).to be_success, output
-    end
-
-    it "derives the badge count from a real Catalog artifact without exposing it in the panel" do
-      output, status = run_script(script: <<~RUBY)
-        #{mock_setup}
-        require "karst/spec/reporter"
-        require "karst/spec/request_observation"
-        require "karst/spec/example_observation"
-
-        request = Karst::Spec::RequestObservation.new(
-          sequence: 0, http_method: "GET", path: "/badge_pages/1", route_pattern: "/badge_pages/:id(.:format)",
-          controller: "BadgePagesController", action: "show", format: "html", status: 200, redirect_location: nil,
-          principal_before: nil, principal_after: nil, principal_changed: false
-        )
-        example = Karst::Spec::ExampleObservation.new(
-          example_id: "./spec/badge_fixture_spec.rb[1:1]", file_path: "spec/badge_fixture_spec.rb", line_number: 5,
-          spec_type: :request, description_parts: ["shows the badge fixture route"],
-          full_description: "shows the badge fixture route", karst_explicit: false, karst_name: nil,
-          outcome: :passed, requests: [request]
-        )
-        reporter = Karst::Spec::Reporter.new
-        reporter.record(example)
-        reporter.write(Rails.root.join("tmp", "karst", "scenarios.json").to_s)
-
-        if BUFFERABLE
-          ready = MOCK.get("/badge_pages/1", "REMOTE_ADDR" => "127.0.0.1")
-          abort "expected a count of 1, got:\\n\#{ready.body}" unless ready.body.include?(">Karst · 1<")
-
-          unrelated = MOCK.get("/others/1", "REMOTE_ADDR" => "127.0.0.1")
-          abort "expected a zero count for an unrelated route" unless unrelated.body.include?(">Karst · 0<")
-        end
-
-        panel = MOCK.get(
-          "/karst?controller=BadgePagesController&action=show&method=GET&path=%2Fbadge_pages%2F1",
-          "REMOTE_ADDR" => "127.0.0.1"
-        )
-        abort "expected method+path context" unless panel.body.include?("GET /badge_pages/1")
-        abort "catalog evidence leaked into the panel" if panel.body.include?("shows the badge fixture route")
-        abort "spec evidence leaked into the panel" if panel.body.include?("Spec evidence")
       RUBY
 
       expect(status).to be_success, output

@@ -3,20 +3,13 @@
 require "cgi"
 require "rack/utils"
 
-begin
-  require_relative "../spec/catalog"
-rescue LoadError
-  # Degrades to a countless badge rather than preventing the host response
-  # from being served, mirroring Panel's own posture toward a missing Catalog.
-end
-
 module Karst
   module Web
     # Rewrites an eligible host HTML response to add a small, page-local link
-    # into Karst's route-scoped scenario catalog. Every check here exists to
-    # make injection safe to skip: Badge never guesses, never raises into the
-    # host application, and never touches a response it cannot confidently
-    # rewrite -- an untouched response is always the safe fallback.
+    # to Karst's route access panel. Every check here exists to make injection
+    # safe to skip: Badge never guesses, never raises into the host application,
+    # and never touches a response it cannot confidently rewrite -- an untouched
+    # response is always the safe fallback.
     #
     # Route identity (controller/action/http_method) comes from
     # Middleware, itself derived from a real process_action.action_controller
@@ -109,9 +102,8 @@ module Karst
 
         def markup(headers:, context:)
           href = escape("/karst?#{query_for(context)}")
-          label = escape(label_for(context))
           style = inline_style_allowed?(headers) ? " style=\"#{BADGE_STYLE}\"" : ""
-          "<a href=\"#{href}\"#{style}>#{label}</a>"
+          "<a href=\"#{href}\"#{style}>Karst</a>"
         end
 
         def query_for(context)
@@ -119,24 +111,6 @@ module Karst
             "controller" => context.controller, "action" => context.action,
             "method" => context.http_method, "path" => context.path
           )
-        end
-
-        def label_for(context)
-          catalog = load_catalog
-          return "Karst" unless catalog && catalog.status == :ready
-
-          count = catalog.scenarios_for(
-            controller: context.controller, action: context.action, http_method: context.http_method
-          ).size
-          "Karst · #{count}"
-        end
-
-        def load_catalog
-          return nil unless defined?(Karst::Spec::Catalog)
-
-          Karst::Spec::Catalog.load
-        rescue StandardError
-          nil
         end
 
         # A CSP the host response itself declares is the only signal Badge

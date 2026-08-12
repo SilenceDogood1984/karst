@@ -18,14 +18,6 @@ RSpec.describe Karst::Web::Badge do
     { "content-type" => "text/html; charset=utf-8" }.merge(overrides)
   end
 
-  def stub_catalog(status:, scenarios: [])
-    catalog = instance_double(Karst::Spec::Catalog, status: status, scenarios_for: scenarios)
-    allow(Karst::Spec::Catalog).to receive(:load).and_return(catalog)
-    catalog
-  end
-
-  before { stub_catalog(status: :missing) }
-
   describe "ineligible responses are returned untouched" do
     it "returns nil with no context" do
       expect(described_class.apply(status: 200, headers: headers, body: html_body, context: nil)).to be_nil
@@ -193,45 +185,6 @@ RSpec.describe Karst::Web::Badge do
       href = result.last.join[/href="([^"]*)"/, 1]
       expect(href).to include("&amp;")
       expect(href).not_to match(/&(?!amp;)/)
-    end
-  end
-
-  describe "scenario count" do
-    it "shows a quiet label when the catalog is missing" do
-      stub_catalog(status: :missing)
-      html = described_class.apply(status: 200, headers: headers, body: html_body, context: context).last.join
-
-      expect(html).to include(">Karst<")
-    end
-
-    it "shows a quiet label when the catalog is invalid" do
-      stub_catalog(status: :invalid)
-      html = described_class.apply(status: 200, headers: headers, body: html_body, context: context).last.join
-
-      expect(html).to include(">Karst<")
-    end
-
-    it "shows zero for a ready catalog with no matching scenarios" do
-      stub_catalog(status: :ready, scenarios: [])
-      html = described_class.apply(status: 200, headers: headers, body: html_body, context: context).last.join
-
-      expect(html).to include(">Karst · 0<")
-    end
-
-    it "shows the count of scenarios matching the exact controller/action/method" do
-      stub_catalog(status: :ready, scenarios: [double, double, double])
-      html = described_class.apply(status: 200, headers: headers, body: html_body, context: context).last.join
-
-      expect(html).to include(">Karst · 3<")
-    end
-
-    it "never breaks the host response when the catalog raises" do
-      allow(Karst::Spec::Catalog).to receive(:load).and_raise(StandardError, "disk on fire")
-
-      result = described_class.apply(status: 200, headers: headers, body: html_body, context: context)
-
-      expect(result).not_to be_nil
-      expect(result.last.join).to include(">Karst<")
     end
   end
 

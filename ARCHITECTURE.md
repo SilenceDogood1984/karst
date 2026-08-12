@@ -5,8 +5,6 @@ This document describes how Karst is put together and the policy that governs wh
 ## Component map
 
 - `Karst::Configuration` — the whole public configuration surface, deliberately small: one on/off switch, the escape hatches for authentication Karst cannot infer, and four bounds with working defaults. It also owns `#principal_sources`, the single effective-configuration method every adapter reads. Karst installs no `ActiveSupport::Notifications` subscriber at boot; the only SQL Karst observes is what a probe itself emits, through a scoped per-probe subscription in `Access::DatabaseIsolation`.
-- `Karst::Spec::Observer` / `Spec::Reporter` — an opt-in RSpec integration that turns real spec execution (via `ActiveSupport::Notifications` and Warden's public hooks) into a deterministic JSON scenario artifact, with no source parsing and no database access.
-- `Karst::Spec::Catalog` — a read-only index over that artifact; requires none of RSpec, Rails, or a database to read an already-written catalog.
 - `Karst::Web::Middleware` / `Web::Panel` / `Web::Badge` / `Web::Locality` — Karst's development-only HTTP surface: `GET /karst` served directly at the Rack boundary (no engine, route, or controller) plus an optional page-local badge injected into eligible host HTML responses.
 - `Karst::Access::PrincipalSampler` — a bounded candidate-selection step ahead of `Access::Sweep`, with nothing configurable in it. It materializes one recent-N pool with a single `LIMIT` query, then stratifies that pool in memory over states derived from the schema itself: boolean columns, `enum` columns, nullable-foreign-key presence/absence, and low-cardinality scalars, minus anything PII- or tenancy-shaped. Its total query volume is exactly one query, independent of table size -- no discovery query, `COUNT`, unbounded scan, or live subquery. It only selects candidates and never executes a route, so `Access::Sweep` remains the sole behavioral-evidence contract. Candidate populations are deliberately not here: they are `Access::Search`'s second stage, so "the ordinary sample failed, then `system_admins` reached it" stays reportable rather than being folded into an ordinary-looking sample.
 - `Karst::Access::CandidatePopulation` — resolves one configured name => callable pair into a bounded, already-queried population plus a provenance label (`population=system_admins`), or `nil` when calling the callable does not yield an `ActiveRecord::Relation` scoped to the same model being sampled; never raises for a misconfigured population, and never issues more than one `LIMIT`-bounded query regardless of the underlying relation's row count. Preserves the configured relation's own ordering when it has one, adding a deterministic primary-key fallback only when it does not. Deliberately does not claim that a configured callable is a "real" Rails named scope -- Active Record exposes no reliable, public way to distinguish a method defined via the `scope` macro from an ordinary handwritten class method, so this class validates only what it can actually observe: the shape of what calling the callable returns. A population is a hint about where meaningful candidates might live -- "these records are worth trying," never "these records satisfy the behavior" -- so it carries no authorization or behavioral claim; only `Access::Sweep`'s runtime execution produces that evidence. Deliberately generic over what a candidate represents: `PrincipalSampler` is its only caller today, but nothing in this class assumes authentication, so a future artifact-population caller (`Subscription.renewable`, `Import.with_sheets`) could reuse it unchanged.
@@ -24,11 +22,11 @@ The guiding rule: **core Karst functionality works on Rails 6.1 even where an op
 
 ### Capability degradation
 
-| Rails / Rack       | `require "karst"` | Access search (`/karst`, CLI, MCP) | Spec Observer | Scenario Catalog | `/karst` panel | Page-local badge |
-|---------------------|:---:|:---:|:---:|:---:|:---:|:---:|
-| 6.1 / Rack 2         | yes | yes | yes | yes | yes | **unavailable** |
-| 7.0 / Rack 2         | yes | yes | yes | yes | yes | **unavailable** |
-| 7.1, 7.2, 8.x / Rack 3 | yes | yes | yes | yes | yes | yes |
+| Rails / Rack       | `require "karst"` | Access search (`/karst`, CLI, MCP) | `/karst` panel | Page-local badge |
+|---------------------|:---:|:---:|:---:|:---:|
+| 6.1 / Rack 2         | yes | yes | yes | **unavailable** |
+| 7.0 / Rack 2         | yes | yes | yes | **unavailable** |
+| 7.1, 7.2, 8.x / Rack 3 | yes | yes | yes | yes |
 
 The badge is the one capability that degrades. `Karst::Web::Badge` only ever rewrites a Rack response body that reports itself bufferable via Rack's own `to_ary` idiom (the same check `Rack::ETag` relies on for the same reason). Under Rack 2, `ActionDispatch`'s response body wrapper never exposes `to_ary`, so every response reports non-bufferable and Badge leaves it untouched — this is a real, per-response runtime check, not a hardcoded Rails-version branch, so it needs no maintenance as new Rack/Rails combinations appear. `/karst` itself does not depend on badge injection at all: it is a small, independent Rack middleware branch keyed on `PATH_INFO`, so it is unaffected. Karst never monkey-patches `ActionView`, never consumes a streaming body to work around this, and never weakens `Content-Length`, CSP, or host middleware semantics to force badge parity onto Rack 2.
 
@@ -38,12 +36,12 @@ Ruby 2.7 has no `Data.define` (added in Ruby 3.2). Every former `Data.define` si
 
 ### Request-local state: `Karst::ExecutionContext`
 
-The page badge and the spec observer both need request-local (not global, not thread-shared-and-racy) correlation storage: evidence captured inside a notification callback, read back out after the call returns. Modern Rails provides exactly this via `ActiveSupport::IsolatedExecutionState`, added in Rails 7.0. `Karst::ExecutionContext` is the seam:
+The page badge needs request-local (not global, not thread-shared-and-racy) correlation storage: evidence captured inside a notification callback, read back out after the call returns. Modern Rails provides exactly this via `ActiveSupport::IsolatedExecutionState`, added in Rails 7.0. `Karst::ExecutionContext` is the seam:
 
 - When `ActiveSupport::IsolatedExecutionState` is defined, `Karst::ExecutionContext` delegates directly to it — modern Rails keeps using its own preferred primitive, with no extra indirection cost.
 - Otherwise (Rails 6.1), it falls back to `ThreadLocalStore`, a plain per-thread `Hash` reached through `Thread#thread_variable_get`/`thread_variable_set` — deliberately not `Thread#[]`/`[]=`, which are fiber-local and would silently miss context under a Fiber scheduler.
 
-The fallback mirrors `IsolatedExecutionState`'s own default `:thread` isolation level: storage is shared by every Fiber running on one OS thread, not isolated per Fiber. Karst's own usage (one badge or spec correlation captured and read back within a single synchronous request or example) never spans multiple concurrently-scheduled Fibers, so this has no observable effect on Karst's supported behavior — it is documented so a future caller does not assume Fiber isolation the fallback cannot provide.
+The fallback mirrors `IsolatedExecutionState`'s own default `:thread` isolation level: storage is shared by every Fiber running on one OS thread, not isolated per Fiber. Karst's own usage (one badge correlation captured and read back within a single synchronous request) never spans multiple concurrently-scheduled Fibers, so this has no observable effect on Karst's supported behavior — it is documented so a future caller does not assume Fiber isolation the fallback cannot provide.
 
 Both backends share the same three-method contract (`[]`, `[]=`, `delete`), cleanup happens in the caller's own `ensure` block exactly as before, and neither backend introduces global mutable state: each thread only ever sees its own slot, so concurrent Puma requests cannot cross-contaminate each other's context.
 
@@ -56,4 +54,4 @@ Compatibility decisions live behind exactly two narrow seams — `Karst::Value` 
 - `unit-test` — Ruby 3.2, the root `Gemfile` (RSpec + RuboCop against everything except `spec/integration`).
 - `rails-integration` matrix — `spec/integration` against a version-pinned `Gemfile` per row, each a real Rails application booted through Rack: Rails 6.1 on Ruby 2.7, Rails 7.0 and 7.1 on Ruby 3.2, Rails 7.2 and 8.0 on Ruby 3.3. Every row is a required, blocking job.
 
-The Rails 6.1 row is what backs the compatibility claim in this document: it boots a real `Rails::Application`, exercises `GET` against ordinary routes and `/karst`, and runs the scenario observer/catalog round trip, all against genuine Ruby 2.7 syntax and Rails 6.1 APIs — not an assumption that "this probably still works."
+The Rails 6.1 row is what backs the compatibility claim in this document: it boots a real `Rails::Application`, exercises `GET` against ordinary routes and `/karst`, all against genuine Ruby 2.7 syntax and Rails 6.1 APIs — not an assumption that "this probably still works."
