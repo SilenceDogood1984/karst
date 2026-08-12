@@ -5,6 +5,7 @@ require_relative "panel"
 require_relative "populations_panel"
 require_relative "badge"
 require_relative "browser_identity"
+require_relative "csrf"
 require_relative "route_lookup"
 require_relative "../execution_context"
 require "rack/utils"
@@ -19,6 +20,7 @@ require_relative "../access/population_discovery"
 require_relative "../access/population_approvals"
 require_relative "../access/approved_populations"
 require_relative "../access/principal_source_selection"
+require_relative "../access/population_approval"
 require_relative "../identity/devise_support"
 
 module Karst
@@ -83,15 +85,21 @@ module Karst
         selection, denied = principal_source_selection_result(env, params)
         return denied if denied
 
-        browser_identity = BrowserIdentity.new(Rack::Request.new(env))
+        request = Rack::Request.new(env)
+        csrf = Csrf.new(request)
+        browser_identity = BrowserIdentity.new(request, csrf: csrf)
+        approval, denied = inline_population_approval_result(env, params, csrf)
+        return denied if denied
+
         identity_response = mutate_browser_identity(env, params, browser_identity)
         return identity_response if identity_response
 
-        result = analyze(env, params)
+        result = analyze(env, params, approval: approval)
+        candidates = inline_population_candidates(result)
         Panel.render(params: params, access_result: result, route_lookup_limitation: lookup&.limitation,
-                     csrf_token: browser_token(browser_identity),
+                     csrf_token: csrf_token(csrf),
                      browser_identity_active: browser_identity_active?(browser_identity),
-                     unapproved_candidate_count: unapproved_candidate_count(result),
+                     unapproved_candidates: candidates, population_approval_error: approval&.error,
                      principal_source_selection_saved: !selection.nil? && selection.error.nil?,
                      principal_source_selection_error: selection&.error)
       end
@@ -115,6 +123,19 @@ module Karst
 
       def saving_principal_source_selection?(env, params)
         env["REQUEST_METHOD"] == "POST" && params["operation"] == "select_principal_sources"
+      end
+
+      def inline_population_approval_result(env, params, csrf)
+        return [nil, nil] unless env["REQUEST_METHOD"] == "POST" && params["operation"] == "approve_populations"
+        return [nil, forbidden] unless approved_origin?(env)
+
+        csrf.verify!(params["csrf_token"])
+        discovery = Access::PopulationDiscovery.new.call
+        approval = Access::PopulationApproval.new(discovery: discovery, principal_sources: Identity.principal_sources,
+                                                  submitted: params["population"]).call
+        [approval, nil]
+      rescue Csrf::InvalidToken, Identity::Error
+        [nil, forbidden]
       end
 
       # Only a model Devise itself currently maps can ever be written --
@@ -239,9 +260,9 @@ module Karst
       # "try this population" operation for a developer to press --
       # and no path by which a merely discovered, unapproved population
       # name can be executed.
-      def analyze(env, params)
+      def analyze(env, params, approval: nil)
         return nil unless env["REQUEST_METHOD"] == "POST"
-        return nil unless params["operation"] == "access_sweep"
+        return nil unless params["operation"] == "access_sweep" || approval
 
         Access::Search.new(path: params["path"], http_method: params["method"],
                            sources: Identity.principal_sources).call
@@ -249,22 +270,21 @@ module Karst
         e
       end
 
-      # How many application-defined groups on an already-configured user
-      # source a developer could still approve. Computed only after an
+      # Application-defined groups on an already-configured user source a
+      # developer could still approve. Computed only after an
       # analysis that found nothing usable -- the one moment the answer is
       # actionable -- so an ordinary panel render never parses model source,
-      # and the main page never turns into a population-configuration
-      # workflow. Discovery executes nothing; see PopulationDiscovery.
-      def unapproved_candidate_count(result)
-        return nil unless result.is_a?(Access::Search::Result) && result.verified_outcome.nil?
+      # and the main page stays a contextual approval step rather than a
+      # population-management dashboard. Discovery executes nothing.
+      def inline_population_candidates(result)
+        return [] unless result.is_a?(Access::Search::Result) && result.verified_outcome.nil?
 
         record = Access::PopulationApprovals.load
-        count = Access::PopulationDiscovery.new.call.candidates.count do |candidate|
+        Access::PopulationDiscovery.new.call.candidates.select do |candidate|
           candidate.principal_source && !record.approved?(candidate.model_name, candidate.method_name)
         end
-        count.positive? ? count : nil
       rescue StandardError
-        nil
+        []
       end
 
       def mutate_browser_identity(env, params, browser_identity)
@@ -288,9 +308,9 @@ module Karst
         end
       end
 
-      def browser_token(browser_identity)
-        browser_identity.token if Identity.browser_supported?
-      rescue Identity::Error
+      def csrf_token(csrf)
+        csrf.token
+      rescue Csrf::InvalidToken
         nil
       end
 

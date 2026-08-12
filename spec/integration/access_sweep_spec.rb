@@ -495,12 +495,13 @@ RSpec.describe "bounded access sweep Rails integration" do
       expect(response.body).not_to include("Candidate populations")
     end
 
-    it "offers the review action only once an analysis found nothing usable" do
+    it "offers inline approval only once an analysis found nothing usable" do
       KarstAccessPrincipal.create!(behavior: "ok")
 
       expect(access_sweep_response.body)
-        .to include("application-defined user groups that could be tried",
-                    '<a href="/karst/populations">Review candidate groups</a>')
+        .to include("application-defined user groups for this principal source", "working",
+                    "Approve selected and retry")
+      expect(access_sweep_response.body).not_to include('href="/karst/populations"')
     end
 
     it "stops searching a group as soon as it is unapproved" do

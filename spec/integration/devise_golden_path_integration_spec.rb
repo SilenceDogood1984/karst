@@ -78,7 +78,8 @@ RSpec.describe "Devise/Warden golden path, real gems, no Karst configuration" do
     # Karst::Identity::Unavailable, which is what every one of these
     # probes raised before Access::ProbeApplication wrapped a real
     # Warden::Manager into its own Rack stack.
-    first = access_sweep_response
+    first = browser.post("/karst", operation: "access_sweep", method: "GET",
+                                   path: "/karst_devise_imports/1")
     expect(first.status).to eq(200)
     expect(first.body).to include("No verified usable user found")
     expect(first.body).not_to include("Karst::Identity::Unavailable")
@@ -87,22 +88,24 @@ RSpec.describe "Devise/Warden golden path, real gems, no Karst configuration" do
 
     # 2. system_admins is discoverable (source parsed, never executed) but
     # not yet searched.
-    expect(first.body).to include("Karst found 1 application-defined user group",
-                                  "Review candidate groups")
-    populations_page = mock.get("/karst/populations", "REMOTE_ADDR" => "127.0.0.1")
-    expect(populations_page.body).to include("system_admins")
+    expect(first.body).to include("Karst found application-defined user groups", "system_admins",
+                                  "Approve selected and retry")
+    expect(first.body).not_to include('href="/karst/populations"')
 
-    # 3. Approve it locally -- no initializer edit.
-    approval = populations_post("save_approvals=1&population[]=KarstDeviseUser::system_admins")
-    expect(approval.body).to include("Approvals saved.")
+    # 3. Approve it locally -- no initializer edit or page navigation. The
+    # same POST immediately reruns the same route analysis.
+    browser.header("Referer", "http://example.org/karst")
+    approval = browser.post("/karst", operation: "approve_populations", csrf_token: csrf_token(first.body),
+                                      method: "GET", path: "/karst_devise_imports/1",
+                                      population: ["default::KarstDeviseUser::system_admins"])
+    browser.header("Referer", nil)
+    expect(approval.status).to eq(200)
     expect(File).to exist(@approvals_path)
     expect(File.read(@approvals_path)).not_to include("root_admin@example.com")
 
-    # 4. Rerun: the approved population is retried automatically and
-    # succeeds, with correct provenance evidence.
-    second = access_sweep_response
-    expect(second.body).to include("Verified usable user", "root_admin@example.com")
-    expect(second.body).to include("population=system_admins")
+    # 4. That automatic rerun succeeds with provenance and Test As ready.
+    expect(approval.body).to include("Verified usable user", "root_admin@example.com",
+                                     "population=system_admins", "Test as")
 
     # 5. Test As: a real browser session, through the real host middleware.
     sweep = browser.post("/karst", operation: "access_sweep", method: "GET",
@@ -139,6 +142,22 @@ RSpec.describe "Devise/Warden golden path, real gems, no Karst configuration" do
     # residual write in the application's own database.
     expect(KarstDeviseUser.count).to eq(28)
     expect(KarstDeviseAdminGrant.count).to eq(1)
+  end
+
+  it "enforces both same-origin and session CSRF checks on inline approval" do
+    KarstDeviseUser.create!(email: "admin@example.com", password: "password123!")
+    page = browser.post("/karst", operation: "access_sweep", method: "GET", path: "/karst_devise_imports/1")
+    token = csrf_token(page.body)
+    params = { operation: "approve_populations", method: "GET", path: "/karst_devise_imports/1",
+               population: ["default::KarstDeviseUser::system_admins"] }
+
+    browser.header("Origin", "http://attacker.example")
+    expect(browser.post("/karst", params.merge(csrf_token: token)).status).to eq(403)
+    browser.header("Origin", "http://example.org")
+    expect(browser.post("/karst", params.merge(csrf_token: "invalid")).status).to eq(403)
+    expect(File).not_to exist(@approvals_path)
+  ensure
+    browser.header("Origin", nil)
   end
 
   it "matches CLI evidence to the panel's own result, with correct exit-code semantics and no PII in JSON" do

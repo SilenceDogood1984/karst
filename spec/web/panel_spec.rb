@@ -53,6 +53,11 @@ RSpec.describe Karst::Web::Panel do
     Karst.config.clear_browser_identity = ->(*) {}
   end
 
+  def discovered_candidate
+    Karst::Access::PopulationDiscovery::Candidate.new(model_name: "User", method_name: :system_admins,
+                                                      principal_source: :default)
+  end
+
   after do
     Karst.config.assume_browser_identity = nil
     Karst.config.clear_browser_identity = nil
@@ -179,23 +184,26 @@ RSpec.describe Karst::Web::Panel do
       expect(body).not_to include("No user can access this page")
     end
 
-    it "offers reviewing candidate groups only when the analysis found nothing usable" do
-      body = described_class.render(params: analyzed_route, unapproved_candidate_count: 6,
+    it "offers candidate approval inline only when the analysis found nothing usable" do
+      body = described_class.render(params: analyzed_route, unapproved_candidates: [discovered_candidate],
+                                    csrf_token: "token",
                                     access_result: access_result([access_outcome(id: 1, status: 401)])).last.join
 
-      expect(body).to include("Karst found 6 application-defined user groups that could be tried.",
-                              '<a href="/karst/populations">Review candidate groups</a>')
+      expect(body).to include("Karst found application-defined user groups for this principal source",
+                              "system_admins", "Approve selected and retry")
+      expect(body).not_to include('href="/karst/populations"')
     end
 
     it "keeps candidate groups out of the page once a usable user was found" do
-      body = described_class.render(params: analyzed_route, unapproved_candidate_count: 6,
+      body = described_class.render(params: analyzed_route, unapproved_candidates: [discovered_candidate],
+                                    csrf_token: "token",
                                     access_result: access_result([access_outcome(id: 1, status: 200)])).last.join
 
       expect(body).not_to include("/karst/populations", "could be tried")
     end
 
     it "says nothing about candidate groups when there are none left to approve" do
-      body = described_class.render(params: analyzed_route, unapproved_candidate_count: nil,
+      body = described_class.render(params: analyzed_route, unapproved_candidates: [], csrf_token: "token",
                                     access_result: access_result([access_outcome(id: 1, status: 401)])).last.join
 
       expect(body).not_to include("/karst/populations")
