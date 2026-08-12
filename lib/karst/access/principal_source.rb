@@ -58,6 +58,23 @@ module Karst
         nil
       end
 
+      # A copy of this source with `extra` populations appended after its own
+      # configured ones. Used by Karst::Access::ApprovedPopulations to fold
+      # locally approved discovered scopes into the effective configuration,
+      # so nothing downstream has to know an approval workflow exists.
+      # Explicit configuration wins outright: a name this source already
+      # configures keeps its configured callable, and configured populations
+      # keep their position ahead of appended ones.
+      def with_populations(extra)
+        return self if extra.nil? || extra.empty?
+
+        merged = self.class.normalize_populations(@name, extra).reject { |name, _| @populations.key?(name) }
+        return self if merged.empty?
+
+        self.class.new(name: @name, records: @records, dimensions: @dimensions,
+                       populations: @populations.merge(merged))
+      end
+
       # Accepts a raw Hash of name => (callable, or {records:, dimensions:,
       # populations:}) -- the shape config.principal_sources= receives.
       def self.normalize(sources)

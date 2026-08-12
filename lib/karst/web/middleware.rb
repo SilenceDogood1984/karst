@@ -17,6 +17,8 @@ require_relative "../access/principal_selection"
 require_relative "../access/scenario_sweep"
 require_relative "../access/candidate_population"
 require_relative "../access/population_discovery"
+require_relative "../access/population_approvals"
+require_relative "../access/approved_populations"
 require_relative "../access/population_preview"
 require_relative "../access/population_config_snippet"
 
@@ -83,29 +85,95 @@ module Karst
         identity_response = mutate_browser_identity(env, params, browser_identity)
         return identity_response if identity_response
 
-        Panel.render(params: params, access_result: analyze(env, params), route_lookup_limitation: lookup&.limitation,
+        result = analyze(env, params)
+        Panel.render(params: params, access_result: result, route_lookup_limitation: lookup&.limitation,
                      csrf_token: browser_token(browser_identity),
-                     browser_identity_active: browser_identity_active?(browser_identity))
+                     browser_identity_active: browser_identity_active?(browser_identity),
+                     unapproved_candidate_count: unapproved_candidate_count(result))
       end
       # rubocop:enable Metrics/AbcSize, Metrics/MethodLength
 
-      # Discovery, preview, and snippet generation are all read-only or
-      # bounded-read actions (see Karst::Access::PopulationDiscovery/
-      # PopulationPreview) -- none of them mutate the real browser session
-      # the way `test_as` does, so unlike that operation this path needs no
-      # CSRF token, exactly like the ordinary `access_sweep` POST above.
+      # Unlike every other operation Karst serves, approving writes local
+      # state that outlives the request, so every POST to this path must
+      # have come from Karst's own page. There is no Rack session to hang a
+      # CSRF token on here (this page deliberately touches none), so the
+      # check is same-origin rather than token-based; a cross-site form POST
+      # cannot forge Origin, so it cannot approve anything. GET -- the page
+      # itself -- stays unauthenticated exactly like /karst.
       def call_populations(env)
+        return forbidden unless approved_origin?(env)
+
         params = owned_params(env)
         discovery = Access::PopulationDiscovery.new.call
-        selected = selected_candidates(discovery, params)
-        snippet = Access::PopulationConfigSnippet.generate(selected) if params["generate_snippet"]
-        Web::PopulationsPanel.render(discovery: discovery, selected: selected, snippet: snippet,
-                                     preview: population_preview(discovery, params))
+        saving = saving_approvals?(env, params)
+        record = saving ? save_approvals(discovery, params) : Access::PopulationApprovals.load
+        render_populations(discovery, params, record, saving)
       end
 
-      def selected_candidates(discovery, params)
+      def render_populations(discovery, params, record, saved)
+        approved = approved_candidates(discovery, record)
+        snippet = Access::PopulationConfigSnippet.generate(approved) if params["generate_snippet"]
+        Web::PopulationsPanel.render(
+          discovery: discovery, approved: record.entries, stale: stale_approvals(record),
+          snippet: snippet, preview: population_preview(discovery, params),
+          storage_path: Access::PopulationApprovals.display_path, storage_error: record.error, saved: saved
+        )
+      end
+
+      def saving_approvals?(env, params)
+        env["REQUEST_METHOD"] == "POST" && params.key?("save_approvals")
+      end
+
+      # Only a candidate the *current* discovery result actually lists can
+      # ever be written, so the file cannot be seeded through this form with
+      # a model/scope pair Karst would refuse to confirm later anyway.
+      def save_approvals(discovery, params)
         raw = Array(params["population"]).map(&:to_s)
-        discovery.candidates.select { |candidate| raw.include?(candidate_key(candidate)) }
+        entries = discovery.candidates.filter_map do |candidate|
+          next unless raw.include?(candidate_key(candidate))
+
+          Access::PopulationApprovals::Entry.new(model_name: candidate.model_name,
+                                                 method_name: candidate.method_name.to_s)
+        end
+        Access::PopulationApprovals.replace(entries)
+      end
+
+      # Discovery candidates (which carry principal-source metadata the
+      # snippet generator needs) for the approved entries that are still
+      # discovered at all.
+      def approved_candidates(discovery, record)
+        discovery.candidates.select { |candidate| record.approved?(candidate.model_name, candidate.method_name) }
+      end
+
+      def stale_approvals(record)
+        Access::ApprovedPopulations.stale(safe_principal_sources, record: record)
+      rescue StandardError
+        [].freeze
+      end
+
+      def safe_principal_sources
+        Identity.principal_sources
+      rescue Identity::Error
+        {}
+      end
+
+      # An absent Origin (a non-browser client, or an older browser that
+      # only sends Referer) falls back to Referer; a POST carrying neither
+      # is refused rather than trusted.
+      def approved_origin?(env)
+        return true unless env["REQUEST_METHOD"] == "POST"
+
+        request = Rack::Request.new(env)
+        expected = "#{request.scheme}://#{request.host_with_port}"
+        origin = env["HTTP_ORIGIN"]
+        return origin == expected if origin
+
+        referer = env["HTTP_REFERER"].to_s
+        referer == expected || referer.start_with?("#{expected}/")
+      end
+
+      def forbidden
+        [403, { "content-type" => "text/plain; charset=utf-8", "cache-control" => "no-store" }, ["Forbidden"]]
       end
 
       def population_preview(discovery, params)
@@ -168,6 +236,24 @@ module Karst
         e
       end
 
+      # How many application-defined groups on an already-configured user
+      # source a developer could still approve. Computed only after an
+      # analysis that found nothing usable -- the one moment the answer is
+      # actionable -- so an ordinary panel render never parses model source,
+      # and the main page never turns into a population-configuration
+      # workflow. Discovery executes nothing; see PopulationDiscovery.
+      def unapproved_candidate_count(result)
+        return nil unless result.is_a?(Access::Search::Result) && result.verified_outcome.nil?
+
+        record = Access::PopulationApprovals.load
+        count = Access::PopulationDiscovery.new.call.candidates.count do |candidate|
+          candidate.principal_source && !record.approved?(candidate.model_name, candidate.method_name)
+        end
+        count.positive? ? count : nil
+      rescue StandardError
+        nil
+      end
+
       def scenario_analyze(params)
         scenario = Karst.config.access_scenarios[params["scenario"].to_s.to_sym]
         raise ArgumentError, "unknown access scenario" unless scenario
@@ -191,7 +277,7 @@ module Karst
                end
         path && identity_navigation_response(env, params, path)
       rescue Identity::Error
-        [403, { "content-type" => "text/plain; charset=utf-8", "cache-control" => "no-store" }, ["Forbidden"]]
+        forbidden
       end
 
       def identity_navigation_response(env, params, path)

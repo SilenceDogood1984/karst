@@ -96,6 +96,7 @@ module Karst
         .population-attempt .name{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-weight:600}
         .population-attempt.hit .name{color:#0f5132}
         .population-attempt.untried{color:#777}
+        .candidate-review{font-size:.9rem;color:#444;margin:.5rem 0 0}
         .ordinary-sample{border:1px solid #ddd;border-radius:.5rem;padding:.8rem 1rem;margin:1rem 0}
         .ordinary-sample h2{margin:0 0 .45rem}
         .ordinary-sample details{margin:.55rem 0}
@@ -111,7 +112,7 @@ module Karst
           body{background:#16171a;color:#e4e4e6}
           h2{color:#a7a7ad;border-color:#2c2d31}
           .route-path{color:#a7a7ad}
-          .meta,small{color:#9a9aa0}
+          .meta,small,.candidate-review{color:#9a9aa0}
           input{background:#1f2023;border-color:#3a3b3e;color:#e4e4e6}
           button{background:#26272b;border-color:#3a3b3e;color:#e4e4e6}
           button:hover{background:#303136}
@@ -146,15 +147,19 @@ module Karst
 
       # rubocop:disable Metrics/ClassLength
       class << self
+        # rubocop:disable Metrics/ParameterLists
         def render(params: {}, access_result: nil, csrf_token: nil, browser_identity_active: false,
-                   route_lookup_limitation: nil)
-          [200, HEADERS.dup,
-           [document(params, access_result, csrf_token, browser_identity_active, route_lookup_limitation)]]
+                   route_lookup_limitation: nil, unapproved_candidate_count: nil)
+          state = { csrf_token: csrf_token, browser_identity_active: browser_identity_active,
+                    route_lookup_limitation: route_lookup_limitation,
+                    unapproved_candidate_count: unapproved_candidate_count }
+          [200, HEADERS.dup, [document(params, access_result, state)]]
         end
+        # rubocop:enable Metrics/ParameterLists
 
         private
 
-        def document(params, access_result, csrf_token, browser_identity_active, route_lookup_limitation)
+        def document(params, access_result, state)
           <<~HTML
             <!DOCTYPE html>
             <html lang="en"><head><meta charset="utf-8"><title>Karst</title>
@@ -162,20 +167,19 @@ module Karst
             <script>#{SCRIPT}</script>
             </head><body>
             <h1>Karst</h1>
-            #{page_body(params, access_result, csrf_token, browser_identity_active, route_lookup_limitation)}
+            #{page_body(params, access_result, state)}
             </body></html>
           HTML
         end
 
-        def page_body(params, access_result, csrf_token, browser_identity_active, route_lookup_limitation)
+        def page_body(params, access_result, state)
           controller = string_param(params, "controller")
           action = string_param(params, "action")
           http_method = string_param(params, "method")
           path = string_param(params, "path")
-          "#{testing_banner(path, csrf_token, browser_identity_active)}" \
-            "#{route_header(http_method, path, route_lookup_limitation)}" \
-            "#{access_section(http_method, path, controller, action, access_result, csrf_token,
-                              route_lookup_limitation)}"
+          "#{testing_banner(path, state[:csrf_token], state[:browser_identity_active])}" \
+            "#{route_header(http_method, path, state[:route_lookup_limitation])}" \
+            "#{access_section(http_method, path, controller, action, access_result, state)}"
         end
 
         def string_param(params, key)
@@ -237,8 +241,8 @@ module Karst
         # -- Primary action: access analysis ------------------------------------
 
         # rubocop:disable Metrics/ParameterLists
-        def access_section(http_method, path, controller, action, result, csrf_token, route_lookup_limitation = nil)
-          return "" if path.empty? || route_lookup_limitation
+        def access_section(http_method, path, controller, action, result, state)
+          return "" if path.empty? || state[:route_lookup_limitation]
 
           context = hidden("controller", controller) + hidden("action", action) +
                     hidden("method", http_method) + hidden("path", path)
@@ -248,7 +252,7 @@ module Karst
                    "<p>Access analysis is available for GET routes only.</p>"
                  end
           heading = "<h2 class=\"sr-only\">Access analysis</h2>"
-          "<section class=\"access\">#{heading}#{body}#{access_result(result, csrf_token)}</section>"
+          "<section class=\"access\">#{heading}#{body}#{access_result(result, state)}</section>"
         end
         # rubocop:enable Metrics/ParameterLists
 
@@ -303,24 +307,26 @@ module Karst
           "<input type=\"hidden\" name=\"#{name}\" value=\"#{escape(value)}\">"
         end
 
-        def access_result(result, csrf_token)
+        def access_result(result, state)
           return "" unless result
           return "<p>Analysis unavailable: #{escape(result.message)}</p>" if result.is_a?(StandardError)
 
+          csrf_token = state[:csrf_token]
           return scenario_result(result, csrf_token) if result.respond_to?(:scenario_name)
 
-          search_result(result, csrf_token)
+          search_result(result, state)
         end
 
         # Renders one Karst::Access::Search::Result: the ordinary sample and
         # any automatic candidate-population retries as a single answer, so
         # a usable user found through a population reads exactly like one
         # found in the sample -- there is no second workflow to enter.
-        def search_result(result, csrf_token)
+        def search_result(result, state)
+          csrf_token = state[:csrf_token]
           outcomes = result.all_outcomes
           usable = outcomes.select { |outcome| usable_outcome?(outcome) }
           write_count = outcomes.count(&:writes_observed)
-          "#{usable_outcomes(usable, result, csrf_token)}#{ordinary_sample(result, csrf_token)}" \
+          "#{usable_outcomes(usable, result, state)}#{ordinary_sample(result, csrf_token)}" \
             "#{populations_section(result, csrf_token)}#{write_evidence(write_count)}#{search_meta(result)}"
         end
 
@@ -474,9 +480,10 @@ module Karst
 
         # -- Usable principals ---------------------------------------------------
 
-        def usable_outcomes(outcomes, result, csrf_token)
+        def usable_outcomes(outcomes, result, state)
+          csrf_token = state[:csrf_token]
           body = if outcomes.empty?
-                   ""
+                   candidate_review(state[:unapproved_candidate_count])
                  else
                    usable_cards(outcomes,
                                 result, csrf_token)
@@ -484,6 +491,20 @@ module Karst
           heading = outcomes.empty? ? "No verified usable user found" : "Verified usable user"
           "<section class=\"usable\"><h2>#{heading}</h2>" \
             "#{test_as_hint(outcomes, csrf_token)}#{body}</section>"
+        end
+
+        # The one place /karst mentions candidate groups at all: a small
+        # contextual action, shown only when the analysis found nothing
+        # usable and unapproved application-defined groups actually exist on
+        # a configured user source. Deliberately not a configuration
+        # workflow -- it says what Karst found and offers to show it, and
+        # names nothing it has not been approved to run.
+        def candidate_review(count)
+          return "" unless count&.positive?
+
+          "<p class=\"candidate-review\">Karst found #{escape(count)} application-defined user " \
+            "#{count == 1 ? 'group' : 'groups'} that could be tried. " \
+            "<a href=\"/karst/populations\">Review candidate groups</a></p>"
         end
 
         def usable_cards(outcomes, result, csrf_token)

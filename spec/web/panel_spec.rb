@@ -179,6 +179,28 @@ RSpec.describe Karst::Web::Panel do
       expect(body).not_to include("No user can access this page")
     end
 
+    it "offers reviewing candidate groups only when the analysis found nothing usable" do
+      body = described_class.render(params: analyzed_route, unapproved_candidate_count: 6,
+                                    access_result: access_result([access_outcome(id: 1, status: 401)])).last.join
+
+      expect(body).to include("Karst found 6 application-defined user groups that could be tried.",
+                              '<a href="/karst/populations">Review candidate groups</a>')
+    end
+
+    it "keeps candidate groups out of the page once a usable user was found" do
+      body = described_class.render(params: analyzed_route, unapproved_candidate_count: 6,
+                                    access_result: access_result([access_outcome(id: 1, status: 200)])).last.join
+
+      expect(body).not_to include("/karst/populations", "could be tried")
+    end
+
+    it "says nothing about candidate groups when there are none left to approve" do
+      body = described_class.render(params: analyzed_route, unapproved_candidate_count: nil,
+                                    access_result: access_result([access_outcome(id: 1, status: 401)])).last.join
+
+      expect(body).not_to include("/karst/populations")
+    end
+
     it "renders halted callbacks observationally and keeps otherwise identical groups separate" do
       outcomes = [access_outcome(id: 1, status: 302, redirect: "/login", halted_callback: :require_subscription),
                   access_outcome(id: 2, status: 302, redirect: "/login", halted_callback: :require_admin)]

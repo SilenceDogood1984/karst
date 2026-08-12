@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "access/principal_source"
+require_relative "access/approved_populations"
 require_relative "access/artifact_source"
 require_relative "access/scenario"
 require_relative "identity/devise_support"
@@ -115,14 +116,17 @@ module Karst
     # -- one inferred Devise model wrapped the same way (see
     # Karst::Identity::DeviseSupport), or nil when none of those apply. A
     # Hash of Symbol => PrincipalSource.
+    #
+    # This is also where locally approved discovered populations (see
+    # Karst::Access::ApprovedPopulations) join the effective configuration,
+    # after each source's own explicitly configured populations. Every
+    # adapter -- the panel, `bin/rails karst:verify`, the MCP verify_access
+    # tool -- reads this one method, so none of them knows or can diverge on
+    # what a "approved population" is. Resolved on every call rather than
+    # memoized: an approval revoked, or a scope deleted, must stop being
+    # executed on the next analysis without a server restart.
     def principal_sources
-      return @configured_principal_sources if @configured_principal_sources
-      return default_principal_source(@principals) if @principals
-
-      inferred = Identity::DeviseSupport.unambiguous_mapping
-      return nil unless inferred
-
-      default_principal_source(-> { inferred.model.all })
+      Access::ApprovedPopulations.merge(configured_or_inferred_sources)
     end
 
     def access_sweep_limit=(value)
@@ -163,6 +167,16 @@ module Karst
     end
 
     private
+
+    def configured_or_inferred_sources
+      return @configured_principal_sources if @configured_principal_sources
+      return default_principal_source(@principals) if @principals
+
+      inferred = Identity::DeviseSupport.unambiguous_mapping
+      return nil unless inferred
+
+      default_principal_source(-> { inferred.model.all })
+    end
 
     def default_principal_source(records)
       { default: Access::PrincipalSource.new(name: :default, records: records,

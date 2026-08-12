@@ -6,21 +6,32 @@ require_relative "../access/population_preview"
 
 module Karst
   module Web
-    # Read-only-except-for-selection HTML presentation of
-    # Karst::Access::PopulationDiscovery: browse application models and
-    # their discovered candidate scopes without being buried by
-    # hundreds of them, curate a selection, preview one bounded candidate at
-    # a time, and copy a generated config snippet. Never mutates the host
-    # application's files -- see Karst::Access::PopulationConfigSnippet.
+    # The local approval surface for Karst::Access::PopulationDiscovery:
+    # browse the application-defined groups Karst found, approve the ones
+    # Karst may try, optionally preview one, and see which approvals are no
+    # longer doing anything. Approving is the whole workflow -- generating
+    # Ruby configuration is kept as an advanced export path, not the way a
+    # developer is expected to finish.
     #
     # Kept as a pure renderer, exactly like Karst::Web::Panel: every value
-    # this module needs (the discovery result, the current selection, an
-    # optional generated snippet, an optional single preview) is computed
-    # by Karst::Web::Middleware and passed in, so this file never touches
-    # Active Record, the filesystem, or Karst.config directly.
+    # this module needs (the discovery result, the approved entries, stale
+    # approvals, an optional storage error, an optional generated snippet, an
+    # optional single preview) is computed by Karst::Web::Middleware and
+    # passed in, so this file never touches Active Record, the filesystem, or
+    # Karst.config directly.
     # rubocop:disable Metrics/ModuleLength
     module PopulationsPanel
       CANDIDATE_SEPARATOR = "::"
+
+      # Why an approved entry currently does nothing (see
+      # Karst::Access::ApprovedPopulations.stale). Reported rather than
+      # silently ignored -- and never repaired automatically, since the fix
+      # is always a decision about the application, not about Karst.
+      STALE_REASONS = {
+        not_discovered: "no longer a discovered scope on this model — not used",
+        no_principal_source: "not part of a configured user source — not used"
+      }.freeze
+      private_constant :STALE_REASONS
 
       STYLE = <<~CSS
         :root{color-scheme:light dark}
@@ -30,8 +41,10 @@ module Karst
         h2{font-size:1.1rem;margin:1.5rem 0 .5rem}
         h3{font-size:.85rem;text-transform:uppercase;letter-spacing:.05em;color:#555;margin:1.5rem 0 .6rem;border-bottom:1px solid #e2e2e2;padding-bottom:.35rem}
         a{color:#2563eb}
+        .lead{margin:.4rem 0 1rem}
         .hint{color:#8a5b00;font-size:.85rem;margin:.4rem 0}
         .warning{color:#8a5b00;font-size:.85rem;margin:.4rem 0;border:1px solid #eacb6b;background:#fff7e0;border-radius:.4rem;padding:.6rem .8rem}
+        .saved{color:#0f5132;font-size:.9rem;margin:.4rem 0;border:1px solid #a6d9bb;background:#e6f4ea;border-radius:.4rem;padding:.6rem .8rem}
         .search-box{margin:1rem 0}
         .search-box label{display:flex;flex-direction:column;font-size:.78rem;font-weight:600;gap:.25rem;color:#444}
         .search-box input{font:inherit;padding:.5rem .6rem;border:1px solid #ccc;border-radius:.3rem;max-width:24rem}
@@ -40,10 +53,11 @@ module Karst
         button:focus-visible,input:focus-visible,summary:focus-visible,a:focus-visible{outline:2px solid #2563eb;outline-offset:2px}
         button.primary{background:#202124;border-color:#202124;color:#fff;font-weight:600;padding:.65rem 1.15rem;font-size:.95rem;margin-top:1rem}
         button.primary:hover{background:#3a3b3e}
-        .selected-summary{border:1px solid #ddd;border-radius:.5rem;padding:.75rem 1rem}
-        .selected-model{margin:.4rem 0}
-        .selected-model strong{display:block}
-        .selected-model ul{margin:.2rem 0 0;padding-left:1.2rem}
+        .approved-summary{border:1px solid #ddd;border-radius:.5rem;padding:.75rem 1rem}
+        .approved-model{margin:.4rem 0}
+        .approved-model strong{display:block}
+        .approved-model ul{margin:.2rem 0 0;padding-left:1.2rem}
+        .approved-model .stale{color:#8a5b00;font-size:.85rem}
         details.model-group{border:1px solid #e2e2e2;border-radius:.4rem;padding:.5rem .8rem;margin:.5rem 0}
         details.model-group summary{cursor:pointer;font-weight:600;display:flex;gap:.6rem;align-items:baseline;flex-wrap:wrap}
         details.model-group summary .count{font-weight:400;color:#666;font-size:.85rem}
@@ -53,8 +67,11 @@ module Karst
         .candidate-row label{display:flex;align-items:center;gap:.4rem;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.92rem}
         .preview{flex-basis:100%;margin:.2rem 0 .3rem 1.6rem;font-size:.85rem;color:#444}
         .preview.error{color:#8a5b00}
-        .snippet{border:1px solid #ddd;border-radius:.5rem;padding:.9rem 1rem;margin:1rem 0}
+        .snippet{margin:.6rem 0}
         .snippet textarea{width:100%;min-height:6rem;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.85rem;padding:.5rem;border:1px solid #ccc;border-radius:.3rem}
+        details.advanced{border:1px solid #e2e2e2;border-radius:.4rem;padding:.5rem .8rem;margin:1.5rem 0}
+        details.advanced summary{cursor:pointer;font-size:.9rem}
+        code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.9em}
         small{color:#666}
         @media (prefers-color-scheme:dark){
           body{background:#16171a;color:#e4e4e6}
@@ -65,9 +82,10 @@ module Karst
           button:hover{background:#303136}
           button.primary{background:#e4e4e6;border-color:#e4e4e6;color:#16171a}
           button.primary:hover{background:#c9c9cc}
-          .selected-summary,details.model-group,.snippet{border-color:#33343a}
-          .hint,.warning{color:#d8a63d}
+          .approved-summary,details.model-group,details.advanced{border-color:#33343a}
+          .hint,.warning,.approved-model .stale{color:#d8a63d}
           .warning{background:#3a2f0d;border-color:#6b5423}
+          .saved{background:#123822;border-color:#1f5c37;color:#7fd8a4}
           details.model-group summary .badge{background:#123822;color:#7fd8a4}
         }
       CSS
@@ -117,10 +135,18 @@ module Karst
 
       # rubocop:disable Metrics/ClassLength
       class << self
-        def render(discovery:, selected: [], snippet: nil, preview: nil)
+        # `approved` and each entry of `stale` are anything exposing
+        # #model_name/#method_name -- in practice
+        # Karst::Access::PopulationApprovals::Entry.
+        # rubocop:disable Metrics/ParameterLists
+        def render(discovery:, approved: [], stale: [], snippet: nil, preview: nil, storage_path: nil,
+                   storage_error: nil, saved: false)
           nonce = SecureRandom.hex(16)
-          [200, headers(nonce), [document(discovery, selected, snippet, preview, nonce)]]
+          state = { approved: approved, stale: stale, snippet: snippet, preview: preview,
+                    storage_path: storage_path, storage_error: storage_error, saved: saved }
+          [200, headers(nonce), [document(discovery, state, nonce)]]
         end
+        # rubocop:enable Metrics/ParameterLists
 
         private
 
@@ -132,29 +158,58 @@ module Karst
           }
         end
 
-        def document(discovery, selected, snippet, preview, nonce)
+        # The per-candidate Preview and the advanced snippet export submit
+        # through their own form, referenced by `form=` rather than nested
+        # inside the approval form (HTML forbids nesting): pressing either
+        # therefore cannot smuggle checkbox state into a save, so the only
+        # way to change what Karst may execute is the explicit approve
+        # button.
+        def document(discovery, state, nonce)
           <<~HTML
             <!DOCTYPE html>
-            <html lang="en"><head><meta charset="utf-8"><title>Karst — Candidate scopes</title>
+            <html lang="en"><head><meta charset="utf-8"><title>Karst — Candidate groups</title>
             <style>#{STYLE}</style>
             </head><body>
             <h1>Karst</h1>
             <p><a href="/karst">&larr; Back to route evidence</a></p>
-            <h2>Candidate scopes</h2>
-            <p class="hint">Discovery includes zero-argument scopes declared directly in application model source.
-            Scopes contributed by concerns may not appear. A discovered scope is not approved configuration and
-            does not grant access; only running an actual sweep against a route proves behavior.</p>
+            <h2>Candidate groups</h2>
+            <p class="lead">Approving a group lets Karst try a few existing users from it when the ordinary sample
+            fails. Approving is not a claim that the group grants access — only running an analysis against a route
+            shows what actually happens.</p>
+            #{saved_notice(state[:saved])}
+            #{storage_error(state[:storage_error])}
             #{load_warning(discovery)}
+            <form id="karst-secondary" method="post" action="/karst/populations"></form>
             <form method="post" action="/karst/populations">
             #{search_box}
-            #{snippet_section(snippet)}
-            #{selected_section(selected)}
-            #{model_groups_section(discovery, selected, preview)}
-            <button type="submit" name="generate_snippet" value="1" class="primary">Generate configuration snippet</button>
+            #{approved_section(state[:approved], state[:stale])}
+            #{model_groups_section(discovery, state[:approved], state[:preview])}
+            <button type="submit" name="save_approvals" value="1" class="primary">Approve selected groups</button>
             </form>
+            #{advanced_section(state[:snippet])}
+            #{storage_note(state[:storage_path])}
             <script nonce="#{nonce}">#{SEARCH_SCRIPT}#{COPY_SCRIPT}</script>
             </body></html>
           HTML
+        end
+
+        def saved_notice(saved)
+          return "" unless saved
+
+          "<p class=\"saved\" role=\"status\">Approvals saved.</p>"
+        end
+
+        def storage_error(error)
+          return "" unless error
+
+          "<p class=\"warning\" role=\"alert\">#{escape(error)}</p>"
+        end
+
+        def storage_note(path)
+          return "" unless path
+
+          "<p><small>Approvals are stored locally in <code>#{escape(path)}</code> as plain model and " \
+            "scope names — no user data, no Ruby. Delete that file to reset every approval.</small></p>"
         end
 
         def load_warning(discovery)
@@ -166,47 +221,61 @@ module Karst
         def search_box
           <<~HTML
             <div class="search-box">
-            <label>Search scopes or models
+            <label>Search groups or models
             <input type="search" id="karst-population-search" placeholder="e.g. admin, User, subscription">
             </label>
             </div>
           HTML
         end
 
-        # -- Selected summary -----------------------------------------------
+        # -- Approved summary --------------------------------------------------
 
-        def selected_section(selected)
-          body = if selected.empty?
-                   "<p>No populations selected yet.</p>"
+        def approved_section(approved, stale)
+          body = if approved.empty?
+                   "<p>No groups approved yet.</p>"
                  else
-                   selected.group_by(&:model_name).sort.map do |model_name, group|
-                     selected_model(model_name, group)
+                   approved.group_by(&:model_name).sort.map do |model_name, group|
+                     approved_model(model_name, group, stale)
                    end.join
                  end
-          "<section class=\"selected-summary\"><h3>Selected (#{selected.size})</h3>#{body}</section>"
+          "<section class=\"approved-summary\"><h3>Approved (#{approved.size})</h3>#{body}</section>"
         end
 
-        def selected_model(model_name, candidates)
-          items = candidates.sort_by { |c| c.method_name.to_s }.map { |c| "<li>#{escape(c.method_name)}</li>" }.join
-          "<div class=\"selected-model\"><strong>#{escape(model_name)}</strong><ul>#{items}</ul></div>"
+        def approved_model(model_name, entries, stale)
+          items = entries.sort_by { |entry| entry.method_name.to_s }.map do |entry|
+            "<li>#{escape(entry.method_name)}#{stale_note(entry, stale)}</li>"
+          end.join
+          "<div class=\"approved-model\"><strong>#{escape(model_name)}</strong><ul>#{items}</ul></div>"
+        end
+
+        def stale_note(entry, stale)
+          match = stale.find { |item, _reason| same_candidate?(item, entry) }
+          return "" unless match
+
+          " <span class=\"stale\">— #{escape(STALE_REASONS.fetch(match.last, 'not used'))}</span>"
+        end
+
+        def same_candidate?(left, right)
+          left.model_name.to_s == right.model_name.to_s && left.method_name.to_s == right.method_name.to_s
         end
 
         # -- Model groups ------------------------------------------------------
 
-        def model_groups_section(discovery, selected, preview)
+        def model_groups_section(discovery, approved, preview)
           groups = discovery.model_groups.reject { |group| group.candidate_names.empty? }
           body = if groups.empty?
-                   "<p>No candidate scopes were discovered.</p>"
+                   "<p>No candidate groups were discovered.</p>"
                  else
-                   groups.map { |group| model_group(group, selected, preview) }.join
+                   groups.map { |group| model_group(group, approved, preview) }.join
                  end
           "<section class=\"model-groups\"><h3>Available models</h3>#{body}</section>"
         end
 
-        def model_group(group, selected, preview)
-          selected_names = selected.select { |c| c.model_name == group.model_name }.map(&:method_name)
-          open = selected_names.any? ? " open" : ""
-          rows = group.candidate_names.map { |name| candidate_row(group, name, selected_names, preview) }.join
+        def model_group(group, approved, preview)
+          approved_names = approved.select { |entry| entry.model_name == group.model_name }
+                                   .map { |entry| entry.method_name.to_s }
+          open = approved_names.any? ? " open" : ""
+          rows = group.candidate_names.map { |name| candidate_row(group, name, approved_names, preview) }.join
           <<~HTML
             <details class="model-group" data-model="#{escape(group.model_name)}"#{open}>
             <summary>#{model_summary(group)}</summary>
@@ -217,21 +286,22 @@ module Karst
 
         def model_summary(group)
           count = group.candidate_names.size
-          "#{escape(group.model_name)} <span class=\"count\">#{count} scope#{'s' unless count == 1}</span>" \
+          "#{escape(group.model_name)} <span class=\"count\">#{count} group#{'s' unless count == 1}</span>" \
             "#{principal_badge(group)}"
         end
 
         def principal_badge(group)
           return "" unless group.principal_source
 
-          "<span class=\"badge\">principal source: #{escape(group.principal_source)}</span>"
+          "<span class=\"badge\">user source: #{escape(group.principal_source)}</span>"
         end
 
-        def candidate_row(group, method_name, selected_names, preview)
+        def candidate_row(group, method_name, approved_names, preview)
           key = candidate_key(group.model_name, method_name)
-          checked = selected_names.include?(method_name)
+          checked = approved_names.include?(method_name.to_s)
           box = "<input type=\"checkbox\" name=\"population[]\" value=\"#{escape(key)}\"#{' checked' if checked}>"
-          preview_button = "<button type=\"submit\" name=\"preview\" value=\"#{escape(key)}\">Preview</button>"
+          preview_button = "<button type=\"submit\" form=\"karst-secondary\" name=\"preview\" " \
+                           "value=\"#{escape(key)}\">Preview</button>"
           label = "<label>#{box} #{escape(method_name)}</label>"
           "<li class=\"candidate-row\" data-name=\"#{escape(method_name)}\">#{label}" \
             "#{preview_button}#{preview_result(group, method_name, preview)}</li>"
@@ -266,16 +336,31 @@ module Karst
           "#{record.class.name} ##{record.public_send(primary_key)}"
         end
 
-        # -- Snippet -------------------------------------------------------
+        # -- Advanced: Ruby export ---------------------------------------------
+
+        # Approving is the workflow; this stays available for an application
+        # that would rather commit its populations as reviewable Ruby (a
+        # shared or CI environment, where a machine-local approval file is
+        # deliberately not consulted).
+        def advanced_section(snippet)
+          <<~HTML
+            <details class="advanced"#{' open' if snippet}><summary>Advanced: export approvals as Ruby
+            configuration</summary>
+            <p><small>Explicit <code>config.principal_populations</code> keeps working exactly as before and always
+            takes precedence over an approval of the same name. Karst never writes to your application's files.
+            </small></p>
+            <button type="submit" form="karst-secondary" name="generate_snippet" value="1">Generate snippet from
+            approvals</button>
+            #{snippet_section(snippet)}
+            </details>
+          HTML
+        end
 
         def snippet_section(snippet)
           return "" unless snippet
 
           <<~HTML
             <div class="snippet">
-            <h3>Configuration snippet</h3>
-            <p><small>Copy this into your own Karst.configure block. Karst does not write to your application's
-            files automatically.</small></p>
             <textarea id="karst-snippet-code" readonly>#{escape(snippet.code)}</textarea>
             <p><button type="button" id="karst-copy-snippet">Copy</button></p>
             #{unwired_note(snippet)}
@@ -287,8 +372,8 @@ module Karst
           return "" if snippet.unwired.empty?
 
           names = snippet.unwired.map { |c| "#{c.model_name}.#{c.method_name}" }.join(", ")
-          "<p class=\"hint\">#{snippet.unwired.size} selected population(s) are not part of a configured " \
-            "principal source yet and were left out of the snippet above: #{escape(names)}.</p>"
+          "<p class=\"hint\">#{snippet.unwired.size} approved group(s) are not part of a configured " \
+            "user source yet and were left out of the snippet above: #{escape(names)}.</p>"
         end
 
         def candidate_key(model_name, method_name)

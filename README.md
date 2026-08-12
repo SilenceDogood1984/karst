@@ -41,26 +41,22 @@ Custom or non-Devise authentication needs a few lines of setup — see [Custom a
 
 1. Open any page in development. Karst adds a small **Karst** badge in the corner, already scoped to the controller/action that rendered it.
 2. Click it (or visit `/karst` directly) and press **Who can use this?**. Karst runs the route through your real Rails stack as a bounded set of existing users — 25 by default — inside a database transaction it rolls back.
-3. If none of those work, Karst automatically tries a few users from any [candidate populations](#candidate-populations) you've configured, such as `system_admins`.
+3. If none of those work, Karst automatically tries a few users from any [candidate populations](#candidate-populations) you've approved, such as `system_admins`.
 4. Every result shows what actually happened: status, redirect, halted callback, exception, and observed database writes.
 5. Found a usable user? Click **Test as** to become them in your own browser and keep working.
 
 ## Candidate populations
 
-Sometimes the right user is rare and won't show up in a normal recent-user sample. Tell Karst about meaningful groups your application already knows about:
+Sometimes the right user is rare and won't show up in a normal recent-user sample. Karst can find these groups itself — no configuration needed. When the ordinary sample comes up empty, `/karst` says so:
 
-```ruby
-Karst.configure do |config|
-  config.principal_populations = {
-    system_admins: -> { User.system_admins },
-    auditors: -> { User.auditors }
-  }
-end
+```
+No verified usable user found
+Karst found 3 application-defined user groups that could be tried. [ Review candidate groups ]
 ```
 
-If the ordinary sample finds nothing usable, Karst automatically tries a few users from each population, in order, until one works. A population is a hint, never a claim — Karst only reports that a user was *sampled from* `system_admins`, never that the population is what granted access.
+Open `/karst/populations`, check the groups Karst may try (`system_admins`, `auditors`, ...), and press **Approve**. From then on, approved groups are searched automatically — through `/karst`, the CLI, and MCP alike — until one produces a usable user. Approving is a hint, never a claim: Karst only reports that a user was *sampled from* `system_admins`, never that the group is what granted access.
 
-Not sure which scopes matter yet? `bin/rails karst:populations` lists candidate scopes it finds in your models, or browse and preview them at `/karst/populations`.
+Prefer configuring populations by hand instead (or need this to apply outside your own machine, e.g. in CI)? `config.principal_populations` still works exactly as before and always takes precedence over an approval of the same name — see [docs/advanced-configuration.md](docs/advanced-configuration.md#curating-candidate-populations) for discovery, approval, and precedence details.
 
 ## What Karst shows you
 
@@ -107,7 +103,7 @@ Claude Code or another [MCP](https://modelcontextprotocol.io) client can call `v
 Karst.configure do |config|
   config.enabled = true              # on by default in development and test
   config.access_sweep_limit = 25     # users tried per search (max 100)
-  config.principal_populations = { system_admins: -> { User.system_admins } }
+  config.principal_populations = { system_admins: -> { User.system_admins } } # optional -- see below
 end
 ```
 

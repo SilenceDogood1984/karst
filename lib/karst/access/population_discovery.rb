@@ -32,6 +32,24 @@ module Karst
         Result.new(model_groups: model_groups, load_warning: @load_warning)
       end
 
+      # Confirms one exact model/scope pair against the model's *current*
+      # source, executing nothing. Deliberately takes the class the caller
+      # already holds (always an already-configured principal source's own
+      # model, see Karst::Access::ApprovedPopulations) rather than a name to
+      # look up: a stored approval can therefore never cause Karst to
+      # constantize, autoload, or reach a class the application had not
+      # already pointed it at, and this check stays a single file parse
+      # instead of a full application eager load.
+      #
+      # Fails closed by construction: it answers "would discovery list this
+      # candidate right now," so a scope that was deleted, renamed, given
+      # parameters, or replaced by an ordinary class method stops being
+      # confirmed as soon as the source changes.
+      def confirms?(klass:, method_name:)
+        name = method_name.to_sym
+        klass.respond_to?(name) && scope_names(klass).include?(name)
+      end
+
       private
 
       def model_groups
@@ -72,7 +90,15 @@ module Karst
         FRAMEWORK_NAMESPACES.any? { |namespace| klass.name == namespace || klass.name.start_with?("#{namespace}::") }
       end
 
+      # Memoized per instance so one discovery pass parses each model's
+      # source file exactly once, whether it is reached by #call or by a
+      # sequence of #confirms? checks over the same class.
       def scope_names(klass)
+        @scope_names ||= {}
+        @scope_names.fetch(klass) { @scope_names[klass] = parse_scope_names(klass) }
+      end
+
+      def parse_scope_names(klass)
         file, = Object.const_source_location(klass.name)
         return [] unless file && File.file?(file)
 
@@ -86,11 +112,18 @@ module Karst
         nil
       end
 
+      # Memoized around the configuration read as well as the result:
+      # resolving the effective principal sources now also resolves locally
+      # approved populations (see Karst::Access::ApprovedPopulations), so
+      # re-reading it once per model group would re-read the approval file
+      # and re-parse model source once per model group too.
       def principal_source_klasses
-        sources = Karst.config.principal_sources || {}
-        @principal_source_klasses ||= sources.each_with_object({}) do |(name, source), memo|
-          klass = source.record_klass
-          memo[name] = klass if klass
+        @principal_source_klasses ||= begin
+          sources = Karst.config.principal_sources || {}
+          sources.each_with_object({}) do |(name, source), memo|
+            klass = source.record_klass
+            memo[name] = klass if klass
+          end
         end
       end
 
