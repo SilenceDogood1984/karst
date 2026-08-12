@@ -21,8 +21,6 @@ require_relative "karst/access/candidate_population"
 require_relative "karst/access/population_discovery"
 require_relative "karst/access/population_approvals"
 require_relative "karst/access/approved_populations"
-require_relative "karst/access/population_preview"
-require_relative "karst/access/population_config_snippet"
 require_relative "karst/access/principal_source_selection"
 require_relative "karst/access/selected_principal_sources"
 

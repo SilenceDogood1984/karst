@@ -2,21 +2,16 @@
 
 require "cgi"
 require "securerandom"
-require_relative "../access/population_preview"
-
 module Karst
   module Web
     # The local approval surface for Karst::Access::PopulationDiscovery:
     # browse the application-defined groups Karst found, approve the ones
-    # Karst may try, optionally preview one, and see which approvals are no
-    # longer doing anything. Approving is the whole workflow -- generating
-    # Ruby configuration is kept as an advanced export path, not the way a
-    # developer is expected to finish.
+    # Karst may try, and see which approvals are no longer doing anything.
     #
     # Kept as a pure renderer, exactly like Karst::Web::Panel: every value
     # this module needs (the discovery result, the approved entries, stale
-    # approvals, an optional storage error, an optional generated snippet, an
-    # optional single preview) is computed by Karst::Web::Middleware and
+    # approvals and an optional storage error) is computed by
+    # Karst::Web::Middleware and
     # passed in, so this file never touches Active Record, the filesystem, or
     # Karst.config directly.
     # rubocop:disable Metrics/ModuleLength
@@ -65,24 +60,18 @@ module Karst
         .candidate-list{list-style:none;margin:.6rem 0 0;padding:0}
         .candidate-row{display:flex;align-items:center;gap:.6rem;padding:.3rem 0;flex-wrap:wrap}
         .candidate-row label{display:flex;align-items:center;gap:.4rem;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.92rem}
-        .preview{flex-basis:100%;margin:.2rem 0 .3rem 1.6rem;font-size:.85rem;color:#444}
-        .preview.error{color:#8a5b00}
-        .snippet{margin:.6rem 0}
-        .snippet textarea{width:100%;min-height:6rem;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.85rem;padding:.5rem;border:1px solid #ccc;border-radius:.3rem}
-        details.advanced{border:1px solid #e2e2e2;border-radius:.4rem;padding:.5rem .8rem;margin:1.5rem 0}
-        details.advanced summary{cursor:pointer;font-size:.9rem}
         code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.9em}
         small{color:#666}
         @media (prefers-color-scheme:dark){
           body{background:#16171a;color:#e4e4e6}
           a{color:#7aa2f7}
           h3{color:#a7a7ad;border-color:#2c2d31}
-          .search-box input,.snippet textarea{background:#1f2023;border-color:#3a3b3e;color:#e4e4e6}
+          .search-box input{background:#1f2023;border-color:#3a3b3e;color:#e4e4e6}
           button{background:#26272b;border-color:#3a3b3e;color:#e4e4e6}
           button:hover{background:#303136}
           button.primary{background:#e4e4e6;border-color:#e4e4e6;color:#16171a}
           button.primary:hover{background:#c9c9cc}
-          .approved-summary,details.model-group,details.advanced{border-color:#33343a}
+          .approved-summary,details.model-group{border-color:#33343a}
           .hint,.warning,.approved-model .stale{color:#d8a63d}
           .warning{background:#3a2f0d;border-color:#6b5423}
           .saved{background:#123822;border-color:#1f5c37;color:#7fd8a4}
@@ -118,32 +107,16 @@ module Karst
       JS
       private_constant :SEARCH_SCRIPT
 
-      COPY_SCRIPT = <<~JS
-        (function () {
-          var button = document.getElementById("karst-copy-snippet");
-          var field = document.getElementById("karst-snippet-code");
-          if (!button || !field || !navigator.clipboard) return;
-          button.addEventListener("click", function () {
-            navigator.clipboard.writeText(field.value).then(function () {
-              button.textContent = "Copied";
-              setTimeout(function () { button.textContent = "Copy"; }, 1500);
-            }, function () {});
-          });
-        })();
-      JS
-      private_constant :COPY_SCRIPT
-
       # rubocop:disable Metrics/ClassLength
       class << self
         # `approved` and each entry of `stale` are anything exposing
         # #model_name/#method_name -- in practice
         # Karst::Access::PopulationApprovals::Entry.
         # rubocop:disable Metrics/ParameterLists
-        def render(discovery:, approved: [], stale: [], snippet: nil, preview: nil, storage_path: nil,
-                   storage_error: nil, saved: false)
+        def render(discovery:, approved: [], stale: [], storage_path: nil, storage_error: nil, saved: false)
           nonce = SecureRandom.hex(16)
-          state = { approved: approved, stale: stale, snippet: snippet, preview: preview,
-                    storage_path: storage_path, storage_error: storage_error, saved: saved }
+          state = { approved: approved, stale: stale, storage_path: storage_path,
+                    storage_error: storage_error, saved: saved }
           [200, headers(nonce), [document(discovery, state, nonce)]]
         end
         # rubocop:enable Metrics/ParameterLists
@@ -158,12 +131,6 @@ module Karst
           }
         end
 
-        # The per-candidate Preview and the advanced snippet export submit
-        # through their own form, referenced by `form=` rather than nested
-        # inside the approval form (HTML forbids nesting): pressing either
-        # therefore cannot smuggle checkbox state into a save, so the only
-        # way to change what Karst may execute is the explicit approve
-        # button.
         def document(discovery, state, nonce)
           <<~HTML
             <!DOCTYPE html>
@@ -179,16 +146,14 @@ module Karst
             #{saved_notice(state[:saved])}
             #{storage_error(state[:storage_error])}
             #{load_warning(discovery)}
-            <form id="karst-secondary" method="post" action="/karst/populations"></form>
             <form method="post" action="/karst/populations">
             #{search_box}
             #{approved_section(state[:approved], state[:stale])}
-            #{model_groups_section(discovery, state[:approved], state[:preview])}
+            #{model_groups_section(discovery, state[:approved])}
             <button type="submit" name="save_approvals" value="1" class="primary">Approve selected groups</button>
             </form>
-            #{advanced_section(state[:snippet])}
             #{storage_note(state[:storage_path])}
-            <script nonce="#{nonce}">#{SEARCH_SCRIPT}#{COPY_SCRIPT}</script>
+            <script nonce="#{nonce}">#{SEARCH_SCRIPT}</script>
             </body></html>
           HTML
         end
@@ -261,21 +226,21 @@ module Karst
 
         # -- Model groups ------------------------------------------------------
 
-        def model_groups_section(discovery, approved, preview)
+        def model_groups_section(discovery, approved)
           groups = discovery.model_groups.reject { |group| group.candidate_names.empty? }
           body = if groups.empty?
                    "<p>No candidate groups were discovered.</p>"
                  else
-                   groups.map { |group| model_group(group, approved, preview) }.join
+                   groups.map { |group| model_group(group, approved) }.join
                  end
           "<section class=\"model-groups\"><h3>Available models</h3>#{body}</section>"
         end
 
-        def model_group(group, approved, preview)
+        def model_group(group, approved)
           approved_names = approved.select { |entry| entry.model_name == group.model_name }
                                    .map { |entry| entry.method_name.to_s }
           open = approved_names.any? ? " open" : ""
-          rows = group.candidate_names.map { |name| candidate_row(group, name, approved_names, preview) }.join
+          rows = group.candidate_names.map { |name| candidate_row(group, name, approved_names) }.join
           <<~HTML
             <details class="model-group" data-model="#{escape(group.model_name)}"#{open}>
             <summary>#{model_summary(group)}</summary>
@@ -296,84 +261,12 @@ module Karst
           "<span class=\"badge\">user source: #{escape(group.principal_source)}</span>"
         end
 
-        def candidate_row(group, method_name, approved_names, preview)
+        def candidate_row(group, method_name, approved_names)
           key = candidate_key(group.model_name, method_name)
           checked = approved_names.include?(method_name.to_s)
           box = "<input type=\"checkbox\" name=\"population[]\" value=\"#{escape(key)}\"#{' checked' if checked}>"
-          preview_button = "<button type=\"submit\" form=\"karst-secondary\" name=\"preview\" " \
-                           "value=\"#{escape(key)}\">Preview</button>"
           label = "<label>#{box} #{escape(method_name)}</label>"
-          "<li class=\"candidate-row\" data-name=\"#{escape(method_name)}\">#{label}" \
-            "#{preview_button}#{preview_result(group, method_name, preview)}</li>"
-        end
-
-        def preview_result(group, method_name, preview)
-          unless preview && preview.model_name == group.model_name && preview.method_name.to_s == method_name.to_s
-            return ""
-          end
-
-          preview.resolved ? preview_success(preview) : preview_failure(preview)
-        end
-
-        def preview_success(preview)
-          return "<p class=\"preview\">Preview: no matching records currently.</p>" if preview.records.empty?
-
-          labels = preview.records.map { |record| record_label(record) }.join(", ")
-          "<p class=\"preview\">Preview (up to #{Access::PopulationPreview::PREVIEW_LIMIT}): #{escape(labels)}</p>"
-        end
-
-        def preview_failure(preview)
-          "<p class=\"preview error\">Preview: #{escape(preview.error)}.</p>"
-        end
-
-        # Deliberately generic -- "ModelName #id" only, never an arbitrary
-        # attribute dump, regardless of whether the previewed model happens
-        # to be a configured principal source. A discovered candidate may
-        # belong to any application model, not only ones a developer has
-        # already reviewed for what is safe to display.
-        def record_label(record)
-          primary_key = record.class.respond_to?(:primary_key) ? record.class.primary_key : "id"
-          "#{record.class.name} ##{record.public_send(primary_key)}"
-        end
-
-        # -- Advanced: Ruby export ---------------------------------------------
-
-        # Approving is the workflow; this stays available for an application
-        # that would rather commit its populations as reviewable Ruby (a
-        # shared or CI environment, where a machine-local approval file is
-        # deliberately not consulted).
-        def advanced_section(snippet)
-          <<~HTML
-            <details class="advanced"#{' open' if snippet}><summary>Advanced: export approvals as Ruby
-            configuration</summary>
-            <p><small>Explicit <code>config.principal_populations</code> keeps working exactly as before and always
-            takes precedence over an approval of the same name. Karst never writes to your application's files.
-            </small></p>
-            <button type="submit" form="karst-secondary" name="generate_snippet" value="1">Generate snippet from
-            approvals</button>
-            #{snippet_section(snippet)}
-            </details>
-          HTML
-        end
-
-        def snippet_section(snippet)
-          return "" unless snippet
-
-          <<~HTML
-            <div class="snippet">
-            <textarea id="karst-snippet-code" readonly>#{escape(snippet.code)}</textarea>
-            <p><button type="button" id="karst-copy-snippet">Copy</button></p>
-            #{unwired_note(snippet)}
-            </div>
-          HTML
-        end
-
-        def unwired_note(snippet)
-          return "" if snippet.unwired.empty?
-
-          names = snippet.unwired.map { |c| "#{c.model_name}.#{c.method_name}" }.join(", ")
-          "<p class=\"hint\">#{snippet.unwired.size} approved group(s) are not part of a configured " \
-            "user source yet and were left out of the snippet above: #{escape(names)}.</p>"
+          "<li class=\"candidate-row\" data-name=\"#{escape(method_name)}\">#{label}</li>"
         end
 
         def candidate_key(model_name, method_name)

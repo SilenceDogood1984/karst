@@ -113,9 +113,9 @@ When the right user is too rare for this to reach — a role held by three peopl
 
 Writing `config.principal_populations` by hand works well once you know which scopes matter. On a large app, finding them by reading source is tedious — so Karst separates **discovery** (automatic, executes nothing) from **approval** (always an explicit developer action).
 
-**Discovery.** `Karst::Access::PopulationDiscovery` parses application model source with Ruby's standard-library `Ripper` AST parser and lists statically named, zero-argument Rails `scope` declarations. It never calls a scope, never queries anything, and never mutates application state. Only scopes declared directly on a model are found; scopes contributed by a `concern` may not appear. `bin/rails karst:populations` prints every discovered model and scope name, marking the approved ones; discovery is not approval — Karst finding `User.system_admins` says only that such a scope exists, never that it grants access.
+**Discovery.** `Karst::Access::PopulationDiscovery` parses application model source with Ruby's standard-library `Ripper` AST parser and lists statically named, zero-argument Rails `scope` declarations. It never calls a scope, never queries anything, and never mutates application state. Only scopes declared directly on a model are found; scopes contributed by a `concern` may not appear. Discovery is not approval — Karst finding `User.system_admins` says only that such a scope exists, never that it grants access.
 
-**Approval.** When an analysis finds no usable user and unapproved candidates exist, `/karst` links to `/karst/populations`: candidates grouped by model, collapsed and searchable. Checking a scope and pressing **Preview** runs one bounded (`LIMIT 3`) query, inside a rolled-back transaction, to show a few matching records — optional, never required to approve. Pressing **Approve selected groups** persists the selection to `tmp/karst/approved_populations.json`, relative to `Rails.root`:
+**Approval.** When an analysis finds no usable user and unapproved candidates exist, `/karst` links to `/karst/populations`: candidates grouped by model, collapsed and searchable. Pressing **Approve selected groups** persists the checked selection to `tmp/karst/approved_populations.json`, relative to `Rails.root`:
 
 ```json
 { "version": 1, "approved": [{ "model": "User", "scope": "system_admins" }] }
@@ -125,7 +125,6 @@ Deliberately machine-local, git-ignored development state, not project configura
 
 An approval only ever becomes executable for a model that is already a configured or Devise-inferred principal source (the class always comes from that source, never from the file), and only in development/test — production never reads the file. `config.principal_populations`/`config.principal_sources[...] :populations` keeps working unchanged and wins outright over an approval of the same name; Karst compares by name only, since it never inspects a configured callable's body. Approved populations reach `Access::Search` the same way configured ones do, so `/karst`, `bin/rails karst:verify`, and the MCP `verify_access` tool all pick them up automatically with no adapter-specific wiring.
 
-The review page can still generate a ready-to-paste `config.principal_populations = { ... }` (or `config.principal_sources = { ... }`) snippet from your approvals, under **Advanced: export approvals as Ruby** — useful for committing populations as reviewable code, or for CI, where machine-local approval state is deliberately not consulted.
 
 ## Full configuration reference
 
