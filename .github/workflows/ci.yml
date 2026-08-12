@@ -68,7 +68,7 @@ jobs:
       - name: Run Rails integration specs
         run: |
           bundle exec rspec spec/integration --exclude-pattern \
-            "spec/integration/{devise_golden_path_integration_spec.rb,multi_devise_golden_path_integration_spec.rb,custom_auth_golden_path_integration_spec.rb}"
+            "spec/integration/{devise_golden_path_integration_spec.rb,multi_devise_golden_path_integration_spec.rb,custom_auth_golden_path_integration_spec.rb,rails8_auth_golden_path_integration_spec.rb}"
       # Separate process: this spec boots a second, real Rails::Application
       # (with the real `devise` gem, and Active Record) alongside
       # KarstTestApplication, and two independently booted
@@ -87,3 +87,8 @@ jobs:
       # it gets the same isolated process -- see bin/test-rails.
       - name: Run custom-auth golden-path smoke test (no Karst configuration)
         run: bundle exec rspec spec/integration/custom_auth_golden_path_integration_spec.rb
+      # Same reason again: this fixture also mounts active_record/railtie on
+      # its own Rails::Application (Rails 8 generated authentication, no
+      # Devise), so it gets the same isolated process -- see bin/test-rails.
+      - name: Run Rails-8-generated-authentication golden-path smoke test
+        run: bundle exec rspec spec/integration/rails8_auth_golden_path_integration_spec.rb

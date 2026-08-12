@@ -35,7 +35,7 @@ Open `/karst` in your browser.
 
 Using Devise with one user model? That's usually it — Karst finds it automatically through Devise's own routing metadata, with no configuration. If Karst finds more than one Devise model, it asks you to pick which one(s) to test right there on the `/karst` panel — no initializer, no restart. If it finds none at all, it says so instead of guessing.
 
-Custom or non-Devise authentication needs a few lines of setup — see [Custom authentication](#custom-authentication) below.
+Custom or non-Devise authentication needs a few lines of setup — see [Custom authentication](#custom-authentication) below. Using Rails 8's built-in `bin/rails generate authentication`? See [docs/rails8-authentication.md](docs/rails8-authentication.md) for the exact recipe — Rails' generated authentication has no registry Karst can safely infer from, unlike Devise.
 
 ## How it works
 
@@ -124,6 +124,8 @@ end
 ```
 
 The compatibility-preserving `bin/rails generate karst:install` command optionally scaffolds this custom-authentication escape hatch. Replace its `TODO`s with your app's real sign-in/sign-out code. A conventional single-model Devise app needs none of its initializer, controller, or routes. Browser **Test as** needs a second, similar pair of hooks (`config.assume_browser_identity` / `config.clear_browser_identity`) — see [docs/advanced-configuration.md](docs/advanced-configuration.md).
+
+Using Rails 8's own `bin/rails generate authentication` instead of Devise? [docs/rails8-authentication.md](docs/rails8-authentication.md) is the same escape hatch, filled in with that generator's own `User`/`Session`/`Current` objects.
 
 ## Safety
 
