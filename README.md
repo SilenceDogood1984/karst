@@ -331,6 +331,71 @@ bounded verification completed without one (JSON is still emitted), and `2`
 for input, setup, or configuration errors. HTTP response statuses are evidence
 in the output and are never used as process exit codes.
 
+### Using Karst with coding agents
+
+Agent proposes. Karst proves.
+
+An agent (Claude Code, Codex, or anything else that speaks
+[MCP](https://modelcontextprotocol.io)) can read code, infer likely users, and
+reason about stories -- but it cannot see whether a path is actually reachable
+by a given kind of user in your running application. Karst's MCP server
+answers exactly that one question, by running the same bounded
+`Karst::Access::Search` workflow as `bin/rails karst:verify --json`, under
+real existing identities, in a rolled-back transaction. It does not read your
+source, does not decide which principal *should* be tried (the application's
+own `config.principals`/`config.principal_sources` own that), and does not
+summarize or interpret the result -- the agent gets the same schema-versioned
+evidence a developer gets at the terminal, and interprets it itself.
+
+Start the server (stdio transport, one process per local development session):
+
+```sh
+bin/rails karst:mcp
+```
+
+Configure it as a local MCP server in a client such as Claude Code
+(`.mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "karst": {
+      "command": "bin/rails",
+      "args": ["karst:mcp"]
+    }
+  }
+}
+```
+
+It exposes exactly one tool, `verify_access`, taking a local `path` (required)
+and `method` (optional, defaults to `GET` -- currently the only supported
+method):
+
+```json
+{ "path": "/admin/imports/123" }
+```
+
+The result is the identical evidence document `bin/rails karst:verify GET
+/admin/imports/123 --json` would print -- there is no separate MCP result
+model. An example interaction:
+
+> **Agent:** I believe system admins can access `/admin/imports/123`. I'll ask
+> Karst to verify.
+>
+> **Karst:** ordinary sample: no verified usable user; `system_admins`: User
+> #27 → 200; `verified_usable: true`
+
+The agent controls only the request: which path, which method. It cannot
+select a principal, disable rollback, raise the configured request limits, or
+otherwise bypass anything the application already restricts through its own
+Karst configuration -- see [Configuration](#configuration) below. The MCP
+server never impersonates your browser and never exposes Test As; it verifies
+runtime access, nothing more.
+
+Karst is not AI-powered authorization analysis. It runs no model and performs
+no inference of its own -- it executes one real, bounded request and reports
+what actually happened.
+
 ### Candidate populations, principal sources, and compatibility dimensions
 
 Candidate populations are the preferred way to describe principals worth
@@ -744,7 +809,7 @@ Some development UI conveniences depend on Rack/Rails response behavior. When Ka
 
 ## Installation
 
-Add Karst to your bundle. Active Support is its only runtime dependency; requiring Karst does not load Rails or Active Record.
+Add Karst to your bundle. Active Support and the official [`mcp`](https://github.com/modelcontextprotocol/ruby-sdk) gem (for `bin/rails karst:mcp`; see [Using Karst with coding agents](#using-karst-with-coding-agents)) are its only runtime dependencies. Requiring Karst does not load Rails or Active Record.
 
 ```sh
 bundle add karst

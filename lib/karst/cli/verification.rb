@@ -1,8 +1,7 @@
 # frozen_string_literal: true
 
 require "json"
-require_relative "../access/search"
-require_relative "../identity"
+require_relative "../../karst"
 
 module Karst
   module CLI
@@ -23,9 +22,7 @@ module Karst
       end
 
       def call
-        validate_setup!
-        result = Access::Search.new(path: @path, http_method: @http_method,
-                                    sources: Identity.principal_sources).call
+        result = run_search
         @output.puts(@json ? JSON.generate(document(result)) : human(result))
         result.verified_outcome ? 0 : 1
       rescue Access::Error, Identity::Error, ArgumentError => e
@@ -33,7 +30,24 @@ module Karst
         2
       end
 
+      # The same schema-versioned evidence document --json prints, without
+      # any dependency on @output/stdout -- the shared entry point every
+      # other adapter (currently only the MCP server) calls instead of
+      # duplicating Access::Search invocation or result serialization. Always
+      # returns a Hash: either the success document or, on any of the same
+      # errors #call rescues, error_document(e) -- never raises.
+      def evidence
+        document(run_search)
+      rescue Access::Error, Identity::Error, ArgumentError => e
+        error_document(e)
+      end
+
       private
+
+      def run_search
+        validate_setup!
+        Access::Search.new(path: @path, http_method: @http_method, sources: Identity.principal_sources).call
+      end
 
       def validate_setup!
         state = Identity.setup_state

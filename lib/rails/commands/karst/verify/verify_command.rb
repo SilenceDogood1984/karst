@@ -2,17 +2,21 @@
 
 require "rails/command"
 require "karst/cli/verification"
+require_relative "../boot"
 
 module Rails
   module Command
     module Karst
       # Rails command entry point for the shared Access::Search adapter.
       class VerifyCommand < Base
+        include Karst::Boot
+
         class_option :json, type: :boolean, default: false, desc: "Emit stable JSON evidence"
 
         desc "Verify bounded GET access to a local application path"
         def perform(*arguments)
           method, path = parse(arguments)
+          boot_karst_application!
           exit(::Karst::CLI::Verification.new(path: path, http_method: method, json: options[:json]).call)
         rescue ArgumentError => e
           document = { schema_version: 1, error: { type: "input_error", message: e.message } }

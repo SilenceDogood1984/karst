@@ -101,5 +101,46 @@ RSpec.describe Karst::CLI::Verification do
     expect(text).to include("Karst verification", "verified usable user: User #27", "1 requests")
     expect { JSON.parse(text) }.to raise_error(JSON::ParserError)
   end
+
+  describe "#evidence" do
+    def evidence(path: "/admin/imports")
+      allow(Karst::Identity).to receive(:setup_state).and_return(
+        Karst::Identity::SetupState.new(status: :ready_explicit, message: nil)
+      )
+      allow(Karst::Identity).to receive(:principal_sources).and_return(default: double)
+      described_class.new(path: path).evidence
+    end
+
+    it "returns the exact same Hash --json would print, without touching stdout" do
+      result = SearchResult.new(initial: sweep([outcome]), attempts: [])
+      allow(Karst::Access::Search).to receive(:new).and_return(instance_double(Karst::Access::Search, call: result))
+      output = StringIO.new
+
+      document = evidence
+      described_class.new(path: "/admin/imports", output: output, json: true).call
+
+      expect(JSON.generate(document)).to eq(output.string.chomp)
+    end
+
+    it "returns an error document instead of raising for the same errors #call rescues" do
+      allow(Karst::Access::Search).to receive(:new).and_raise(Karst::Access::UnsafeTarget, "local paths only")
+
+      expect(evidence).to eq(
+        schema_version: 1, error: { type: "input_error", message: "local paths only" }
+      )
+    end
+
+    it "surfaces a configuration error (e.g. no principal source) as an error document, never a crash" do
+      allow(Karst::Identity).to receive(:setup_state).and_return(
+        Karst::Identity::SetupState.new(status: :unavailable, message: nil)
+      )
+
+      document = described_class.new(path: "/admin/imports").evidence
+
+      expect(document).to eq(
+        schema_version: 1, error: { type: "configuration_error", message: "no principal source is configured" }
+      )
+    end
+  end
 end
 # rubocop:enable Metrics/AbcSize, Metrics/BlockLength, Lint/ConstantDefinitionInBlock
