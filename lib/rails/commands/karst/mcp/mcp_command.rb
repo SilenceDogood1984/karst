@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require "rails/command"
-require "karst/mcp/server"
 require_relative "../boot"
 
 module Rails
@@ -17,8 +16,22 @@ module Rails
 
         desc "Run Karst's MCP server over stdio, exposing the verify_access tool"
         def perform(*)
+          load_mcp!
           boot_karst_application!
           ::Karst::Mcp::Server.run!
+        end
+
+        private
+
+        def load_mcp!
+          begin
+            gem "mcp", "~> 0.9.0"
+          rescue Gem::LoadError
+            abort "Karst MCP requires the optional dependency. " \
+                  'Add gem "mcp", "~> 0.9.0" to your Gemfile and run bundle install.'
+          end
+
+          require "karst/mcp/server"
         end
       end
     end
