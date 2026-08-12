@@ -85,7 +85,11 @@ RSpec.describe "Karst MCP server over real stdio" do
   end
   # rubocop:enable Metrics/MethodLength
 
-  def run_requests(*requests, enabled: true)
+  def run_requests(*requests, enabled: true, **request_keywords)
+    # Ruby 2.7 converts a final positional Hash into keywords when the method
+    # also declares a keyword argument. Preserve that request as positional;
+    # Ruby 3 already leaves it in +requests+ and this is a no-op there.
+    requests << request_keywords unless request_keywords.empty?
     stdin_data = requests.map { |request| JSON.generate(request) }.join("\n") << "\n"
 
     Open3.capture3(
