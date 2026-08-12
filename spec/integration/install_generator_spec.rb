@@ -14,8 +14,8 @@ require "stringio"
 require "open3"
 require "rbconfig"
 # Rails 6.1 / Ruby 2.7 needs "logger" required before "active_support" is
-# pulled in transitively -- see Karst::Subscription's own require ordering
-# and ARCHITECTURE.md's "No scattered version checks" section.
+# pulled in transitively -- see lib/karst.rb's own require ordering and
+# ARCHITECTURE.md's "No scattered version checks" section.
 require "logger"
 require "rails/generators"
 require_relative "../../lib/generators/karst/install/install_generator"

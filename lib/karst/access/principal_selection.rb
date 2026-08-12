@@ -42,8 +42,7 @@ module Karst
 
       def sample_each_source
         @sources.each_with_object({}) do |(name, source), memo|
-          memo[name] = PrincipalSampler.new(source: source.evaluate, limit: @limit, pool_size: @pool_size,
-                                            dimensions: source.dimensions).call
+          memo[name] = PrincipalSampler.new(source: source.evaluate, limit: @limit, pool_size: @pool_size).call
         end
       end
 

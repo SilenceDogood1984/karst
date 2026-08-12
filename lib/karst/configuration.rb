@@ -3,84 +3,101 @@
 require_relative "access/principal_source"
 require_relative "access/approved_populations"
 require_relative "access/selected_principal_sources"
-require_relative "access/artifact_source"
-require_relative "access/scenario"
 require_relative "identity/devise_support"
 
 module Karst
+  # Raised when an initializer sets a configuration option Karst has removed.
+  # A NoMethodError subclass, so a removed option fails exactly like an
+  # ordinary typo would -- but with a message naming the removal and what
+  # replaced it. Karst never reinterprets a removed option as something else.
+  class RemovedConfiguration < NoMethodError; end
+
   # Process-level settings that control Karst's implemented behavior.
+  #
+  # An ordinary application sets none of this. A single-model Devise app is
+  # inferred outright, candidate populations are approved locally at
+  # /karst/populations rather than written here, and every limit below
+  # already has a bounded default. `enabled` is not normal configuration
+  # either -- it is an off switch for exceptional cases (a shared
+  # development environment, a CI job that boots Rails but must never run
+  # Karst), already true by default wherever it should be. What remains
+  # below is for exceptional applications: custom (non-Devise)
+  # authentication, identity spread across several models, and a handful of
+  # deliberately unprominent bounds. See docs/advanced-configuration.md.
   class Configuration
+    # None of these are normal configuration. `enabled` is an off switch for
+    # the exceptional case where Karst's default (on in development/test) is
+    # wrong for this environment. The rest are escape hatches for custom
+    # (non-Devise) authentication -- principals, assume_identity,
+    # clear_identity, principal_label, and the browser Test-as pair -- and
+    # are documented as such.
     attr_accessor :enabled, :principals, :assume_identity, :clear_identity, :principal_label,
                   :assume_browser_identity, :clear_browser_identity
-    attr_reader :buffer_size, :access_sweep_limit, :usable_access_outcome, :principal_candidate_pool_size,
-                :principal_dimensions, :principal_populations, :artifact_sources, :access_scenarios,
-                :population_retry_limit, :configured_principal_sources
+
+    # principal_populations is an escape hatch (committed, reviewable
+    # populations for CI); the four bounds after it are advanced tuning an
+    # ordinary developer should never need to see.
+    #
+    # configured_principal_sources is internal: what the application
+    # explicitly configured, before Devise inference or local approvals are
+    # folded in. Read only by Karst::Identity to distinguish "configured"
+    # from "inferred"; not part of the documented configuration surface.
+    attr_reader :principal_populations, :access_sweep_limit, :population_retry_limit,
+                :principal_candidate_pool_size, :usable_access_outcome, :configured_principal_sources
+
+    # What Karst treats as "this user can use the page": an observed 200 with
+    # no contrary evidence. Older/custom outcome-like values may expose only
+    # a status; an absent optional evidence field means Karst did not observe
+    # that evidence, just as an explicit nil does, and must not make the
+    # policy itself crash.
+    DEFAULT_USABLE_ACCESS_OUTCOME = lambda do |outcome|
+      unobserved = ->(attribute) { !outcome.respond_to?(attribute) || outcome.public_send(attribute).nil? }
+      outcome.status == 200 && unobserved.call(:exception_class) && unobserved.call(:halted_callback)
+    end
 
     MAX_ACCESS_SWEEP_LIMIT = 100
 
-    # How many records a single configured candidate population may
-    # contribute when Karst automatically retries it after an ordinary
-    # sample found nothing usable (see Karst::Access::Search). Kept
-    # deliberately small: the point of a population retry is to answer
-    # "does this population reach the behavior at all," which one or two
-    # records already settle -- not to survey the population. The total
-    # number of extra requests a retry may issue is bounded separately, by
-    # access_sweep_limit, so adding populations can never make an analysis
-    # cost more than roughly twice an ordinary sweep.
+    # How many records a single candidate population may contribute when
+    # Karst automatically retries it after an ordinary sample found nothing
+    # usable (see Karst::Access::Search). Kept deliberately small: the point
+    # of a population retry is to answer "does this population reach the
+    # behavior at all," which one or two records already settle -- not to
+    # survey the population. The total number of extra requests a retry may
+    # issue is bounded separately, by access_sweep_limit, so adding
+    # populations can never make an analysis cost more than roughly twice an
+    # ordinary sweep.
     MAX_POPULATION_RETRY_LIMIT = 10
 
     # Conservative hard ceiling on how many recent principals a
     # representative-sampling candidate pool may ever cover. This bounds the
-    # cost of every dimension-discovery and target-lookup query the sampler
-    # issues (each is scoped to this fixed, already-derived pool),
-    # independent of how large the underlying table actually is.
+    # cost of the one bounded pool query the sampler issues, independent of
+    # how large the underlying table actually is.
     MAX_PRINCIPAL_CANDIDATE_POOL_SIZE = 10_000
 
-    # rubocop:disable Metrics/MethodLength, Metrics/AbcSize
+    # Options Karst used to expose, mapped to what an application should do
+    # instead. Karst is pre-1.0 and prefers a clean surface to accumulated
+    # accidental complexity -- but a removed option must say so out loud
+    # rather than be silently ignored or quietly reinterpreted.
+    REMOVED = {
+      buffer_size: "runtime SQL capture was removed; Karst reports evidence from the requests it " \
+                   "actually runs, and no longer keeps a process-wide sql.active_record buffer",
+      principal_dimensions: "sampling states are derived from the schema automatically; there is " \
+                            "nothing to declare, and rare users are reached through candidate " \
+                            "populations approved at /karst/populations",
+      artifact_source: "artifact scenarios were removed; Karst analyzes routes, not record sweeps",
+      access_scenario: "artifact scenarios were removed; Karst analyzes routes, not record sweeps"
+    }.freeze
+
     def initialize
       @enabled = defined?(Rails) && Rails.respond_to?(:env) ? Rails.env.development? || Rails.env.test? : false
-      @buffer_size = 2_000
-      @principals = nil
-      @assume_identity = nil
-      @clear_identity = nil
-      @principal_label = nil
-      @assume_browser_identity = nil
-      @clear_browser_identity = nil
       @access_sweep_limit = 25
-      @usable_access_outcome = lambda do |outcome|
-        outcome.status == 200 && outcome_attribute_empty?(outcome, :exception_class) &&
-          outcome_attribute_empty?(outcome, :halted_callback)
-      end
       @principal_candidate_pool_size = 1_000
       @population_retry_limit = 3
-      @principal_dimensions = {}
+      @usable_access_outcome = DEFAULT_USABLE_ACCESS_OUTCOME
       @principal_populations = {}
       @configured_principal_sources = nil
-      @artifact_sources = {}
-      @access_scenarios = {}
-    end
-
-    def artifact_source(name, limit:, &block)
-      source = Access::ArtifactSource.new(name: name, records: block, limit: limit)
-      @artifact_sources = @artifact_sources.merge(source.name => source).freeze
-      source
-    end
-
-    # rubocop:disable Metrics/ParameterLists
-    def access_scenario(name, artifact:, path:, expect:, combination_limit: 25, stop_on_match: true)
-      source = @artifact_sources[artifact.to_sym]
-      raise ArgumentError, "unknown artifact source: #{artifact}" unless source
-
-      scenario = Access::Scenario.new(name: name, artifact_source: source, path: path, expect: expect,
-                                      combination_limit: combination_limit, stop_on_match: stop_on_match)
-      @access_scenarios = @access_scenarios.merge(scenario.name => scenario).freeze
-      scenario
-    end
-    # rubocop:enable Metrics/ParameterLists
-    # rubocop:enable Metrics/MethodLength, Metrics/AbcSize
-
-    def principal_dimensions=(dimensions)
-      @principal_dimensions = Access::PrincipalDimension.normalize(dimensions)
+      %i[@principals @assume_identity @clear_identity @principal_label
+         @assume_browser_identity @clear_browser_identity].each { |hook| instance_variable_set(hook, nil) }
     end
 
     # An application-authored hint about meaningful candidate populations for
@@ -93,14 +110,17 @@ module Karst
     #     auditors: -> { User.auditors }
     #   }
     #
-    # Karst never infers that a population grants access or produces any UI
-    # state; it only tries records from it (see
+    # This is the committed-to-source form of what /karst/populations already
+    # captures locally, and is needed only where machine-local approval state
+    # is deliberately not consulted (CI) or where populations should be
+    # reviewable code. Karst never infers that a population grants access or
+    # produces any UI state; it only tries records from it (see
     # Karst::Access::PrincipalSampler/CandidatePopulation). nil/{} (the
-    # default) considers no populations at all. Karst does not attempt to
-    # verify that a callable's body is a "real" Rails named scope -- it only
-    # checks what calling it actually returns. Applications representing
-    # identity as more than one model configure populations per source
-    # instead (see config.principal_sources).
+    # default) considers no configured populations at all. Karst does not
+    # attempt to verify that a callable's body is a "real" Rails named scope
+    # -- it only checks what calling it actually returns. Applications
+    # representing identity as more than one model configure populations per
+    # source instead (see config.principal_sources).
     def principal_populations=(populations)
       @principal_populations = Access::PrincipalSource.normalize_populations(:default, populations)
     end
@@ -112,14 +132,14 @@ module Karst
     # The effective, normalized principal population(s) Karst may sample
     # from or resolve into: explicit config.principal_sources when
     # configured, otherwise a bare config.principals (plus any
-    # config.principal_dimensions/config.principal_populations) wrapped as
-    # one implicit :default source, otherwise -- when neither is configured
-    # -- one inferred Devise model wrapped the same way (see
-    # Karst::Identity::DeviseSupport), otherwise -- with several Devise
-    # models and nothing explicit -- whatever a developer has locally
-    # selected at /karst (see Access::SelectedPrincipalSources, one source
-    # per selected model, each keyed by its own Devise scope), or nil when
-    # none of those apply. A Hash of Symbol => PrincipalSource.
+    # config.principal_populations) wrapped as one implicit :default source,
+    # otherwise -- when neither is configured -- one inferred Devise model
+    # wrapped the same way (see Karst::Identity::DeviseSupport), otherwise --
+    # with several Devise models and nothing explicit -- whatever a
+    # developer has locally selected at /karst (see
+    # Access::SelectedPrincipalSources, one source per selected model, each
+    # keyed by its own Devise scope), or nil when none of those apply. A
+    # Hash of Symbol => PrincipalSource.
     #
     # This is also where locally approved discovered populations (see
     # Karst::Access::ApprovedPopulations) join the effective configuration,
@@ -158,12 +178,6 @@ module Karst
       @population_retry_limit = value
     end
 
-    def buffer_size=(value)
-      raise ArgumentError, "buffer_size must be a positive Integer" unless value.is_a?(Integer) && value.positive?
-
-      @buffer_size = value
-    end
-
     def usable_access_outcome=(policy)
       raise ArgumentError, "usable_access_outcome must be callable" unless policy.respond_to?(:call)
 
@@ -171,6 +185,21 @@ module Karst
     end
 
     private
+
+    # A removed option fails loudly and says what replaced it, rather than
+    # reaching Ruby's generic "undefined method" and leaving a developer to
+    # guess whether Karst renamed, moved, or silently ignored it.
+    def method_missing(name, *)
+      removal = REMOVED[name.to_s.delete_suffix("=").to_sym]
+      return super unless removal
+
+      raise RemovedConfiguration,
+            "config.#{name.to_s.delete_suffix('=')} was removed from Karst: #{removal}"
+    end
+
+    def respond_to_missing?(name, include_private = false)
+      REMOVED.key?(name.to_s.delete_suffix("=").to_sym) || super
+    end
 
     def configured_or_inferred_sources
       return @configured_principal_sources if @configured_principal_sources
@@ -188,15 +217,7 @@ module Karst
 
     def default_principal_source(records)
       { default: Access::PrincipalSource.new(name: :default, records: records,
-                                             dimensions: @principal_dimensions,
                                              populations: @principal_populations) }
-    end
-
-    # Older/custom outcome-like values may expose only a status. An absent
-    # optional evidence field means Karst did not observe that evidence, just
-    # as an explicit nil does; it must not make the policy itself crash.
-    def outcome_attribute_empty?(outcome, attribute)
-      !outcome.respond_to?(attribute) || outcome.public_send(attribute).nil?
     end
   end
 end

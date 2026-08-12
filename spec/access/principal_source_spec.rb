@@ -11,16 +11,6 @@ RSpec.describe Karst::Access::PrincipalSource do
         .to raise_error(ArgumentError, /must be callable/)
     end
 
-    it "defaults to no dimensions" do
-      source = described_class.new(name: :authors, records: -> { [] })
-      expect(source.dimensions).to eq({})
-    end
-
-    it "normalizes a raw dimensions Hash" do
-      source = described_class.new(name: :authors, records: -> { [] }, dimensions: { premium: :premium? })
-      expect(source.dimensions[:premium]).to be_a(Karst::Access::PrincipalDimension)
-    end
-
     it "defaults to no populations" do
       source = described_class.new(name: :authors, records: -> { [] })
       expect(source.populations).to eq({})
@@ -70,15 +60,7 @@ RSpec.describe Karst::Access::PrincipalSource do
       normalized = described_class.normalize(authors: -> { [] })
 
       expect(normalized[:authors]).to be_a(described_class)
-      expect(normalized[:authors].dimensions).to eq({})
-    end
-
-    it "accepts a Hash spec with :records and :dimensions" do
-      normalized = described_class.normalize(
-        authors: { records: -> { [] }, dimensions: { premium: :premium? } }
-      )
-
-      expect(normalized[:authors].dimensions).to have_key(:premium)
+      expect(normalized[:authors].populations).to eq({})
     end
 
     it "accepts a Hash spec with :records and :populations" do
@@ -92,9 +74,9 @@ RSpec.describe Karst::Access::PrincipalSource do
     it "accepts string keys within a Hash spec" do
       normalized = described_class.normalize(authors: { "records" => lambda {
         []
-      }, "dimensions" => { premium: :premium? } })
+      }, "populations" => { admins: -> { [] } } })
 
-      expect(normalized[:authors].dimensions).to have_key(:premium)
+      expect(normalized[:authors].populations).to have_key(:admins)
     end
 
     it "raises for a source spec that is neither callable nor a Hash" do
@@ -103,7 +85,7 @@ RSpec.describe Karst::Access::PrincipalSource do
     end
 
     it "raises when a Hash spec has no records at all" do
-      expect { described_class.normalize(authors: { dimensions: {} }) }
+      expect { described_class.normalize(authors: { populations: {} }) }
         .to raise_error(ArgumentError, /must be callable/)
     end
 

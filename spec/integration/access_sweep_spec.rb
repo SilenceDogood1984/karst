@@ -2,11 +2,13 @@
 
 require "spec_helper"
 require "json"
+require "stringio"
 require "tmpdir"
 require "uri"
 require "rack/mock"
 require_relative "../support/test_application"
 require "karst/web/middleware"
+require "karst/cli/verification"
 
 ActiveRecord::Schema.define do
   create_table :karst_access_principals, force: true do |table|
@@ -95,6 +97,54 @@ RSpec.describe "bounded access sweep Rails integration" do
   after do
     Karst.config.assume_identity = nil
     Karst.config.clear_identity = nil
+  end
+
+  # config.enabled must gate every adapter that ultimately runs a real
+  # Access::Sweep, not only the /karst middleware -- see
+  # spec/integration/web_middleware_spec.rb for the panel/badge side of this
+  # same contract.
+  describe "config.enabled" do
+    before do
+      KarstAccessPrincipal.create!(behavior: "ok")
+      Karst.config.principals = -> { KarstAccessPrincipal.all }
+      # Probe hooks alone leave setup_state :unavailable (browser identity is
+      # also required for a "ready" status) -- that is a real, independent
+      # setup requirement CLI::Verification checks before it ever reaches
+      # Access::Sweep. Configuring both here isolates config.enabled as the
+      # one thing under test, rather than conflating it with setup readiness.
+      Karst.config.assume_browser_identity = ->(_request, _principal) {}
+      Karst.config.clear_browser_identity = ->(_request) {}
+      Karst.config.enabled = false
+    end
+
+    after do
+      Karst.config.principals = nil
+      Karst.config.assume_browser_identity = nil
+      Karst.config.clear_browser_identity = nil
+    end
+
+    it "refuses a direct Access::Sweep run" do
+      expect do
+        Karst::Access::Sweep.new(path: "/documents/read/edit", principals: KarstAccessPrincipal.all,
+                                 application: KarstTestApplication).call
+      end
+        .to raise_error(Karst::Access::Unavailable, /disabled/)
+    end
+
+    it "reports a setup error, exit code 2, from bin/rails karst:verify" do
+      output = StringIO.new
+
+      code = Karst::CLI::Verification.new(path: "/documents/read/edit", output: output).call
+
+      expect(code).to eq(2)
+      expect(output.string).to include("disabled")
+    end
+
+    it "reports a structured error, never a crash, from the shared --json/MCP evidence document" do
+      document = Karst::CLI::Verification.new(path: "/documents/read/edit").evidence
+
+      expect(document[:error][:message]).to match(/disabled/)
+    end
   end
 
   it "observes exact resource outcomes with fresh sessions and rolls back database writes" do
