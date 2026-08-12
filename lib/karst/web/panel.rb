@@ -80,8 +80,6 @@ module Karst
         .usable-principal button[type=submit]{background:#0f5132;border-color:#0f5132;color:#fff;font-weight:600}
         .usable-principal button[type=submit]:hover{background:#0a3d25}
         .usable-principal p{margin:.5rem 0 0;color:#444;font-size:.92rem}
-        .related-state{margin:.75rem 0 0;padding:.6rem .75rem;border-left:3px solid #ccc;background:#fafafa;font-size:.9rem}
-        .related-state ul{margin:.25rem 0 0;padding-left:1.1rem}
         details{border:1px solid #e2e2e2;border-radius:.4rem;padding:.6rem .8rem;margin:.75rem 0}
         details summary{cursor:pointer;font-weight:600}
         details[open]>summary{margin-bottom:.5rem}
@@ -121,7 +119,6 @@ module Karst
           .population-attempt.hit .name{color:#7fd8a4}
           .population-attempt.untried{color:#8a8a90}
           .usable-principal button[type=submit]{background:#2e7d52;border-color:#2e7d52;color:#0b1a12}
-          .related-state{background:#1c1d20;border-color:#3a3b3e}
           details{border-color:#2c2d31}
           .testing-banner{background:#3a2f0d;border-color:#6b5423;color:#f0e4c0}
           .hint{color:#d8a63d}
@@ -567,46 +564,20 @@ module Karst
         def usable_principal(outcome, result, csrf_token)
           writes = outcome.writes_observed ? " — ⚠ #{escape(outcome.write_count)} database writes observed" : ""
           action = test_as_form(outcome.principal, result.path, csrf_token)
-          evidence = resource_evidence(outcome, result)
           "<article class=\"usable-principal\"><h4><span>#{principal_label(outcome.principal)}#{writes}</span>" \
             "#{action}</h4><p>#{outcome_title(outcome, prefix: 'Observed ')} · " \
-            "#{escape(outcome.elapsed_ms)}ms</p>#{sampled_for(outcome)}#{evidence}</article>"
+            "#{escape(outcome.elapsed_ms)}ms</p>#{sampled_for(outcome)}</article>"
         end
 
-        # A compact, secondary line -- deliberately below the observed
-        # outcome and above any resource evidence, never a card of its own --
-        # so it augments a usable principal without competing with Test as,
-        # the observed outcome, or resource evidence for attention. Sampling
-        # evidence, not an authorization claim: see PrincipalSampler.
+        # A compact, secondary line below the observed outcome, never a card
+        # of its own, so it augments a usable principal without competing with
+        # Test as or the observed outcome for attention. Sampling evidence,
+        # not an authorization claim: see PrincipalSampler.
         def sampled_for(outcome)
           reasons = outcome.sampling_reasons
           return "" if reasons.nil? || reasons.empty?
 
           "<p class=\"meta\">Sampled for: #{escape(reasons.join(' · '))}</p>"
-        end
-
-        def resource_evidence(outcome, result)
-          evidence = Access::ResourceEvidence.for_outcome(outcome: outcome, path: result.path,
-                                                          http_method: result.http_method)
-          return "" if evidence.limitation || evidence.relationships.empty?
-
-          "<div class=\"related-state\"><strong>Related state</strong>" \
-            "#{relationship_groups(evidence.relationships)}</div>"
-        rescue StandardError
-          ""
-        end
-
-        def relationship_groups(relationships)
-          relationships.group_by { |item| [item.from_model, item.from_id] }.map do |key, items|
-            model, id = key
-            "<p><strong>#{escape(model)} ##{escape(id)}</strong></p><ul>#{relationship_rows(items)}</ul>"
-          end.join
-        end
-
-        def relationship_rows(relationships)
-          relationships.map do |item|
-            "<li>#{escape(item.column)} → #{escape(item.to_model)} ##{escape(item.to_id)}</li>"
-          end.join
         end
 
         # -- Other observed outcomes (collapsed) ---------------------------------

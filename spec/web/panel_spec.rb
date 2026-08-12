@@ -239,34 +239,6 @@ RSpec.describe Karst::Web::Panel do
       expect(body).to include("Analysis unavailable: probe endpoint unavailable")
       expect(body).not_to include("Users who can use this URL")
     end
-
-    it "shows exact-resource relationships for usable principals compactly, in non-causal language" do
-      relationship = Karst::Access::ResourceEvidence::Relationship.new(
-        column: "user_id", from_model: "Document", from_id: 22, to_model: "User", to_id: 27
-      )
-      evidence = Karst::Access::ResourceEvidence::Result.new(
-        principal: access_outcome(id: 27, status: 200).principal,
-        resource: Karst::Access::ResourceEvidence::ResourceDescriptor.new(model_name: "Document", id: 22),
-        relationships: [relationship], observed_status: 200, observed_redirect: nil, limitation: nil
-      )
-      allow(Karst::Access::ResourceEvidence).to receive(:for_outcome).and_return(evidence)
-
-      body = described_class.render(params: analyzed_route,
-                                    access_result: access_result([access_outcome(id: 27, status: 200)])).last.join
-
-      expect(body).to include("Related state", "Document #22", "user_id → User #27")
-      expect(body).not_to include("owns", "authorized", "grants", "permitted because", "access rule")
-    end
-
-    it "keeps usable principals visible when resource evidence is limited, without a Related state block" do
-      allow(Karst::Access::ResourceEvidence).to receive(:for_outcome).and_raise(StandardError, "unavailable")
-
-      body = described_class.render(params: analyzed_route,
-                                    access_result: access_result([access_outcome(id: 27, status: 200)])).last.join
-
-      expect(body).to include("<h2>Verified usable user</h2>", "User #27", "Observed 200 OK")
-      expect(body).not_to include("Related state")
-    end
   end
 
   describe "automatic candidate population retries" do
