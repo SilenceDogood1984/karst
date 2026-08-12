@@ -14,10 +14,13 @@ RSpec.describe Karst::Web::Panel do
   let(:analyzed_route) { route.merge("method" => "GET", "path" => "/documents/22/reader") }
 
   # rubocop:disable Metrics/ParameterLists
-  def access_outcome(id:, status:, redirect: nil, exception_class: nil, sampling_reasons: nil, halted_callback: nil)
+  def access_outcome(id:, status:, redirect: nil, exception_class: nil, sampling_reasons: nil, halted_callback: nil,
+                     writes_observed: false, write_count: 0, label: nil)
     descriptor = Karst::Identity::PrincipalDescriptor.new(model_name: "User", id: id, display_label: "User ##{id}")
+    descriptor = Karst::Identity::PrincipalDescriptor.new(model_name: "User", id: id, display_label: label) if label
     Karst::Access::Outcome.new(principal: descriptor, status: status, redirect: redirect,
-                               exception_class: exception_class, writes_observed: false, write_count: 0,
+                               exception_class: exception_class, writes_observed: writes_observed,
+                               write_count: write_count,
                                elapsed_ms: 1.0, database_rollback_attempted: true,
                                sampling_reasons: sampling_reasons, halted_callback: halted_callback)
   end
@@ -159,8 +162,8 @@ RSpec.describe Karst::Web::Panel do
       body = described_class.render(params: analyzed_route, access_result: access_result(outcomes),
                                     csrf_token: "nonce").last.join
 
-      expect(body).to include("<h2>Users who can use this URL — 1</h2>", "User #27", "Observed 200 OK", "User #28",
-                              "204 No Content", "Other observed outcomes — 4", "302 → /login — 1",
+      expect(body).to include("<h2>Verified usable user</h2>", "User #27", "Observed 200 OK", "User #28",
+                              "204 No Content", "302 → /login — 1",
                               "Exception: RuntimeError — 1")
       expect(body.scan('<button type="submit">Test as</button>').size).to eq(1)
       expect(body.index("User #27")).to be < body.index("<details>")
@@ -170,8 +173,8 @@ RSpec.describe Karst::Web::Panel do
       body = described_class.render(params: analyzed_route,
                                     access_result: access_result([access_outcome(id: 1, status: 401)])).last.join
 
-      expect(body).to include("<h2>Users who can use this URL — 0</h2>", "No sampled user produced a usable outcome.",
-                              "Other observed outcomes — 1")
+      expect(body).to include("<h2>No verified usable user found</h2>", "No verified usable user found",
+                              "Ordinary sample")
       expect(body).not_to include("No user can access this page")
     end
 
@@ -180,7 +183,7 @@ RSpec.describe Karst::Web::Panel do
                   access_outcome(id: 2, status: 302, redirect: "/login", halted_callback: :require_admin)]
       body = described_class.render(params: analyzed_route, access_result: access_result(outcomes)).last.join
 
-      expect(body.scan("302 → /login — 1").size).to eq(2)
+      expect(body.scan(%r{302 → /login · halted at (?:require_subscription|require_admin) — 1}).size).to eq(2)
       expect(body).to include("Halted callback: require_subscription", "Halted callback: require_admin")
       expect(body).not_to include("Redirected because", "callback failed")
     end
@@ -189,7 +192,7 @@ RSpec.describe Karst::Web::Panel do
       outcome = access_outcome(id: 123, status: 204, halted_callback: :redirect_if_suspended)
       body = described_class.render(params: analyzed_route, access_result: access_result([outcome])).last.join
 
-      expect(body).to include("Users who can use this URL — 0", "204 No Content",
+      expect(body).to include("No verified usable user found", "204 No Content",
                               "Halted callback: redirect_if_suspended", "Not verified as usable")
       expect(body).not_to include("suspended user", "caused the 404", "204 became 404")
     end
@@ -199,8 +202,7 @@ RSpec.describe Karst::Web::Panel do
       body = described_class.render(params: analyzed_route,
                                     access_result: access_result([access_outcome(id: 1, status: 302)])).last.join
 
-      expect(body).to include("<h2>Users who can use this URL — 1</h2>", "Observed 302 Found",
-                              "Other observed outcomes — 0")
+      expect(body).to include("<h2>Verified usable user</h2>", "Observed 302 Found")
     ensure
       Karst.config.usable_access_outcome = lambda do |outcome|
         outcome.status == 200 && outcome.exception_class.nil? && outcome.halted_callback.nil?
@@ -239,7 +241,7 @@ RSpec.describe Karst::Web::Panel do
       body = described_class.render(params: analyzed_route,
                                     access_result: access_result([access_outcome(id: 27, status: 200)])).last.join
 
-      expect(body).to include("<h2>Users who can use this URL — 1</h2>", "User #27", "Observed 200 OK")
+      expect(body).to include("<h2>Verified usable user</h2>", "User #27", "Observed 200 OK")
       expect(body).not_to include("Related state")
     end
   end
@@ -254,8 +256,8 @@ RSpec.describe Karst::Web::Panel do
                                     access_result: access_result(sample, attempts: attempts)).last.join
 
       expect(body).to include("Candidate populations", "system_admins", "User #27 → 200 OK ✓",
-                              "<h2>Users who can use this URL — 1</h2>")
-      expect(body).to include("Sample: 1 recent user, none usable · halted at <code>authorize_admin</code>")
+                              "<h2>Verified usable user</h2>")
+      expect(body).to include("Ordinary sample", "No verified usable user", "halted at authorize_admin")
       expect(body).to include("auditors", "not tried — a usable user was already found")
     end
 
@@ -269,12 +271,12 @@ RSpec.describe Karst::Web::Panel do
       body = described_class.render(params: analyzed_route,
                                     access_result: access_result(sample, attempts: attempts)).last.join
 
-      expect(body).to include("1 user tried — none usable · halted at <code>authorize_admin</code>")
+      expect(body).to include("1 user tested<br>none verified usable", "halted at authorize_admin")
       expect(body).to include("no matching records")
       expect(body).to include("could not be resolved (did not resolve to a usable relation)")
       expect(body).to include("every candidate was already tested above")
       expect(body).to include("not tried — the retry request budget was reached")
-      expect(body).to include("<h2>Users who can use this URL — 0</h2>")
+      expect(body).to include("<h2>No verified usable user found</h2>")
     end
 
     it "counts population requests in the analysis meta without implying they were sampled" do
@@ -285,7 +287,7 @@ RSpec.describe Karst::Web::Panel do
       body = described_class.render(params: analyzed_route,
                                     access_result: access_result(sample, attempts: attempts)).last.join
 
-      expect(body).to include("2 users tested", "including 1 user from 1 candidate population")
+      expect(body).to include("1 initial · 1 candidate population · 2 total users/requests")
     end
 
     it "omits the populations section entirely when none is configured" do
@@ -325,7 +327,7 @@ RSpec.describe Karst::Web::Panel do
         access_result: access_result([access_outcome(id: 27, status: 200)], candidate_pool_size: 1_000)
       ).last.join
 
-      expect(body).to include("1 user tested", "candidate pool: up to 1,000 most recent users")
+      expect(body).to include("1 user tested", "from up to 1,000 recent users")
     end
 
     it "omits the candidate pool line when the result carries no pool (e.g. an Enumerable source)" do
@@ -335,6 +337,41 @@ RSpec.describe Karst::Web::Panel do
 
       expect(body).to include("1 user tested")
       expect(body).not_to include("candidate pool")
+    end
+  end
+
+  describe "one-run evidence" do
+    it "groups repeats while preserving exact user identities in expandable details" do
+      outcomes = [1, 7, 18].map do |id|
+        access_outcome(id: id, status: 302, redirect: "/login", halted_callback: :authenticate_user)
+      end
+
+      body = described_class.render(params: analyzed_route, access_result: access_result(outcomes)).last.join
+
+      expect(body).to include("<details><summary>302 → /login · halted at authenticate_user — 3</summary>",
+                              "User #1", "User #7", "User #18")
+      expect(body.scan("302 → /login").size).to eq(1)
+    end
+
+    it "makes writes prominent and states the rollback boundary" do
+      outcome = access_outcome(id: 1, status: 403, writes_observed: true, write_count: 2)
+
+      body = described_class.render(params: analyzed_route, access_result: access_result([outcome])).last.join
+
+      expect(body).to include("write-warning", "⚠ Database writes observed during 1 probe.",
+                              "Rollback was attempted on the same Active Record connection.",
+                              "Jobs, mail, external HTTP, files, Redis, and other database connections")
+      expect(body).not_to include("No side effects occurred")
+    end
+
+    it "escapes every observed string in grouped evidence" do
+      outcome = access_outcome(id: 1, status: 302, redirect: "<redirect>", halted_callback: "<callback>",
+                               label: "<baddies>")
+
+      body = described_class.render(params: analyzed_route, access_result: access_result([outcome])).last.join
+
+      expect(body).to include("&lt;redirect&gt;", "&lt;callback&gt;", "&lt;baddies&gt;")
+      expect(body).not_to include("<redirect>", "<callback>", "<baddies>")
     end
   end
 
