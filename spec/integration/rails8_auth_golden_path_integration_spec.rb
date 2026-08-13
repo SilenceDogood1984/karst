@@ -173,7 +173,7 @@ RSpec.describe "Rails 8 generated authentication golden path, real Rails, no Dev
     # 6. Stop Testing As from a plain /karst visit (no ?path= query string).
     browser.header("Accept", nil)
     plain_panel = browser.get("/karst")
-    expect(plain_panel.body).to include("Currently testing as an assumed browser identity.")
+    expect(plain_panel.body).to include("Currently testing as an assumed user.")
     stop_token = csrf_token(plain_panel.body)
 
     stop_response = browser.post("/karst", operation: "stop_test_as", csrf_token: stop_token, path: "")
