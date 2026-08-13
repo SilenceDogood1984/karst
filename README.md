@@ -2,6 +2,8 @@
 
 Karst finds a real, existing user who can reach a page in your Rails app — by actually running the route as your users and reporting what happened.
 
+**Why Karst?** Karst terrain hides complex systems beneath the surface. As a Rails codebase grows, its real runtime paths become similarly difficult to see from the surface. The Karst gem reveals what actually happens underneath.
+
 "Which user can access this page?" is normally answered by reading role checks and `before_action` filters by hand, or asking around until someone remembers a working login. Karst answers it by running the real route, through your real Rails request stack, as a bounded set of real users — and shows you the evidence: HTTP status, redirect, halted callback, exception.
 
 ```text
@@ -70,8 +72,6 @@ For every user it tries, Karst reports:
 - observed database writes
 - which user was tested, and which configured population (if any) produced them
 
-When it can, Karst also shows how the tested user relates to the resource on the page — for example, `Document #22 → user_id → User #27`.
-
 Karst reports observations, not authorization conclusions. If Rails halted at `authorize_admin`, Karst reports that callback name; it does not claim the user lacks permission unless your application says so itself.
 
 ## CLI
@@ -133,13 +133,13 @@ Karst.configure do |config|
 end
 ```
 
-The compatibility-preserving `bin/rails generate karst:install` command optionally scaffolds this custom-authentication escape hatch. Replace its `TODO`s with your app's real sign-in/sign-out code. A conventional single-model Devise app needs none of its initializer, controller, or routes. Browser **Test as** needs a second, similar pair of hooks (`config.assume_browser_identity` / `config.clear_browser_identity`) — see [docs/advanced-configuration.md](docs/advanced-configuration.md).
+The `bin/rails generate karst:install` command optionally scaffolds this custom-authentication escape hatch. Replace its `TODO`s with your app's real sign-in/sign-out code. A conventional single-model Devise app needs none of its initializer, controller, or routes. Browser **Test as** needs a second, similar pair of hooks (`config.assume_browser_identity` / `config.clear_browser_identity`) — see [docs/advanced-configuration.md](docs/advanced-configuration.md).
 
 Using Rails 8's own `bin/rails generate authentication` instead of Devise? [docs/rails8-authentication.md](docs/rails8-authentication.md) is the same escape hatch, filled in with that generator's own `User`/`Session`/`Current` objects.
 
 ## Safety
 
-Karst is for local development only — `/karst`, the badge, and Test As only work from loopback requests while `Rails.env.development?` is true. Every search is bounded (25 users by default, 100 max), and every probe runs inside a database transaction Karst rolls back.
+Karst is for local development only — `/karst`, the badge, and Test As only work from loopback requests while `Rails.env.development?` is true. The ordinary sample is bounded to 25 users by default (100 max). If it finds no usable user, approved candidate populations can add a separate bounded retry stage. Every probe runs inside a database transaction Karst rolls back.
 
 That rollback only covers writes made through the same Active Record connection. Jobs, mail, external HTTP calls, files, Redis, and other database connections aren't covered — a route that triggers those can still cause real side effects even though its own database writes are undone.
 

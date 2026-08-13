@@ -27,6 +27,10 @@ RSpec.describe "Rails integration harness" do
     expect(KarstTestApplication.sql_listener_count).to eq(listeners)
   end
 
+  it "loads the host application's Rails tasks without a dangling Karst task reference" do
+    expect { Rails.application.load_tasks }.not_to raise_error
+  end
+
   # Karst captured every sql.active_record notification process-wide in an
   # earlier product direction. Nothing reports that evidence now, so a full
   # Rails boot must not reintroduce that subscription lifecycle. The exact

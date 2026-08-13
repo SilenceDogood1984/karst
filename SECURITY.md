@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Karst has not released a supported version yet. This policy will be updated when releases begin.
+The latest released version of Karst receives security fixes. Older prerelease and early versions may not receive fixes; users should upgrade to the latest release.
 
 ## Reporting a vulnerability
 

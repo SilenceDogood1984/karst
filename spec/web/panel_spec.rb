@@ -128,20 +128,15 @@ RSpec.describe Karst::Web::Panel do
       expect(body).not_to include("No principal source")
     end
 
-    it "renders the representative label when any configured source (not just the first) is AR-capable" do
-      first_source = Object.new
-      second_source = Object.new
-      Karst.config.principal_sources = { legacy: -> { first_source }, authors: -> { second_source } }
-      allow(Karst::Access::PrincipalSampler).to receive(:representative_capable?).with(first_source)
-                                                                                 .and_return(false)
-      allow(Karst::Access::PrincipalSampler).to receive(:representative_capable?).with(second_source)
-                                                                                 .and_return(true)
+    it "keeps sampler implementation details out of the primary action" do
+      Karst.config.principals = -> { [] }
 
       body = render(analyzed_route)
 
-      expect(body).to include("Who can use this? (test 25 representative users)")
+      expect(body).to include("Who can use this? (test 25 users)")
+      expect(body).not_to include("representative users")
     ensure
-      Karst.config.principal_sources = nil
+      Karst.config.principals = nil
     end
 
     it "does not offer access analysis for non-GET routes" do
@@ -189,7 +184,7 @@ RSpec.describe Karst::Web::Panel do
                                     csrf_token: "token",
                                     access_result: access_result([access_outcome(id: 1, status: 401)])).last.join
 
-      expect(body).to include("Karst found application-defined user groups for this principal source",
+      expect(body).to include("Karst found application-defined user groups in your app",
                               "system_admins", "Approve selected and retry")
       expect(body).not_to include('href="/karst/populations"')
     end
@@ -456,9 +451,9 @@ RSpec.describe Karst::Web::Panel do
       body = described_class.render(params: { "path" => "/documents/22/reader" }, csrf_token: "nonce",
                                     browser_identity_active: true).last.join
 
-      expect(body).to include("Currently testing as an assumed browser identity.",
+      expect(body).to include("Currently testing as an assumed user.",
                               '<button type="submit">Stop testing as</button>',
-                              "Karst does not restore a previous session.")
+                              "Stopping signs this browser out; Karst does not restore your previous session.")
       expect(body).not_to include("restores your previous session", "restore your previous user")
     end
 

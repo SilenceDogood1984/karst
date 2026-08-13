@@ -202,10 +202,6 @@ module Karst
         [403, { "content-type" => "text/plain; charset=utf-8", "cache-control" => "no-store" }, ["Forbidden"]]
       end
 
-      def candidate_key(candidate)
-        "#{candidate.model_name}#{CANDIDATE_SEPARATOR}#{candidate.method_name}"
-      end
-
       def call_with_badge(env)
         Karst::ExecutionContext[CONTEXT_KEY] = nil
         status, headers, body = @app.call(env)
