@@ -128,7 +128,7 @@ RSpec.describe "Devise/Warden golden path, real gems, no Karst configuration" do
     # 403, then a 500 NoMethodError) instead of clearing the identity.
     browser.header("Accept", nil)
     plain_panel = browser.get("/karst")
-    expect(plain_panel.body).to include("Currently testing as an assumed browser identity.")
+    expect(plain_panel.body).to include("Currently testing as an assumed user.")
     stop_token = csrf_token(plain_panel.body)
 
     stop_response = browser.post("/karst", operation: "stop_test_as", csrf_token: stop_token, path: "")

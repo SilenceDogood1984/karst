@@ -153,7 +153,7 @@ RSpec.describe "custom (non-Devise) authentication golden path, real gems" do
 
     browser.header("Accept", nil)
     plain_panel = browser.get("/karst")
-    expect(plain_panel.body).to include("Currently testing as an assumed browser identity.")
+    expect(plain_panel.body).to include("Currently testing as an assumed user.")
     stop_token = csrf_token(plain_panel.body)
     stop_response = browser.post("/karst", operation: "stop_test_as", csrf_token: stop_token, path: "")
     expect(stop_response.status).to eq(303)

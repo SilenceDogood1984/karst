@@ -195,9 +195,8 @@ module Karst
           fields = hidden("operation", "stop_test_as") + hidden("csrf_token", csrf_token) + hidden("path", path)
           <<~HTML
             <div class="testing-banner" role="status">
-            <p><strong>Currently testing as an assumed browser identity.</strong></p>
-            <p><small>Stopping clears to whatever identity your configured clear_browser_identity hook defines
-            (commonly signed out) -- Karst does not restore a previous session.</small></p>
+            <p><strong>Currently testing as an assumed user.</strong></p>
+            <p><small>Stopping signs this browser out; Karst does not restore your previous session.</small></p>
             <form action="/karst" method="post">#{fields}<button type="submit">Stop testing as</button></form>
             </div>
           HTML
@@ -281,8 +280,7 @@ module Karst
 
         def analyze_form(context, state)
           sources = principal_sources
-          kind = sources && any_representative?(sources) ? "representative " : ""
-          label = "Who can use this? (test #{Karst.config.access_sweep_limit} #{kind}users)"
+          label = "Who can use this? (test #{Karst.config.access_sweep_limit} users)"
           operation = "<input type=\"hidden\" name=\"operation\" value=\"access_sweep\">"
           button = "<button class=\"primary\" type=\"submit\">#{escape(label)}</button>"
           form = "<form action=\"/karst\" method=\"post\">#{context}#{operation}#{button}</form>"
@@ -294,18 +292,10 @@ module Karst
           "#{principal_source_selection_notice(state)}#{form}#{principal_source_hint(sources)}"
         end
 
-        # Only ever type-checks each configured source's evaluated records
-        # (see Access::PrincipalSampler.representative_capable?); it never
-        # queries or enumerates any of them, so this is safe to compute on
-        # every panel render.
         def principal_sources
           Identity.principal_sources
         rescue Identity::Error
           nil
-        end
-
-        def any_representative?(sources)
-          sources.values.any? { |source| Access::PrincipalSampler.representative_capable?(source.evaluate) }
         end
 
         def principal_source_hint(sources)
@@ -459,7 +449,7 @@ module Karst
           initial = result.initial.outcomes.size
           population = result.population_request_count
           total = initial + population
-          "<p class=\"meta\"><strong>Request accounting:</strong> #{escape(initial)} initial · " \
+          "<p class=\"meta\"><strong>Tested:</strong> #{escape(initial)} initial · " \
             "#{escape(population)} candidate population · #{escape(total)} total " \
             "#{users(total)}/requests · #{escape(total_seconds(result))}s elapsed.</p>"
         end
@@ -531,7 +521,7 @@ module Karst
 
           fields = candidates.map { |candidate| candidate_checkbox(candidate) }.join
           "<form class=\"candidate-review\" method=\"post\" action=\"/karst\">#{approval_alert(state)}" \
-            "<p>Karst found application-defined user groups for this principal source. " \
+            "<p>Karst found application-defined user groups in your app. " \
             "Select only the populations Karst may try, then rerun this analysis:</p>#{fields}" \
             "#{candidate_form_fields(state, result)}" \
             "<button type=\"submit\">Approve selected and retry</button></form>"
