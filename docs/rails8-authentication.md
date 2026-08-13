@@ -37,9 +37,13 @@ Karst's access search runs each probe through an isolated
 always rolls back — so the cleanest way to sign a probe in is the same way
 a real user signs in: create a `Session` row and let the real
 `Authentication` concern resume it. Run `bin/rails generate karst:install`
-to scaffold the controller and development-only routes below (the generator
-is authentication-agnostic; it works the same regardless of what identity
-system fills in its `TODO`s):
+to scaffold the controller and development-only routes (the generator is
+authentication-agnostic; it works the same regardless of what identity
+system fills in its `TODO`s). Replace the *entire body* of the generated
+`app/controllers/karst_identity_controller.rb` -- not just its `TODO`s --
+with the code below; the generator's own template raises
+`NotImplementedError` and has no knowledge of this application's generated
+`Authentication` concern:
 
 ```ruby
 # app/controllers/karst_identity_controller.rb
