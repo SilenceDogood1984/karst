@@ -51,10 +51,12 @@ Sometimes the right user is rare and won't show up in a normal recent-user sampl
 
 ```
 No verified usable user found
-Karst found 3 application-defined user groups that could be tried. [ Review candidate groups ]
+Karst found 3 application-defined user groups that could be tried.
 ```
 
-Open `/karst/populations`, check the groups Karst may try (`system_admins`, `auditors`, ...), and press **Approve**. From then on, approved groups are searched automatically — through `/karst`, the CLI, and MCP alike — until one produces a usable user. Approving is a hint, never a claim: Karst only reports that a user was *sampled from* `system_admins`, never that the group is what granted access.
+Select the groups Karst may try (`system_admins`, `auditors`, ...) and press **Approve and rerun** without leaving `/karst`. From then on, approved groups are searched automatically — through `/karst`, the CLI, and MCP alike — until one produces a usable user. Approving is a hint, never a claim: Karst only reports that a user was *sampled from* `system_admins`, never that the group is what granted access.
+
+Approvals are persistent local state. The advanced `/karst/populations` page exists only to inspect and revoke them, including approvals made stale by a renamed scope or changed principal source. It cannot approve new groups; normal route analysis never needs to visit it.
 
 Need populations committed as reviewable code, or applied outside your own machine (CI)? `config.principal_populations` does that and always takes precedence over an approval of the same name — see [docs/advanced-configuration.md](docs/advanced-configuration.md#curating-candidate-populations) for discovery, approval, and precedence details.
 
@@ -83,7 +85,15 @@ Runs the same search as `/karst` from a shell. Exit code `0` means a usable user
 
 ## Coding agents
 
+MCP support is optional. Add its runtime dependency to your application's
+Gemfile and install it before starting the server:
+
+```ruby
+gem "mcp", "~> 0.9.0"
+```
+
 ```bash
+bundle install
 bin/rails karst:mcp
 ```
 
@@ -99,7 +109,7 @@ Claude Code or another [MCP](https://modelcontextprotocol.io) client can call `v
 
 ## Configuration
 
-Usually, you don't. A conventional Devise app needs no initializer at all: the user model comes from Devise's own routing metadata, sampling states come from your schema, and candidate populations are approved at `/karst/populations` rather than written down.
+Usually, you don't. A conventional Devise app needs no initializer at all: the user model comes from Devise's own routing metadata, sampling states come from your schema, and candidate populations are approved inline after a failed analysis rather than written down.
 
 The one option worth knowing is the off switch:
 

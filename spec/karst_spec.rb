@@ -9,6 +9,13 @@ require "karst"
 RSpec.describe Karst do
   configuration_class = Karst.const_get(:Configuration, false)
 
+  it "loads the core without loading the optional MCP dependency" do
+    script = 'require "karst"; abort "MCP was loaded" if defined?(MCP)'
+    _stdout, stderr, status = Open3.capture3(RbConfig.ruby, "-Ilib", "-e", script)
+
+    expect(status).to be_success, stderr
+  end
+
   describe "configuration" do
     it "yields its single process-level configuration and reflects changes" do
       original = described_class.config

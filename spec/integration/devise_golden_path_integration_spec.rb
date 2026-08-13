@@ -164,7 +164,9 @@ RSpec.describe "Devise/Warden golden path, real gems, no Karst configuration" do
     admin_user = KarstDeviseUser.create!(email: "cli_admin@example.com", password: "password123!")
     KarstDeviseAdminGrant.create!(karst_devise_user: admin_user)
     26.times { |i| KarstDeviseUser.create!(email: "user#{i}@example.com", password: "password123!") }
-    populations_post("save_approvals=1&population[]=KarstDeviseUser::system_admins")
+    Karst::Access::PopulationApprovals.replace(
+      [Karst::Access::PopulationApprovals::Entry.new(model_name: "KarstDeviseUser", method_name: "system_admins")]
+    )
 
     output = StringIO.new
     exit_code = Karst::CLI::Verification.new(path: "/karst_devise_imports/1", output: output).call
@@ -182,13 +184,6 @@ RSpec.describe "Devise/Warden golden path, real gems, no Karst configuration" do
     mock.post(
       "/karst", "REMOTE_ADDR" => "127.0.0.1", "CONTENT_TYPE" => "application/x-www-form-urlencoded",
                 input: "operation=access_sweep&method=GET&path=%2Fkarst_devise_imports%2F1"
-    )
-  end
-
-  def populations_post(input)
-    Rack::MockRequest.new(stack).post(
-      "/karst/populations", "REMOTE_ADDR" => "127.0.0.1", "CONTENT_TYPE" => "application/x-www-form-urlencoded",
-                            "HTTP_ORIGIN" => "http://example.org", input: input
     )
   end
 end

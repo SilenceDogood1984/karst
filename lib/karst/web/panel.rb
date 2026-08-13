@@ -403,8 +403,8 @@ module Karst
         # Every approved population appears here, including the ones
         # deliberately not run -- "not tried" is reported honestly rather
         # than left to look like a failure. Only configured populations ever
-        # reach this list; a name merely discovered at /karst/populations is
-        # never executed automatically.
+        # reach this list; a name merely discovered after a failed analysis
+        # is never executed automatically.
         def populations_section(result, csrf_token)
           return "" if result.attempts.empty?
 
