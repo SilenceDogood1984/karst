@@ -2,6 +2,8 @@
 
 require "active_support/notifications"
 require "uri"
+require_relative "errors"
+require_relative "local_path"
 require_relative "probe_application"
 require_relative "database_isolation"
 require_relative "../identity"
@@ -9,11 +11,6 @@ require_relative "../value"
 
 module Karst
   module Access
-    class Error < StandardError; end
-    class UnsafeTarget < Error; end
-    class UnsupportedMethod < Error; end
-    class Unavailable < Error; end
-
     # sampling_reasons is a frozen Array of short evidence strings (e.g.
     # "role=local_admin", "source=authors") explaining why PrincipalSampler
     # or PrincipalSelection deliberately included this principal, or an
@@ -82,14 +79,7 @@ module Karst
       private
 
       def normalize_path(value)
-        raw = value.to_s.split("?", 2).first
-        uri = URI.parse(raw)
-        local = uri.relative? && raw.start_with?("/") && !raw.start_with?("//")
-        raise UnsafeTarget, "target must be a local application path" unless local
-
-        raw
-      rescue URI::InvalidURIError
-        raise UnsafeTarget, "target must be a valid local application path"
+        LocalPath.path(value)
       end
 
       def valid_limit?(limit)

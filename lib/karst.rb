@@ -24,6 +24,8 @@ require_relative "karst/access/population_approval"
 require_relative "karst/access/approved_populations"
 require_relative "karst/access/principal_source_selection"
 require_relative "karst/access/selected_principal_sources"
+require_relative "karst/reproduction/exercise"
+require_relative "karst/reproduction/curl"
 
 # Public entry point for Karst configuration.
 module Karst
