@@ -83,6 +83,52 @@ bin/rails karst:verify GET /admin/imports/123 --json
 
 Runs the same search as `/karst` from a shell. Exit code `0` means a usable user was found, `1` means the search completed without one, `2` means a setup error. The `--json` form is a stable, schema-versioned evidence document meant for scripts and tools.
 
+## Reproducing a request
+
+Sometimes the question isn't "who can reach this page" but "something calls
+this endpoint — what request do I send to exercise the same behavior?".
+
+Karst answers that the same way: it issues **one** request through your real
+application, inside a rolled-back transaction, and reports what happened —
+plus a cURL command for exactly what it sent.
+
+```bash
+bin/rails karst:reproduce POST /api/v1/inspections \
+  --content-type application/json \
+  --body '{"serial_number":"ABC123","status":"passed"}'
+```
+
+```text
+Observed execution
+  Api::V1::InspectionsController#create
+  halted at authenticate_api_key!
+
+Observed response
+  401 text/html
+
+Observed effects
+  0 database writes (rollback attempted on the same connection)
+
+Reproduce
+  curl -X POST 'http://localhost:3000/api/v1/inspections' \
+    -H 'Content-Type: application/json' \
+    -d '{
+    "serial_number": "ABC123",
+    "status": "passed"
+  }'
+```
+
+That halted callback is the endpoint's real gate — observed, not inferred from
+reading the controller. Add the credential it wants, send again, and the cURL
+you copy is one you have watched work.
+
+Secrets never come back out. Parameters go through your app's own
+`config.filter_parameters`, and credential-bearing headers become placeholders
+like `<API_KEY>` without their values ever being read. The same thing is
+available at `/karst` under **Reproduce request**, and to agents as the
+`reproduce_request` MCP tool. See
+[docs/request-reproduction.md](docs/request-reproduction.md).
+
 ## Coding agents
 
 MCP support is optional. Add its runtime dependency to your application's
@@ -105,7 +151,12 @@ bin/rails karst:mcp
 }
 ```
 
-Claude Code or another [MCP](https://modelcontextprotocol.io) client can call `verify_access` and get back exactly the evidence `karst:verify --json` prints. An agent can guess who *should* have access by reading code; only Karst can show who actually does. The agent picks the path and method — it can't choose a user, skip the rollback, or use Test As.
+Claude Code or another [MCP](https://modelcontextprotocol.io) client gets two tools:
+
+- `verify_access` — exactly the evidence `karst:verify --json` prints. An agent can guess who *should* have access by reading code; only Karst can show who actually does.
+- `reproduce_request` — exactly the evidence `karst:reproduce --json` prints, including the redacted cURL command.
+
+In both cases the agent picks the request — it can't choose a user, skip the rollback, raise a limit, or use Test As.
 
 ## Configuration
 
@@ -142,6 +193,8 @@ Using Rails 8's own `bin/rails generate authentication` instead of Devise? [docs
 Karst is for local development only — `/karst`, the badge, and Test As only work from loopback requests while `Rails.env.development?` is true. The ordinary sample is bounded to 25 users by default (100 max). If it finds no usable user, approved candidate populations can add a separate bounded retry stage. Every probe runs inside a database transaction Karst rolls back.
 
 That rollback only covers writes made through the same Active Record connection. Jobs, mail, external HTTP calls, files, Redis, and other database connections aren't covered — a route that triggers those can still cause real side effects even though its own database writes are undone.
+
+Access analysis is GET-only, and stays that way: running a mutating method as 25 users would mean 25 real creates. [Request reproduction](docs/request-reproduction.md) is the one place a non-GET request is issued, always exactly once and always because you asked for it.
 
 ## Compatibility
 

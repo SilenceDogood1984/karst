@@ -5,6 +5,25 @@ All notable changes to Karst are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Request reproduction.** Answers "something calls this endpoint -- what
+  request do I send to exercise the same behavior?". Karst issues exactly one
+  caller-specified request through the real application, inside the same
+  rolled-back transaction the access sweep uses, and reports what it observed:
+  the controller/action that dispatched, the router's own route parameters,
+  the halted callback, the response, database writes -- plus a cURL command for
+  exactly what it sent. Available at `/karst` under **Reproduce request**, as
+  `bin/rails karst:reproduce METHOD PATH`, and as the `reproduce_request` MCP
+  tool. Secrets never come back out: parameters pass through the application's
+  own `config.filter_parameters` (Rails' own `ActiveSupport::ParameterFilter`)
+  plus a conservative credential-name net, and credential-bearing headers
+  become placeholders such as `<API_KEY>` without their values ever being read.
+  See [docs/request-reproduction.md](docs/request-reproduction.md).
+- MCP now exposes two tools. `verify_access` is unchanged and stays GET-only.
+
 ## [0.2.0]
 
 ### Added

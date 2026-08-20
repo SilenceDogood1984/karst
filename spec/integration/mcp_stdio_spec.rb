@@ -169,7 +169,7 @@ RSpec.describe "Karst MCP server over real stdio" do
     end
   end
 
-  it "exposes exactly the intended Karst surface -- verify_access, and nothing that resembles Test As" do
+  it "exposes exactly the intended Karst surface -- two tools, and nothing that resembles Test As" do
     stdout, _stderr, status = run_requests(
       initialize_request(id: 1),
       { jsonrpc: "2.0", method: "notifications/initialized" },
@@ -180,9 +180,12 @@ RSpec.describe "Karst MCP server over real stdio" do
     frame = stdout.each_line.map { |line| JSON.parse(line) }.find { |item| item["id"] == 2 }
     tools = frame.dig("result", "tools")
 
-    expect(tools.map { |tool| tool["name"] }).to eq(["verify_access"])
-    schema_properties = tools.first.dig("inputSchema", "properties").keys
-    expect(schema_properties).to contain_exactly("path", "method")
+    expect(tools.map { |tool| tool["name"] }).to eq(%w[verify_access reproduce_request])
+    expect(tools.first.dig("inputSchema", "properties").keys).to contain_exactly("path", "method")
+    expect(tools.last.dig("inputSchema", "properties").keys)
+      .to contain_exactly("path", "method", "body", "content_type", "headers", "anonymous", "base_url")
+    expect(tools.flat_map { |tool| tool.dig("inputSchema", "properties").keys })
+      .not_to include("principal", "principal_id", "user", "user_id", "population", "limit")
   end
 
   it "fails safely on an external URL instead of probing it, reporting a structured error rather than " \

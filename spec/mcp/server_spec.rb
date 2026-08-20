@@ -6,10 +6,10 @@ require "karst/mcp/server"
 # rubocop:disable Metrics/BlockLength
 RSpec.describe Karst::Mcp::Server do
   describe ".build" do
-    it "exposes exactly one tool: verify_access" do
+    it "exposes exactly two tools: verify_access and reproduce_request" do
       server = described_class.build
 
-      expect(server.tools.keys).to eq(["verify_access"])
+      expect(server.tools.keys).to eq(%w[verify_access reproduce_request])
     end
 
     it "exposes no prompts or resources" do
@@ -19,12 +19,12 @@ RSpec.describe Karst::Mcp::Server do
       expect(server.resources).to be_empty
     end
 
-    it "advertises verify_access over the real tools/list protocol handler" do
+    it "advertises both tools over the real tools/list protocol handler" do
       server = described_class.build
 
       response = server.handle(jsonrpc: "2.0", id: 1, method: "tools/list")
 
-      expect(response.dig(:result, :tools).map { |tool| tool[:name] }).to eq(["verify_access"])
+      expect(response.dig(:result, :tools).map { |tool| tool[:name] }).to eq(%w[verify_access reproduce_request])
     end
 
     it "exposes no browser identity or Test As capability" do
@@ -34,11 +34,13 @@ RSpec.describe Karst::Mcp::Server do
       expect(names.grep(/browser|test_as|identity/i)).to be_empty
     end
 
-    it "exposes no arbitrary principal selection input on its one tool" do
+    it "exposes no arbitrary principal selection input on either tool" do
       server = described_class.build
 
-      properties = server.tools.fetch("verify_access").input_schema.to_h[:properties].keys
-      expect(properties).not_to include(:principal, :principal_id, :user, :user_id, :population)
+      server.tools.each_value do |tool|
+        properties = tool.input_schema.to_h[:properties].keys
+        expect(properties).not_to include(:principal, :principal_id, :user, :user_id, :population)
+      end
     end
 
     it "reports a stable exception to stderr rather than letting exceptions reach stdout directly" do
