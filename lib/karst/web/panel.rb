@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "cgi"
+require "json"
 require "rack/utils"
 require "active_support"
 require "active_support/number_helper"
@@ -99,6 +100,21 @@ module Karst
         .ordinary-sample h2{margin:0 0 .45rem}
         .ordinary-sample details{margin:.55rem 0}
         .write-warning{border:2px solid #b3261e;border-radius:.4rem;padding:.7rem .85rem;background:#fff7f6}
+        section.reproduce textarea{font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;padding:.4rem .5rem;border:1px solid #ccc;border-radius:.3rem;width:100%;min-height:5rem;resize:vertical}
+        section.reproduce form{display:grid;gap:.75rem;margin:.6rem 0}
+        section.reproduce .row{display:flex;gap:.75rem;flex-wrap:wrap}
+        section.reproduce label{flex:1 1 10rem}
+        section.reproduce label input{width:100%}
+        .recipe{border:1px solid #ddd;border-radius:.5rem;padding:.9rem 1rem;margin:.9rem 0}
+        .recipe h3{font-size:.95rem;margin:.9rem 0 .3rem}
+        .recipe h3:first-child{margin-top:0}
+        .recipe p{margin:.2rem 0}
+        .recipe pre{overflow-x:auto;background:#f6f6f7;border:1px solid #e2e2e2;border-radius:.4rem;padding:.7rem .8rem;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;margin:.3rem 0 0}
+        .recipe dl{display:grid;grid-template-columns:auto 1fr;gap:.15rem .75rem;margin:.2rem 0;font-size:.9rem}
+        .recipe dt{font-weight:600;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+        .recipe dd{margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;overflow-wrap:anywhere}
+        .redacted{color:#8a5b00;font-weight:600}
+        .unobserved{color:#666;font-size:.88rem}
         small{color:#666}
         .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
         @media (max-width:480px){
@@ -126,6 +142,11 @@ module Karst
           .hint{color:#d8a63d}
           .failed,.pending{border-left-color:#e5534b}
           .write-warning{background:#321b1a}
+          section.reproduce textarea{background:#1f2023;border-color:#3a3b3e;color:#e4e4e6}
+          .recipe{border-color:#33343a}
+          .recipe pre{background:#1f2023;border-color:#2c2d31}
+          .redacted{color:#d8a63d}
+          .unobserved{color:#9a9aa0}
         }
       CSS
       private_constant :STYLE
@@ -146,13 +167,15 @@ module Karst
         # rubocop:disable Metrics/ParameterLists
         def render(params: {}, access_result: nil, csrf_token: nil, browser_identity_active: false,
                    route_lookup_limitation: nil, unapproved_candidates: [], population_approval_error: nil,
-                   principal_source_selection_saved: false, principal_source_selection_error: nil)
+                   principal_source_selection_saved: false, principal_source_selection_error: nil,
+                   reproduction: nil)
           state = { csrf_token: csrf_token, browser_identity_active: browser_identity_active,
                     route_lookup_limitation: route_lookup_limitation,
                     unapproved_candidates: unapproved_candidates,
                     population_approval_error: population_approval_error,
                     principal_source_selection_saved: principal_source_selection_saved,
-                    principal_source_selection_error: principal_source_selection_error }
+                    principal_source_selection_error: principal_source_selection_error,
+                    reproduction: reproduction }
           [200, HEADERS.dup, [document(params, access_result, state)]]
         end
         # rubocop:enable Metrics/ParameterLists
@@ -179,7 +202,8 @@ module Karst
           path = string_param(params, "path")
           "#{testing_banner(path, state[:csrf_token], state[:browser_identity_active])}" \
             "#{route_header(http_method, path, state[:route_lookup_limitation])}" \
-            "#{access_section(http_method, path, controller, action, access_result, state)}"
+            "#{access_section(http_method, path, controller, action, access_result, state)}" \
+            "#{reproduction_section(params, http_method, path, state)}"
         end
 
         def string_param(params, key)
@@ -239,7 +263,7 @@ module Karst
 
         # -- Primary action: access analysis ------------------------------------
 
-        # rubocop:disable Metrics/ParameterLists
+        # rubocop:disable Metrics/ParameterLists, Metrics/MethodLength
         def access_section(http_method, path, controller, action, result, state)
           return setup_notice_section(state) if path.empty? || state[:route_lookup_limitation]
 
@@ -248,12 +272,14 @@ module Karst
           body = if http_method == "GET"
                    analyze_form(context, state)
                  else
-                   "<p>Access analysis is available for GET routes only.</p>"
+                   "<p>Access analysis is available for GET routes only. " \
+                     "Use <strong>Reproduce request</strong> below to issue this one request " \
+                     "and get a recipe for it.</p>"
                  end
           heading = "<h2 class=\"sr-only\">Access analysis</h2>"
           "<section class=\"access\">#{heading}#{body}#{access_result(result, state)}</section>"
         end
-        # rubocop:enable Metrics/ParameterLists
+        # rubocop:enable Metrics/ParameterLists, Metrics/MethodLength
 
         # A developer with several Devise models (or no automatic
         # authentication integration at all) needs to know that before
@@ -366,6 +392,159 @@ module Karst
 
         def hidden(name, value)
           "<input type=\"hidden\" name=\"#{name}\" value=\"#{escape(value)}\">"
+        end
+
+        # -- Request reproduction -----------------------------------------------
+
+        # The one place /karst answers "something calls this endpoint -- what
+        # request do I send to exercise the same behavior?". Deliberately a
+        # collapsed <details> below the access analysis rather than a peer of
+        # it: reproduction issues a real request with real non-database side
+        # effects, so it is something a developer opens on purpose, never
+        # something the page does on arrival. Everything below renders the
+        # same evidence document Karst::CLI::Reproduction hands the MCP tool
+        # and the CLI, so the panel cannot show a recipe those two would not.
+        def reproduction_section(params, http_method, path, state)
+          document = state[:reproduction]
+          return "" if path.empty? && document.nil?
+          return "" unless state[:csrf_token]
+
+          open = document ? " open" : ""
+          "<section class=\"reproduce\"><details#{open}><summary><strong>Reproduce request</strong></summary>" \
+            "#{reproduction_intro}#{reproduction_form(params, http_method, path, state)}" \
+            "#{reproduction_result(document)}</details></section>"
+        end
+
+        def reproduction_intro
+          "<p class=\"meta\">Karst issues this request once against your running application and shows what " \
+            "actually happened, plus a cURL command for exactly what it sent. Database writes are rolled " \
+            "back on the same connection; jobs, mail, outbound HTTP, files, and other connections are not. " \
+            "Secrets are replaced by placeholders, so a generated command may need a credential filled in.</p>"
+        end
+
+        def reproduction_form(params, http_method, path, state)
+          <<~HTML
+            <form action="/karst" method="post">
+            #{hidden('operation', 'reproduce_request')}#{hidden('csrf_token', state[:csrf_token])}
+            #{hidden('controller', string_param(params, 'controller'))}#{hidden('action', string_param(params, 'action'))}
+            <div class="row">
+            <label>Method <input name="method" value="#{escape(http_method.empty? ? 'GET' : http_method)}" required></label>
+            <label>Path <input name="path" value="#{escape(path)}" required></label>
+            </div>
+            <div class="row">
+            <label>Content type <input name="content_type" value="#{escape(string_param(params, 'content_type'))}" placeholder="application/json"></label>
+            </div>
+            <label>Body <textarea name="body" placeholder='{"serial_number": "ABC123"}'>#{escape(string_param(params, 'body'))}</textarea></label>
+            <label>Headers <small>one per line, as <code>Name: value</code></small>
+            <textarea name="headers" placeholder="Authorization: Bearer ...">#{escape(string_param(params, 'headers'))}</textarea></label>
+            <div><button class="primary" type="submit">Send once and build request</button></div>
+            </form>
+          HTML
+        end
+
+        # rubocop:disable Metrics/AbcSize
+        def reproduction_result(document)
+          return "" unless document
+          return "<p class=\"hint\" role=\"alert\">#{escape(document[:error][:message])}</p>" if document[:error]
+
+          sections = [recipe_request(document[:request]), recipe_identity(document[:identity]),
+                      recipe_execution(document[:execution]), recipe_response(document[:response]),
+                      recipe_effects(document[:execution], document[:isolation]),
+                      recipe_unobserved(document[:unobserved]), recipe_curl(document[:reproduce][:curl])]
+          "<div class=\"recipe\">#{sections.join}</div>"
+        end
+        # rubocop:enable Metrics/AbcSize
+
+        def recipe_request(request)
+          "<h3>Request</h3><p class=\"route-path\">#{escape(request[:method])} #{escape(request[:path])}</p>" \
+            "#{recipe_pairs('Route parameters', request[:route_params])}" \
+            "#{recipe_pairs('Query parameters', request[:query_params])}" \
+            "#{recipe_pairs('Headers', request[:headers])}" \
+            "#{recipe_body(request)}"
+        end
+
+        def recipe_body(request)
+          return "" unless request[:body]
+          if request[:body_format] == "opaque"
+            return "<h3>Body</h3><p class=\"unobserved\">Karst sent a body it could not parse as JSON or " \
+                   "form data, so it is not shown.</p>"
+          end
+
+          "<h3>Body <small>(#{escape(request[:body_format])})</small></h3>" \
+            "<pre>#{escape(JSON.pretty_generate(request[:body]))}</pre>"
+        end
+
+        # Redacted values are visibly marked rather than silently mixed in
+        # with observed ones, so a developer copying a value out of this
+        # panel can always tell which is which.
+        def recipe_pairs(title, pairs)
+          return "" if pairs.nil? || pairs.empty?
+
+          rows = pairs.map do |name, value|
+            "<dt>#{escape(name)}</dt><dd>#{recipe_value(value)}</dd>"
+          end.join
+          "<h3>#{escape(title)}</h3><dl>#{rows}</dl>"
+        end
+
+        def recipe_value(value)
+          text = value.is_a?(String) ? value : JSON.generate(value)
+          return "<span class=\"redacted\">#{escape(text)}</span>" if placeholder?(text)
+
+          escape(text)
+        end
+
+        def placeholder?(text)
+          text.start_with?("<") && text.end_with?(">")
+        end
+
+        def recipe_identity(identity)
+          assumed = identity[:assumed]
+          line = if assumed
+                   "#{escape(assumed[:label])} — identity assumed by Karst"
+                 else
+                   "No identity#{" (#{escape(identity[:reason])})" if identity[:reason]}"
+                 end
+          "<h3>Sent as</h3><p>#{line}</p><p class=\"unobserved\">Karst did not observe how an external " \
+            "client authenticates this endpoint.</p>"
+        end
+
+        def recipe_execution(execution)
+          dispatched = if execution[:controller]
+                         "#{escape(execution[:controller])}##{escape(execution[:action])}"
+                       else
+                         "<span class=\"unobserved\">no controller dispatched</span>"
+                       end
+          halted = execution[:halted_callback]
+          exception = execution[:exception_class]
+          "<h3>Observed execution</h3><p>#{dispatched}</p>" \
+            "#{"<p>Halted at #{escape(halted)}</p>" if halted}" \
+            "#{"<p>Exception: #{escape(exception)}</p>" if exception}"
+        end
+
+        def recipe_response(response)
+          return "<h3>Observed response</h3><p class=\"unobserved\">No response observed.</p>" unless response[:status]
+
+          type = response[:content_type]
+          redirect = response[:redirect]
+          "<h3>Observed response</h3><p>#{status_title(response[:status])}" \
+            "#{" · #{escape(type)}" if type}#{" → #{escape(redirect)}" if redirect}</p>"
+        end
+
+        def recipe_effects(execution, isolation)
+          count = execution[:write_count]
+          "<h3>Observed effects</h3><p>#{escape(count)} database #{count == 1 ? 'write' : 'writes'} " \
+            "· rollback attempted on the same connection</p>" \
+            "<p class=\"unobserved\">Not isolated: #{escape(isolation[:not_isolated].join(', '))}.</p>"
+        end
+
+        def recipe_unobserved(unobserved)
+          return "" if unobserved.nil? || unobserved.empty?
+
+          "<h3>Not observed</h3><p class=\"unobserved\">#{escape(unobserved.join(', '))}</p>"
+        end
+
+        def recipe_curl(curl)
+          "<h3>Reproduce</h3><pre><code>#{escape(curl)}</code></pre>"
         end
 
         def access_result(result, state)

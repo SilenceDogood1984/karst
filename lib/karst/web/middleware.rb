@@ -23,6 +23,7 @@ require_relative "../access/principal_source_selection"
 require_relative "../access/population_approval"
 require_relative "../access/population_revocation"
 require_relative "../identity/devise_support"
+require_relative "../cli/reproduction"
 
 module Karst
   module Web
@@ -92,6 +93,9 @@ module Karst
         identity_response = mutate_browser_identity(env, params, browser_identity)
         return identity_response if identity_response
 
+        reproduction, denied = reproduction_result(env, params, csrf)
+        return denied if denied
+
         result = analyze(env, params, approval: approval)
         candidates = inline_population_candidates(result)
         Panel.render(params: params, access_result: result, route_lookup_limitation: lookup&.limitation,
@@ -99,7 +103,7 @@ module Karst
                      browser_identity_active: browser_identity_active?(browser_identity),
                      unapproved_candidates: candidates, population_approval_error: approval&.error,
                      principal_source_selection_saved: !selection.nil? && selection.error.nil?,
-                     principal_source_selection_error: selection&.error)
+                     principal_source_selection_error: selection&.error, reproduction: reproduction)
       end
       # rubocop:enable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity
 
@@ -121,6 +125,54 @@ module Karst
 
       def saving_principal_source_selection?(env, params)
         env["REQUEST_METHOD"] == "POST" && params["operation"] == "select_principal_sources"
+      end
+
+      # [evidence_document, nil], or [nil, forbidden_response]. Unlike the
+      # access sweep -- which only ever issues GET requests the developer
+      # could have made in their own browser -- reproduction issues one
+      # caller-specified request that may mutate, enqueue, and send mail, so
+      # it is protected exactly like the two operations that write local
+      # state: same-origin plus Karst's own CSRF token.
+      def reproduction_result(env, params, csrf)
+        return [nil, nil] unless env["REQUEST_METHOD"] == "POST" && params["operation"] == "reproduce_request"
+        return [nil, forbidden] unless approved_origin?(env)
+
+        csrf.verify!(params["csrf_token"])
+        [reproduce(env, params), nil]
+      rescue Csrf::InvalidToken
+        [nil, forbidden]
+      rescue ArgumentError => e
+        [{ schema_version: 1, error: { type: "input_error", message: e.message } }, nil]
+      end
+
+      def reproduce(env, params)
+        Karst::CLI::Reproduction.new(
+          path: params["path"], http_method: params["method"], body: params["body"],
+          content_type: params["content_type"], headers: request_headers(params["headers"]),
+          base_url: base_url(env)
+        ).evidence
+      end
+
+      # "Name: value" per line. A line Karst cannot read as a header is
+      # refused outright rather than silently dropped -- a header quietly
+      # missing from the request would make every observation below it wrong.
+      def request_headers(value)
+        value.to_s.split("\n").each_with_object({}) do |line, result|
+          next if line.strip.empty?
+
+          name, header_value = line.split(":", 2)
+          raise ArgumentError, "expected one header per line, as \"Name: value\"" if header_value.nil?
+
+          result[name.strip] = header_value.strip
+        end
+      end
+
+      # The developer's own origin, so a copied command runs against the
+      # server they are already looking at. Never a deployed host: Karst only
+      # ever knows about this local request.
+      def base_url(env)
+        request = Rack::Request.new(env)
+        "#{request.scheme}://#{request.host_with_port}"
       end
 
       def inline_population_approval_result(env, params, csrf)

@@ -14,10 +14,27 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - `config.observe_identity`, the observation seam for non-Devise authentication. Devise/Warden applications need no configuration: Karst reads the application's own Warden proxy from the probe request.
 - Halt-time identity observation: when an access callback halts a request, Karst records the identity the application had established *at that decision*, plus `identity.observed_at` and `identity.changed_during_request`.
 - Each outcome now reports the `controller` and `action` the probed request actually dispatched to, and the evidence document carries `provenance` (Karst/Rails/Ruby versions, environment, observation timestamp).
+- **Request reproduction.** Answers "something calls this endpoint -- what
+  request do I send to exercise the same behavior?". Karst issues exactly one
+  caller-specified request through the real application, inside the same
+  rolled-back transaction the access sweep uses, and drives that request's
+  identity through the same requested/established/observed/confirmed
+  lifecycle `verify_access` uses, reporting what it observed: the
+  controller/action that dispatched, the router's own route parameters, the
+  halted callback, the response, database writes -- plus a cURL command for
+  exactly what it sent. Available at `/karst` under **Reproduce request**, as
+  `bin/rails karst:reproduce METHOD PATH`, and as the `reproduce_request` MCP
+  tool. Secrets never come back out: parameters pass through the application's
+  own `config.filter_parameters` (Rails' own `ActiveSupport::ParameterFilter`)
+  plus a conservative credential-name net, and credential-bearing headers
+  become placeholders such as `<API_KEY>` without their values ever being read.
+  See [docs/request-reproduction.md](docs/request-reproduction.md).
+- MCP now exposes two tools. `verify_access` is unchanged and stays GET-only.
 
 ### Changed
 
 - **Evidence schema is now version 2.** The ambiguous `principal` / `verified_principal` keys are gone rather than renamed in place: a consumer reading "principal" and believing it described the request that actually ran is exactly the false attribution this schema exists to make impossible. Outcomes carry `identities` (each with `requested`, `observed`, `confirmation`), and the top level carries `verified_identity`.
+- **Reproduction evidence schema is now version 2.** Its `identity` document reports `requested`/`observed`/`confirmation` (a `Karst::Identity::Evidence`) rather than echoing back the identity Karst assumed as if it were what ran; a mismatch, absence, or unobservable outcome now stays visible instead of being reported as "sent as User X."
 - A probe whose identity setup fails now still runs and is still observed, and reports the failure as `identity.establishment` rather than as an application exception — "asked for User #123, application saw nobody, halted at `authorize_admin`" is the evidence that matters most there.
 - Per-probe write and halted-callback observation now ignores notifications raised on other threads, so a concurrent request in a development server cannot be counted as a probe's own evidence.
 
