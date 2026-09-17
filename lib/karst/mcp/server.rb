@@ -22,11 +22,19 @@ module Karst
         identities, and reports observed evidence -- HTTP status, redirect,
         halted callback, exception, and whether a usable outcome was found.
 
-        Call verify_access(path:, method:) to check one path. Karst does not
-        infer authorization rules, explain application code, or choose which
-        principal to try on your behalf -- it only reports what actually
-        happened when a real request was made under the application's own
-        configured identities.
+        Call verify_access(path:, method:) to check one path, or
+        verify_access(path:, identity: "anonymous") to check it with no
+        principal established at all. Karst does not infer authorization
+        rules, explain application code, or choose which principal to try on
+        your behalf -- it only reports what actually happened when a real
+        request was made under the application's own configured identities.
+
+        Identity is evidence, not intent. Each outcome separates the identity
+        Karst was asked to run as from the one the application itself
+        resolved while running the request; only identity.confirmation of
+        "confirmed" or "confirmed_anonymous" means the request provably ran
+        that way. Never report a principal as having reached a route on the
+        strength of the requested identity alone.
       TEXT
 
       class << self

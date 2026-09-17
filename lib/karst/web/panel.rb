@@ -561,7 +561,33 @@ module Karst
           action = test_as_form(outcome.principal, result.path, csrf_token)
           "<article class=\"usable-principal\"><h4><span>#{principal_label(outcome.principal)}#{writes}</span>" \
             "#{action}</h4><p>#{outcome_title(outcome, prefix: 'Observed ')} · " \
-            "#{escape(outcome.elapsed_ms)}ms</p>#{sampled_for(outcome)}</article>"
+            "#{escape(outcome.elapsed_ms)}ms</p>#{identity_note(outcome)}#{sampled_for(outcome)}</article>"
+        end
+
+        # Karst asking the application to run as a principal is not evidence
+        # that it did. Silence here means the application itself resolved
+        # exactly the requested principal while running this request;
+        # anything else says so out loud, because "this user reached the
+        # page" would otherwise be a claim Karst cannot support.
+        def identity_note(outcome)
+          evidence = outcome.identity
+          return "" if evidence.nil? || evidence.confirmation == :confirmed
+
+          "<p class=\"meta\">⚠ #{escape(identity_summary(evidence))}</p>"
+        end
+
+        def identity_summary(evidence)
+          case evidence.confirmation
+          when :confirmed_anonymous then "Ran anonymously: the application observed no principal."
+          when :absent then "The application observed no principal for this request — it did not run as this user."
+          when :mismatch then "The application observed #{observed_label(evidence)}, not the requested user."
+          when :contaminated then "Anonymous probe contaminated: the application observed #{observed_label(evidence)}."
+          else "Identity not runtime-confirmed: #{evidence.observation_error}"
+          end
+        end
+
+        def observed_label(evidence)
+          evidence.observed ? "#{evidence.observed.model_name} ##{evidence.observed.id}" : "no principal"
         end
 
         # A compact, secondary line below the observed outcome, never a card
@@ -621,7 +647,8 @@ module Karst
         def outcome_principal(item, path, csrf_token)
           writes = item.writes_observed ? " — ⚠ #{escape(item.write_count)} database writes observed" : ""
           action = test_as_form(item.principal, path, csrf_token)
-          "<li>#{principal_label(item.principal)} — #{escape(item.elapsed_ms)}ms#{writes}#{action}</li>"
+          "<li>#{principal_label(item.principal)} — #{escape(item.elapsed_ms)}ms#{writes}" \
+            "#{identity_note(item)}#{action}</li>"
         end
 
         def test_as_form(principal, path, csrf_token)

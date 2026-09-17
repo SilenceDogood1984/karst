@@ -45,6 +45,7 @@ RSpec.describe "custom (non-Devise) authentication golden path, real gems" do
     Karst.config.clear_identity = nil
     Karst.config.assume_browser_identity = nil
     Karst.config.clear_browser_identity = nil
+    Karst.config.observe_identity = nil
   end
 
   def stack
@@ -130,6 +131,7 @@ RSpec.describe "custom (non-Devise) authentication golden path, real gems" do
     Karst.config.clear_identity = ->(session) { session.delete "/karst_test_logout" }
     Karst.config.assume_browser_identity = ->(request, principal) { request.session[:account_id] = principal.id }
     Karst.config.clear_browser_identity = ->(request) { request.session.delete(:account_id) }
+    Karst.config.observe_identity = ->(context) { context.controller&.current_account }
 
     expect(Karst::Identity.setup_state.status).to eq(:ready_explicit)
 
@@ -163,6 +165,51 @@ RSpec.describe "custom (non-Devise) authentication golden path, real gems" do
 
     # No probe or Test-As/Stop-Testing-As round trip left a residual write.
     expect(KarstCustomAuthAccount.count).to eq(3)
+  end
+
+  it "confirms at runtime that the application resolved the identity Karst asked for, and reports an " \
+     "anonymous probe the application really did see as anonymous" do
+    Karst.config.principals = -> { KarstCustomAuthAccount.active }
+    Karst.config.assume_identity = lambda do |session, principal|
+      descriptor = Karst::Identity.describe(principal)
+      session.post "/karst_test_login", params: { principal_type: descriptor.model_name, principal_id: descriptor.id }
+    end
+    Karst.config.clear_identity = ->(session) { session.delete "/karst_test_logout" }
+    # The one addition runtime-confirmed identity needs for custom
+    # authentication: the application's own current_account, read off the
+    # controller that actually processed the probe request.
+    Karst.config.observe_identity = ->(context) { context.controller&.current_account }
+    account = KarstCustomAuthAccount.create!(email: "observed@example.com", active: true)
+
+    named = Karst::Access::Sweep.new(path: "/secrets/1", principals: [account],
+                                     application: KarstCustomAuthApplication).call
+    anonymous = Karst::Access::Sweep.new(path: "/secrets/1", principals: [Karst::Identity::ANONYMOUS], limit: 1,
+                                         application: KarstCustomAuthApplication).call
+
+    expect(named.outcomes.first.identity.confirmation).to eq(:confirmed)
+    expect(named.outcomes.first.identity.observed.id).to eq(account.id)
+    expect(anonymous.outcomes.first.identity.confirmation).to eq(:confirmed_anonymous)
+    expect(anonymous.outcomes.first.status).to eq(401)
+  end
+
+  it "never claims a confirmed identity for a custom-authentication application that has not configured " \
+     "an observation seam" do
+    Karst.config.principals = -> { KarstCustomAuthAccount.active }
+    Karst.config.assume_identity = lambda do |session, principal|
+      descriptor = Karst::Identity.describe(principal)
+      session.post "/karst_test_login", params: { principal_type: descriptor.model_name, principal_id: descriptor.id }
+    end
+    Karst.config.clear_identity = ->(session) { session.delete "/karst_test_logout" }
+    account = KarstCustomAuthAccount.create!(email: "unobserved@example.com", active: true)
+
+    result = Karst::Access::Sweep.new(path: "/secrets/1", principals: [account],
+                                      application: KarstCustomAuthApplication).call
+    evidence = result.outcomes.first.identity
+
+    expect(result.outcomes.first.status).to eq(200)
+    expect(evidence.confirmation).to eq(:unobservable)
+    expect(evidence.confirmed?).to be(false)
+    expect(evidence.observation_error).to include("observe_identity")
   end
 
   it "never passes a password or token to Karst -- Test As resolves strictly through an id, exactly like " \

@@ -174,10 +174,38 @@ RSpec.describe "Devise/Warden golden path, real gems, no Karst configuration" do
 
     expect(exit_code).to eq(0)
     expect(document[:verified_usable]).to be(true)
-    expect(document[:verified_principal]).to eq(model: "KarstDeviseUser", id: admin_user.id,
-                                                label: "KarstDeviseUser ##{admin_user.id}")
+    expect(document[:verified_identity]).to include(
+      requested: { model: "KarstDeviseUser", id: admin_user.id, label: "KarstDeviseUser ##{admin_user.id}" },
+      observed: { model: "KarstDeviseUser", id: admin_user.id },
+      confirmation: "confirmed", observation_source: "warden"
+    )
     expect(document[:source]).to eq(type: :population, name: :system_admins)
     expect(JSON.generate(document)).not_to include("cli_admin@example.com")
+  end
+
+  # Zero configuration, real Devise and Warden: the identity Karst reports
+  # is the one the application's own Warden session actually carried, and an
+  # anonymous probe is anonymous in the application rather than only in
+  # Karst's metadata.
+  it "confirms identity at runtime, and probes anonymously, with no Karst configuration at all" do
+    admin_user = KarstDeviseUser.create!(email: "runtime_admin@example.com", password: "password123!")
+    KarstDeviseAdminGrant.create!(karst_devise_user: admin_user)
+
+    anonymous = Karst::CLI::Verification.new(path: "/karst_devise_imports/1", identity: "anonymous").evidence
+    anonymous_identity = anonymous[:sample][:outcomes].first[:identities].first
+
+    expect(anonymous[:probe]).to eq(identity: "anonymous")
+    expect(anonymous_identity[:confirmation]).to eq("confirmed_anonymous")
+    expect(anonymous_identity[:requested]).to be_nil
+    expect(anonymous_identity[:observed]).to be_nil
+
+    named = Karst::Access::Sweep.new(path: "/karst_devise_imports/1", principals: [admin_user],
+                                     application: KarstDeviseApplication).call
+    evidence = named.outcomes.first.identity
+
+    expect(evidence.confirmation).to eq(:confirmed)
+    expect(evidence.observation_source).to eq(:warden)
+    expect(evidence.observed.id).to eq(admin_user.id)
   end
 
   def access_sweep_response

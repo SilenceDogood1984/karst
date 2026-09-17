@@ -130,8 +130,12 @@ Karst.configure do |config|
     session.post "/karst_test_login", params: { account_id: account.id }
   end
   config.clear_identity = ->(session) { session.delete "/karst_test_logout" }
+  # How Karst sees which account the app itself actually ran as:
+  config.observe_identity = ->(context) { context.controller&.current_account }
 end
 ```
+
+That last hook is what lets Karst prove a result rather than assume it. Devise applications need no equivalent — Karst reads the application's own Warden session. Without either, Karst reports identity as *unobservable* instead of claiming a request ran as the user it was asked to run as. See [Runtime-confirmed identity](docs/advanced-configuration.md#runtime-confirmed-identity).
 
 The `bin/rails generate karst:install` command optionally scaffolds this custom-authentication escape hatch. Replace its `TODO`s with your app's real sign-in/sign-out code. A conventional single-model Devise app needs none of its initializer, controller, or routes. Browser **Test as** needs a second, similar pair of hooks (`config.assume_browser_identity` / `config.clear_browser_identity`) — see [docs/advanced-configuration.md](docs/advanced-configuration.md).
 

@@ -23,6 +23,16 @@ Karst.configure do |config|
 end
 ```
 
+Then tell Karst how to see which principal the application itself ended up running as. Without this, Karst reports identity as *unobservable* for a non-Devise application rather than assuming its requested identity was the one that ran:
+
+```ruby
+Karst.configure do |config|
+  config.observe_identity = ->(context) { context.controller&.current_account }
+end
+```
+
+See [Runtime-confirmed identity](#runtime-confirmed-identity) below for what Karst does with it.
+
 `config.principals` is called only by `Karst::Identity.principals` — Karst never enumerates, samples, or materializes its result itself. `assume_identity` and `clear_identity` must be configured together. This lets an app use a test-only login endpoint or any other session-local mechanism without ever handing Karst a password, email, token, or other credential.
 
 `bin/rails generate karst:install` is an optional escape hatch for custom authentication. You usually do not need this generator: conventional single-model Devise apps require no initializer, application controller, or Karst routes. The command scaffolds a compact initializer, a `KarstIdentityController` with explicit `TODO`s, and development-only routes. Replace the `TODO`s with your app's real sign-in/sign-out behavior. None of this is required if you already configure Karst by hand.
@@ -43,6 +53,57 @@ end
 When both are configured, every usable user in the results gets a **Test as** button. Karst resolves the submitted user only through a configured principal source, then invokes the hook, then redirects back to the exact page you were testing.
 
 Because `/karst` is served at the Rack boundary, before Action Controller, Rails' authenticity-token helpers aren't available there. Karst instead stores a random nonce in the existing Rack session and requires a constant-time match on every identity-changing POST. This path is local-development-only, requires a writable host session, never accepts an external return URL, and stays inactive unless both browser hooks are configured.
+
+## Runtime-confirmed identity
+
+Asking Karst to run a request as `User #123` is not evidence that the request ran as `User #123`. Karst keeps the two apart, on every outcome:
+
+| | What it is |
+| --- | --- |
+| **requested** | The identity Karst was asked to execute as. Intent. `nil` for an anonymous probe. |
+| **established** | What Karst's own identity seam managed to set up. Setup, never evidence. |
+| **observed** | The principal the Rails application itself resolved while running the request. Evidence. |
+
+`identity.confirmation` is the only field that says whether a principal claim about a request is true, and it fails closed:
+
+| `confirmation` | Meaning |
+| --- | --- |
+| `confirmed` | A principal was requested, and the application resolved that same one. |
+| `confirmed_anonymous` | An anonymous probe was requested, and the application resolved no principal. |
+| `absent` | A principal was requested; the application resolved none. The request did **not** run as that user. |
+| `mismatch` | The application resolved a *different* principal than the one requested. |
+| `contaminated` | An anonymous probe was requested, and the application resolved a principal anyway. The probe is invalid, not anonymous. |
+| `unobservable` | Karst could not determine which identity the application used. Nothing may be concluded. |
+
+Only `confirmed` and `confirmed_anonymous` are evidence about identity.
+
+Where the observation comes from:
+
+- **Devise/Warden**: nothing to configure. Karst reads the application's own Warden proxy from the probe request — the same object Devise's `current_<scope>` helper returns — through Warden's public `Proxy#user`, which deserializes an existing session and never runs authentication strategies.
+- **Anything else**: `config.observe_identity`, a callable given one context object (`#controller`, `#request`, `#env`) and returning the application's runtime principal, or `nil` when it resolved none. `controller` is the exact `ActionController` instance that processed the request — Rails sets it on the request env before any callback runs, so it is available even for a request a `before_action` halted.
+- **Neither**: `unobservable`. Karst never falls back to the requested identity.
+
+Timing matters: when an access callback halts the request, Karst observes identity *at that halt* — the state the application had established when the access decision was made — rather than after the request unwound. `identity.observed_at` says which moment an observation came from, and `identity.changed_during_request` is true when the identity the application ended with differs from the one the decision was made with.
+
+This is also what makes authentication and authorization separable. A route gated by `authorize_admin` produces three different observations that mean three different things:
+
+```
+anonymous          observed none      halted at authorize_admin
+ordinary user      observed User #4   halted at authorize_admin
+admin user         observed User #2   200 OK
+```
+
+The first says the gate participates in authentication; the second that it imposes an authorization condition on an identity that *was* correctly established. Karst reports the observations, and does not itself conclude either.
+
+### Anonymous probes
+
+An anonymous probe is a probe in its own right, not the absence of one:
+
+```bash
+bin/rails karst:verify --anonymous /admin/imports/123
+```
+
+or, over MCP, `verify_access(path:, identity: "anonymous")`. Karst establishes no identity, drops any identity queued for the probe session, runs the application's own `clear_identity` hook when one is configured, and then verifies at runtime that the application really did see no principal. If stale state produces one anyway, the result is `contaminated` — never "anonymous". An anonymous probe needs no principal source at all, so it works in an application Karst could not otherwise test.
 
 ## Authentication identifiers in local human output
 
@@ -148,6 +209,7 @@ The single switch that turns Karst's whole development surface off — `/karst`,
 | --- | --- |
 | `principals` | Custom or non-Devise authentication ([above](#custom-or-non-devise-authentication)) |
 | `assume_identity` / `clear_identity` | Signing a probe session in and out; must be configured together |
+| `observe_identity` | Observing which principal the application actually ran as, for non-Devise authentication ([above](#runtime-confirmed-identity)) |
 | `assume_browser_identity` / `clear_browser_identity` | Browser **Test as** under custom authentication |
 | `principal_label` | A display label for a non-Active-Record principal |
 | `principal_sources` | Identity spread across several models ([above](#multiple-user-models-configprincipal_sources)) |

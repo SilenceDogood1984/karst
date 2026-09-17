@@ -34,6 +34,30 @@ module Karst
     attr_accessor :enabled, :principals, :assume_identity, :clear_identity, :principal_label,
                   :assume_browser_identity, :clear_browser_identity
 
+    # How Karst observes which principal the *application itself* resolved
+    # while running a probe request -- the only thing that can turn "Karst
+    # was asked to run as User#123" into evidence that the request actually
+    # did. A callable taking one Karst::Identity::ObservationContext
+    # (#controller, #request, #env) and returning the application's runtime
+    # principal, or nil when the application resolved none:
+    #
+    #   config.observe_identity = ->(context) { context.controller&.current_user }
+    #
+    # `controller` is the exact ActionController instance that processed the
+    # request, present even when a before_action halted it, so an identity
+    # the application keeps in an instance variable, a Current attribute, or
+    # anything else Karst cannot know about is still observable. Returning
+    # nil/false means "the application ran this request anonymously"; raising
+    # (or returning something with no id) makes the observation unobservable,
+    # never confirmed.
+    #
+    # A Devise/Warden application needs none of this: Karst reads the
+    # application's own Warden proxy from the probe request instead (see
+    # Karst::Identity::Observer). With neither seam available, Karst reports
+    # identity as unobservable rather than assuming the requested principal
+    # is the one that ran.
+    attr_accessor :observe_identity
+
     # principal_populations is an escape hatch (committed, reviewable
     # populations for CI); the four bounds after it are advanced tuning an
     # ordinary developer should never need to see.
@@ -97,7 +121,8 @@ module Karst
       @principal_populations = {}
       @configured_principal_sources = nil
       %i[@principals @assume_identity @clear_identity @principal_label
-         @assume_browser_identity @clear_browser_identity].each { |hook| instance_variable_set(hook, nil) }
+         @assume_browser_identity @clear_browser_identity
+         @observe_identity].each { |hook| instance_variable_set(hook, nil) }
     end
 
     # An application-authored hint about meaningful candidate populations for

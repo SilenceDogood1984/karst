@@ -3,6 +3,8 @@
 require_relative "value"
 require_relative "identity/devise_support"
 require_relative "identity/warden_adapter"
+require_relative "identity/observation"
+require_relative "identity/evidence"
 require_relative "access/selected_principal_sources"
 
 module Karst
@@ -28,6 +30,24 @@ module Karst
     # useful without broadening JSON/MCP disclosure.
     PrincipalDescriptor = Value.define(:model_name, :id, :display_label, :authentication_key,
                                        :authentication_identifier)
+
+    # A deliberate request to execute with no authenticated principal at all,
+    # passed wherever a principal is passed (see Access::Sweep). It is not a
+    # principal and is never described, sampled, resolved, or assumed: it
+    # means "establish no identity, and prove at runtime that the application
+    # saw none", which is a probe in its own right rather than the absence of
+    # one.
+    class AnonymousIdentity
+      def to_s
+        "anonymous"
+      end
+
+      def inspect
+        "Karst::Identity::ANONYMOUS"
+      end
+    end
+
+    ANONYMOUS = AnonymousIdentity.new.freeze
 
     # Compact, inspectable report of why Karst's zero-config Devise/Warden
     # path is or isn't active. `status` is one of:
@@ -113,8 +133,26 @@ module Karst
         active_adapter.clear(session) if active_adapter && assumed
       end
 
-      def clear(session)
-        adapter.clear(session)
+      # The establishment half of #with on its own, for callers that must
+      # keep running -- and observing -- a request whose identity setup
+      # failed (see Access::IdentityProbe). Every such caller owes #clear in
+      # its own ensure.
+      def assume(session, principal)
+        adapter(principal).assume(session, principal)
+      end
+
+      # `principal:` is the identity being cleared, when the caller still has
+      # it: the automatic Devise/Warden path resolves a scope straight from
+      # the principal's own class, and only has to fall back to guessing one
+      # from the effective principal source (which several selected Devise
+      # models make impossible) when nothing is passed. Callers that assumed
+      # an identity should always pass the same principal back here.
+      def clear(session, principal: nil)
+        adapter(principal).clear(session)
+      end
+
+      def anonymous?(principal)
+        principal.equal?(ANONYMOUS)
       end
 
       def describe(principal)
@@ -464,7 +502,7 @@ module Karst
       end
 
       def model_name_for_klass(klass)
-        klass.respond_to?(:model_name) ? klass.model_name.name.to_s : klass.name.to_s
+        Naming.model_name_for(klass)
       end
 
       def id_for(principal)

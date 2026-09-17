@@ -295,7 +295,7 @@ RSpec.describe "multi-Devise golden path, real gems, no Karst configuration" do
       document = cli_evidence("/karst_multi_secrets/1")
 
       expect(document[:verified_usable]).to be(true)
-      expect(document[:verified_principal][:model]).to eq("KarstMultiUser")
+      expect(document[:verified_identity][:requested][:model]).to eq("KarstMultiUser")
       expect(document[:sample][:users_tested]).to eq(3)
     end
 
@@ -306,7 +306,7 @@ RSpec.describe "multi-Devise golden path, real gems, no Karst configuration" do
       document = cli_evidence("/karst_multi_admin_secrets/1")
 
       expect(document[:verified_usable]).to be(true)
-      expect(document[:verified_principal][:model]).to eq("KarstMultiAdmin")
+      expect(document[:verified_identity][:requested][:model]).to eq("KarstMultiAdmin")
     end
 
     it "bounds a multi-source search to the same global access_sweep_limit when both are selected" do
@@ -318,8 +318,13 @@ RSpec.describe "multi-Devise golden path, real gems, no Karst configuration" do
       document = cli_evidence("/karst_multi_admin_secrets/1")
 
       expect(document[:sample][:users_tested]).to eq(5)
-      tested_models = document[:sample][:outcomes].flat_map { |o| o[:principals] }.map { |p| p[:model] }.uniq
-      expect(tested_models).to contain_exactly("KarstMultiUser", "KarstMultiAdmin")
+      identities = document[:sample][:outcomes].flat_map { |outcome| outcome[:identities] }
+      expect(identities.map { |identity| identity[:requested][:model] }.uniq)
+        .to contain_exactly("KarstMultiUser", "KarstMultiAdmin")
+      # Each Devise scope's own probe observed its own principal: two
+      # selected models never cross-authenticate.
+      expect(identities.map { |identity| identity[:observed] })
+        .to eq(identities.map { |identity| identity[:requested].slice(:model, :id) })
     end
 
     it "finds an admin only reachable through an approved candidate population, for the selected model" do
@@ -335,8 +340,10 @@ RSpec.describe "multi-Devise golden path, real gems, no Karst configuration" do
       document = cli_evidence("/karst_multi_super_secrets/#{rare_admin.id}")
 
       expect(document[:source]).to eq(type: :population, name: :super_admins)
-      expect(document[:verified_principal]).to eq(model: "KarstMultiAdmin", id: rare_admin.id,
-                                                  label: "KarstMultiAdmin ##{rare_admin.id}")
+      expect(document[:verified_identity]).to include(
+        requested: { model: "KarstMultiAdmin", id: rare_admin.id, label: "KarstMultiAdmin ##{rare_admin.id}" },
+        observed: { model: "KarstMultiAdmin", id: rare_admin.id }, confirmation: "confirmed"
+      )
     ensure
       Karst.config.access_sweep_limit = 25
     end
@@ -348,7 +355,7 @@ RSpec.describe "multi-Devise golden path, real gems, no Karst configuration" do
       document = cli_evidence("/karst_multi_secrets/1")
 
       expect(JSON.generate(document)).not_to include("should-not-leak@example.com")
-      expect(document[:verified_principal][:label]).to eq("KarstMultiUser ##{reachable.id}")
+      expect(document[:verified_identity][:requested][:label]).to eq("KarstMultiUser ##{reachable.id}")
     end
   end
 end

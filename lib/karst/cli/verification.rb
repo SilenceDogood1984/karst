@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "json"
+require "time"
 require_relative "../../karst"
 
 module Karst
@@ -12,13 +13,28 @@ module Karst
     # place, keeping the versioned contract auditable.
     # rubocop:disable Metrics/ClassLength, Metrics/MethodLength, Metrics/AbcSize
     class Verification
-      SCHEMA_VERSION = 1
+      # 2 (was 1): every principal field is now explicitly either a
+      # *requested* identity (what Karst was asked to run as) or an
+      # *observed* one (what the application itself resolved at runtime),
+      # and each outcome carries an `identity` document saying whether the
+      # two agree. The ambiguous v1 `principal`/`verified_principal` keys are
+      # gone rather than renamed in place: a consumer reading "principal" and
+      # believing it described the request that actually ran is precisely the
+      # false attribution this schema exists to make impossible.
+      SCHEMA_VERSION = 2
 
-      def initialize(path:, http_method: "GET", output: $stdout, json: false)
+      # A deliberate identity-free probe: no principal is established, and
+      # the application is expected to resolve none. Requires no principal
+      # source at all, so a route can be probed anonymously in an application
+      # Karst could not otherwise test.
+      ANONYMOUS = :anonymous
+
+      def initialize(path:, http_method: "GET", output: $stdout, json: false, identity: nil)
         @path = path
         @http_method = http_method
         @output = output
         @json = json
+        @identity = normalize_identity(identity)
       end
 
       def call
@@ -44,9 +60,31 @@ module Karst
 
       private
 
+      def normalize_identity(value)
+        return nil if value.nil?
+        return ANONYMOUS if value.to_s == ANONYMOUS.to_s
+
+        raise ArgumentError, "identity must be \"anonymous\" when given"
+      end
+
+      def anonymous?
+        @identity == ANONYMOUS
+      end
+
       def run_search
+        return anonymous_search if anonymous?
+
         validate_setup!
         Access::Search.new(path: @path, http_method: @http_method, sources: Identity.principal_sources).call
+      end
+
+      # One request, no principal source consulted and none required: the
+      # whole point is that nothing is authenticated. Reuses Search::Result so
+      # every adapter below stays identical for both probe kinds.
+      def anonymous_search
+        sweep = Access::Sweep.new(path: @path, http_method: @http_method,
+                                  principals: [Identity::ANONYMOUS], limit: 1).call
+        Access::Search::Result.new(initial: sweep, attempts: [].freeze)
       end
 
       def validate_setup!
@@ -62,13 +100,30 @@ module Karst
         {
           schema_version: SCHEMA_VERSION,
           request: { method: result.http_method, path: result.path },
+          probe: { identity: anonymous? ? "anonymous" : "application_identities" },
+          provenance: provenance,
           verified_usable: !winner.nil?,
-          verified_principal: winner && principal(winner.principal),
-          verified_outcome: winner && outcome(winner, include_principal: false),
+          verified_identity: winner && identity(winner.identity),
+          verified_outcome: winner && outcome(winner),
           source: result.verified_source,
           sample: sweep(result.initial),
           populations: result.attempts.map { |attempt| population(attempt) },
           summary: { request_count: result.request_count, elapsed_ms: result.elapsed_ms }
+        }
+      end
+
+      # What execution produced these observations. Deliberately cheap and
+      # certain: versions, environment, and when the probe ran. It does not
+      # yet carry an application source digest/commit -- a consumer that must
+      # know the evidence still matches the code it is reasoning about needs
+      # freshness machinery this adapter does not own.
+      def provenance
+        {
+          karst_version: Karst::VERSION,
+          rails_version: defined?(Rails::VERSION::STRING) ? Rails::VERSION::STRING : nil,
+          rails_env: defined?(Rails) && Rails.respond_to?(:env) ? Rails.env.to_s : nil,
+          ruby_version: RUBY_VERSION,
+          observed_at: Time.now.utc.iso8601
         }
       end
 
@@ -90,21 +145,46 @@ module Karst
         data.merge(users_tested: attempt.result.outcomes.size, outcomes: grouped_outcomes(attempt.result.outcomes))
       end
 
+      # Outcomes that observed the same thing are reported once, with every
+      # probe's own identity evidence listed under it -- so "three requests
+      # halted at authorize_admin" never flattens into one claim about who
+      # made them.
       def grouped_outcomes(outcomes)
-        outcomes.group_by { |item| outcome(item, include_principal: false) }.map do |evidence, items|
-          evidence.merge(count: items.size, principals: items.map { |item| principal(item.principal) })
+        outcomes.group_by { |item| outcome(item) }.map do |evidence, items|
+          evidence.merge(count: items.size, identities: items.map { |item| identity(item.identity) })
         end
       end
 
-      def outcome(item, include_principal: true)
-        data = {
+      def outcome(item)
+        {
           status: item.status, redirect: item.redirect, exception_class: item.exception_class,
           halted_callback: item.halted_callback&.to_s, writes_observed: item.writes_observed,
           write_count: item.write_count, database_rollback_attempted: item.database_rollback_attempted,
-          elapsed_ms: item.elapsed_ms
+          elapsed_ms: item.elapsed_ms, controller: item.controller, action: item.action
         }
-        data[:principal] = principal(item.principal) if include_principal
-        data
+      end
+
+      # The whole point of this schema version. `requested` is intent,
+      # `observed` is what the application resolved while running the
+      # request, and `confirmation` is the only field that says whether a
+      # principal claim about this request is true. Anything other than
+      # "confirmed"/"confirmed_anonymous" means it is not.
+      def identity(evidence)
+        return nil unless evidence
+
+        {
+          requested: evidence.requested && principal(evidence.requested),
+          observed: evidence.observed && { model: evidence.observed.model_name.to_s,
+                                           id: primitive_id(evidence.observed.id) },
+          confirmation: evidence.confirmation.to_s,
+          observed_at: evidence.observed_at&.to_s,
+          observation_source: evidence.observation_source&.to_s,
+          observation_error: evidence.observation_error,
+          establishment: evidence.establishment&.to_s,
+          establishment_error: evidence.establishment_error,
+          cleanup_error: evidence.cleanup_error,
+          changed_during_request: evidence.changed_during_request
+        }
       end
 
       def principal(value)
@@ -130,9 +210,11 @@ module Karst
       end
 
       def human(result)
-        lines = ["Karst verification", "", "#{result.http_method} #{result.path}", "", "Sample",
-                 "  #{result.initial.outcomes.size} users tested",
-                 "  #{sample_usable_count(result)} verified usable"]
+        lines = ["Karst verification", "", "#{result.http_method} #{result.path}",
+                 "Probe identity: #{anonymous? ? 'anonymous' : "the application's own identities"}", "",
+                 anonymous? ? "Probe" : "Sample",
+                 "  #{result.initial.outcomes.size} #{anonymous? ? 'request' : 'users tested'}"]
+        lines << "  #{sample_usable_count(result)} verified usable" unless anonymous?
         append_key_evidence(lines, result.initial.outcomes)
         append_populations(lines, result)
         append_result(lines, result)
@@ -147,11 +229,37 @@ module Karst
         evidence = outcomes.first
         return unless evidence
 
+        append_response_evidence(lines, evidence)
+        lines << "  #{identity_line(evidence.identity)}" if evidence.identity
+        lines << "  WARNING: #{evidence.write_count} writes observed" if evidence.writes_observed
+      end
+
+      def append_response_evidence(lines, evidence)
         lines << "  status #{evidence.status}" if evidence.status
         lines << "  redirect #{evidence.redirect}" if evidence.redirect
         lines << "  halted at #{evidence.halted_callback}" if evidence.halted_callback
         lines << "  exception #{evidence.exception_class}" if evidence.exception_class
-        lines << "  WARNING: #{evidence.write_count} writes observed" if evidence.writes_observed
+      end
+
+      # Says what the application actually did with identity, never what was
+      # asked of it.
+      def identity_line(evidence)
+        case evidence.confirmation
+        when :confirmed then "observed #{observed_label(evidence)} (identity confirmed)"
+        when :confirmed_anonymous then "observed no principal (anonymous confirmed)"
+        when :absent then "requested #{requested_label(evidence)}, observed no principal (NOT confirmed)"
+        when :mismatch then "requested #{requested_label(evidence)}, observed #{observed_label(evidence)} (MISMATCH)"
+        when :contaminated then "anonymous probe observed #{observed_label(evidence)} (CONTAMINATED)"
+        else "identity unobservable: #{evidence.observation_error}"
+        end
+      end
+
+      def observed_label(evidence)
+        evidence.observed ? "#{evidence.observed.model_name} ##{evidence.observed.id}" : "no principal"
+      end
+
+      def requested_label(evidence)
+        evidence.requested ? "#{evidence.requested.model_name} ##{evidence.requested.id}" : "anonymous"
       end
 
       def append_populations(lines, result)
@@ -167,14 +275,20 @@ module Karst
 
       def append_result(lines, result)
         lines.push("", "Result")
-        if result.verified_outcome
-          lines << "  verified usable user: #{result.verified_outcome.principal.display_label}"
+        winner = result.verified_outcome
+        if winner
+          lines << "  verified usable: #{winner_label(winner)}"
+          lines << "  #{identity_line(winner.identity)}" if winner.identity
           source = result.verified_source
           lines << "  source: #{source[:type]}#{"=#{source[:name]}" if source[:name]}"
         else
-          lines << "  no verified usable user found"
+          lines << (anonymous? ? "  not usable anonymously" : "  no verified usable user found")
         end
         lines << "  #{result.request_count} requests in #{result.elapsed_ms} ms"
+      end
+
+      def winner_label(winner)
+        winner.principal ? winner.principal.display_label : "anonymous request"
       end
     end
     # rubocop:enable Metrics/ClassLength, Metrics/MethodLength, Metrics/AbcSize

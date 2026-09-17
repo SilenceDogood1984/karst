@@ -12,14 +12,19 @@ module Rails
         include Karst::Boot
 
         class_option :json, type: :boolean, default: false, desc: "Emit stable JSON evidence"
+        class_option :anonymous, type: :boolean, default: false,
+                                 desc: "Probe with no principal established, and verify the " \
+                                       "application observed none"
 
         desc "Verify bounded GET access to a local application path"
         def perform(*arguments)
           method, path = parse(arguments)
           boot_karst_application!
-          exit(::Karst::CLI::Verification.new(path: path, http_method: method, json: options[:json]).call)
+          exit(::Karst::CLI::Verification.new(path: path, http_method: method, json: options[:json],
+                                              identity: (:anonymous if options[:anonymous])).call)
         rescue ArgumentError => e
-          document = { schema_version: 1, error: { type: "input_error", message: e.message } }
+          document = { schema_version: ::Karst::CLI::Verification::SCHEMA_VERSION,
+                       error: { type: "input_error", message: e.message } }
           puts(options[:json] ? JSON.generate(document) : "Karst cannot verify this route:\n#{e.message}")
           exit(2)
         end

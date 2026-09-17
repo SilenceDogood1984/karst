@@ -5,6 +5,22 @@ All notable changes to Karst are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Runtime-confirmed identity: every probe outcome now carries an `identity` evidence object separating the *requested* identity (intent), the *established* one (setup), and the *observed* one (what the Rails application itself resolved while running the request). `identity.confirmation` fails closed — `confirmed`, `confirmed_anonymous`, `absent`, `mismatch`, `contaminated`, or `unobservable` — and only the first two are evidence about identity.
+- Anonymous probes as a first-class probe kind: `bin/rails karst:verify --anonymous`, and `verify_access(identity: "anonymous")` over MCP. Karst establishes no identity and then verifies the application really did resolve none; stale state that produces a principal anyway is reported as `contaminated`, never as anonymous. An anonymous probe requires no principal source at all.
+- `config.observe_identity`, the observation seam for non-Devise authentication. Devise/Warden applications need no configuration: Karst reads the application's own Warden proxy from the probe request.
+- Halt-time identity observation: when an access callback halts a request, Karst records the identity the application had established *at that decision*, plus `identity.observed_at` and `identity.changed_during_request`.
+- Each outcome now reports the `controller` and `action` the probed request actually dispatched to, and the evidence document carries `provenance` (Karst/Rails/Ruby versions, environment, observation timestamp).
+
+### Changed
+
+- **Evidence schema is now version 2.** The ambiguous `principal` / `verified_principal` keys are gone rather than renamed in place: a consumer reading "principal" and believing it described the request that actually ran is exactly the false attribution this schema exists to make impossible. Outcomes carry `identities` (each with `requested`, `observed`, `confirmation`), and the top level carries `verified_identity`.
+- A probe whose identity setup fails now still runs and is still observed, and reports the failure as `identity.establishment` rather than as an application exception — "asked for User #123, application saw nobody, halted at `authorize_admin`" is the evidence that matters most there.
+- Per-probe write and halted-callback observation now ignores notifications raised on other threads, so a concurrent request in a development server cannot be counted as a probe's own evidence.
+
 ## [0.2.0]
 
 ### Added

@@ -4,6 +4,7 @@ require "active_support/notifications"
 require "uri"
 require_relative "probe_application"
 require_relative "database_isolation"
+require_relative "identity_probe"
 require_relative "../identity"
 require_relative "../value"
 
@@ -20,9 +21,21 @@ module Karst
     # empty Array when the principal came from plain first-N/fill sampling
     # or was supplied directly rather than through a sampler. This is
     # sampling evidence, not an authorization claim.
+    #
+    # `principal` is the *requested* identity -- what Karst was asked to
+    # execute as, nil for a deliberate anonymous probe -- and is intent, not
+    # evidence. What the application actually resolved lives in `identity`
+    # (a Karst::Identity::Evidence), and only its #confirmation says whether
+    # the two agree. Nothing may conclude "this request ran as User#123" from
+    # `principal` alone.
+    #
+    # controller/action are the controller class name and action the request
+    # actually dispatched to, observed from the probe request's own env, or
+    # nil when it never reached a controller.
     Outcome = Value.define(:principal, :status, :redirect, :exception_class,
                            :writes_observed, :write_count, :elapsed_ms, :database_rollback_attempted,
-                           :sampling_reasons, :body_marker_observed, :halted_callback)
+                           :sampling_reasons, :body_marker_observed, :halted_callback,
+                           :identity, :controller, :action)
 
     # candidate_pool_size is nil unless the caller supplying `principals` (see
     # Access::PrincipalSampler::Result) knows it sampled from a bounded
@@ -102,50 +115,86 @@ module Karst
         source.each.lazy.take(@limit).to_a
       end
 
-      # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity
+      # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
       def probe(principal)
-        session = ActionDispatch::Integration::Session.new(@probe_application)
+        identity = IdentityProbe.new(principal)
+        session = ActionDispatch::Integration::Session.new(identity.endpoint(@probe_application))
         configure_host(session)
         started = monotonic
-        status = redirect = exception_class = nil
-        body_marker_observed = nil
-        halted_callback = nil
+        thread = Thread.current
         writes = 0
-        callback = lambda do |_name, _start, _finish, _id, payload|
-          writes += 1 if DatabaseIsolation.mutation?(payload[:sql])
+        halted_callback = nil
+        response = {}
+        # Notification subscriptions are process-wide, so both observers
+        # ignore anything raised on another thread: a concurrent request in a
+        # real development server must never be counted as this probe's own
+        # evidence.
+        write_observer = lambda do |_name, _start, _finish, _id, payload|
+          writes += 1 if thread.equal?(Thread.current) && DatabaseIsolation.mutation?(payload[:sql])
         end
         halt_observer = lambda do |_name, _start, _finish, _id, payload|
-          halted_callback = payload[:filter]
+          next unless thread.equal?(Thread.current)
+
+          halted_callback ||= payload[:filter]
+          # The identity the application had established when this access
+          # decision was made -- not after the request unwound.
+          identity.observe(:halted_callback)
         end
 
         with_rollback do
-          ActiveSupport::Notifications.subscribed(callback, "sql.active_record") do
-            Karst::Identity.with(session, principal) do
+          ActiveSupport::Notifications.subscribed(write_observer, "sql.active_record") do
+            # Never raises: a probe whose identity could not be established
+            # still runs, and reports what the application actually saw.
+            identity.establish(session)
+            begin
               ActiveSupport::Notifications.subscribed(halt_observer, "halted_callback.action_controller") do
                 session.get(@path)
               end
-              rendered_exception = request_exception(session)
-              if rendered_exception
-                exception_class = rendered_exception.class.name
-              else
-                status = session.response.status
-                if @body_includes && session.response.respond_to?(:body)
-                  body_marker_observed = session.response.body.to_s.include?(@body_includes.to_s)
-                end
-                redirect = clean_redirect(session.response.location) if status >= 300 && status < 400
-              end
+              response = observed_response(session)
+            ensure
+              # Strictly before release: clearing the identity is exactly what
+              # would make a completed request look anonymous.
+              identity.observe(:request_completion)
+              identity.release(session)
             end
           end
         rescue StandardError => e
-          exception_class = e.class.name
+          response = { exception_class: e.class.name }
         end
-        Outcome.new(principal: Karst::Identity.describe(principal), status: status, redirect: redirect,
-                    exception_class: exception_class, writes_observed: writes.positive?, write_count: writes,
-                    elapsed_ms: elapsed(started), database_rollback_attempted: true,
-                    sampling_reasons: (@sampling_reasons[principal] || []).freeze,
-                    body_marker_observed: body_marker_observed, halted_callback: halted_callback)
+
+        build_outcome(principal: principal, identity: identity,
+                      observed: response.merge(halted_callback: halted_callback, writes: writes),
+                      started: started)
       end
-      # rubocop:enable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity
+      # rubocop:enable Metrics/AbcSize, Metrics/MethodLength
+
+      def observed_response(session)
+        rendered_exception = request_exception(session)
+        return { exception_class: rendered_exception.class.name } if rendered_exception
+
+        status = session.response.status
+        response = { status: status, body_marker_observed: body_marker(session) }
+        response[:redirect] = clean_redirect(session.response.location) if status >= 300 && status < 400
+        response
+      end
+
+      def body_marker(session)
+        return nil unless @body_includes && session.response.respond_to?(:body)
+
+        session.response.body.to_s.include?(@body_includes.to_s)
+      end
+
+      def build_outcome(principal:, identity:, observed:, started:)
+        controller, action = identity.dispatched
+        writes = observed[:writes]
+        Outcome.new(principal: identity.requested, status: observed[:status], redirect: observed[:redirect],
+                    exception_class: observed[:exception_class], writes_observed: writes.positive?,
+                    write_count: writes, elapsed_ms: elapsed(started), database_rollback_attempted: true,
+                    sampling_reasons: (@sampling_reasons[principal] || []).freeze,
+                    body_marker_observed: observed[:body_marker_observed],
+                    halted_callback: observed[:halted_callback],
+                    identity: identity.evidence, controller: controller, action: action)
+      end
 
       def with_rollback
         raise Unavailable, "Active Record rollback isolation is unavailable" unless defined?(ActiveRecord::Base)
