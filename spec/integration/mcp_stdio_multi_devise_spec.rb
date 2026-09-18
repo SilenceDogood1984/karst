@@ -86,7 +86,7 @@ RSpec.describe "Karst MCP server over real stdio, real multi-Devise host" do
     document = JSON.parse(frame.dig("result", "content", 0, "text"))
 
     expect(document["verified_usable"]).to be(true)
-    expect(document.dig("verified_principal", "model")).to eq("KarstMultiUser")
+    expect(document.dig("verified_identity", "requested", "model")).to eq("KarstMultiUser")
   end
 
   it "honors an approved candidate population for the selected Admin model" do
@@ -115,7 +115,7 @@ RSpec.describe "Karst MCP server over real stdio, real multi-Devise host" do
     expect(document["verified_usable"]).to be(true)
     expect(document.dig("source", "type")).to eq("population")
     expect(document.dig("source", "name")).to eq("super_admins")
-    expect(document.dig("verified_principal", "model")).to eq("KarstMultiAdmin")
+    expect(document.dig("verified_identity", "requested", "model")).to eq("KarstMultiAdmin")
   end
 
   it "keeps both selected sources independently queryable and leaks no Warden identity between " \
@@ -139,9 +139,9 @@ RSpec.describe "Karst MCP server over real stdio, real multi-Devise host" do
     admin_document = JSON.parse(frames.find { |f| f["id"] == 3 }.dig("result", "content", 0, "text"))
 
     expect(user_document["verified_usable"]).to be(true)
-    expect(user_document.dig("verified_principal", "model")).to eq("KarstMultiUser")
+    expect(user_document.dig("verified_identity", "requested", "model")).to eq("KarstMultiUser")
     expect(admin_document["verified_usable"]).to be(true)
-    expect(admin_document.dig("verified_principal", "model")).to eq("KarstMultiAdmin")
+    expect(admin_document.dig("verified_identity", "requested", "model")).to eq("KarstMultiAdmin")
   end
 end
 # rubocop:enable Metrics/BlockLength

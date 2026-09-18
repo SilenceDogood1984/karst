@@ -19,12 +19,14 @@ RSpec.describe Karst::Mcp::VerifyAccessTool do
     schema = described_class.input_schema.to_h
 
     expect(schema[:required]).to eq(["path"])
-    expect(schema[:properties].keys).to contain_exactly(:path, :method)
+    expect(schema[:properties].keys).to contain_exactly(:path, :method, :identity)
     expect(schema[:properties][:method][:default]).to eq("GET")
   end
 
-  it "exposes no argument beyond path/method -- no principal, population, or limit override" do
-    expect(described_class.input_schema.to_h[:properties].keys).to eq(%i[path method])
+  it "exposes no argument beyond path/method/identity -- no principal, population, or limit override" do
+    expect(described_class.input_schema.to_h[:properties].keys).to eq(%i[path method identity])
+    expect(described_class.input_schema.to_h[:properties][:identity][:enum])
+      .to eq(%w[application_identities anonymous])
   end
 
   it "delegates to Karst::CLI::Verification with the given path and method" do
@@ -32,7 +34,26 @@ RSpec.describe Karst::Mcp::VerifyAccessTool do
 
     described_class.call(path: "/admin/imports/123", method: "GET")
 
-    expect(Karst::CLI::Verification).to have_received(:new).with(path: "/admin/imports/123", http_method: "GET")
+    expect(Karst::CLI::Verification).to have_received(:new).with(path: "/admin/imports/123", http_method: "GET",
+                                                                 identity: nil)
+  end
+
+  it "requests a genuinely anonymous probe when the caller asks for one" do
+    stub_evidence({ schema_version: 2, verified_usable: false })
+
+    described_class.call(path: "/users", identity: "anonymous")
+
+    expect(Karst::CLI::Verification).to have_received(:new).with(path: "/users", http_method: "GET",
+                                                                 identity: "anonymous")
+  end
+
+  it "treats the documented application_identities default as the ordinary search, not an error" do
+    stub_evidence({ schema_version: 2, verified_usable: false })
+
+    described_class.call(path: "/users", identity: "application_identities")
+
+    expect(Karst::CLI::Verification).to have_received(:new).with(path: "/users", http_method: "GET",
+                                                                 identity: nil)
   end
 
   it "defaults method to GET when the caller omits it" do
@@ -40,7 +61,8 @@ RSpec.describe Karst::Mcp::VerifyAccessTool do
 
     described_class.call(path: "/admin/imports/123")
 
-    expect(Karst::CLI::Verification).to have_received(:new).with(path: "/admin/imports/123", http_method: "GET")
+    expect(Karst::CLI::Verification).to have_received(:new).with(path: "/admin/imports/123", http_method: "GET",
+                                                                 identity: nil)
   end
 
   it "returns the evidence document unchanged as JSON text content, not a separate result model" do

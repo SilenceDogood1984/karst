@@ -13,11 +13,24 @@ RSpec.describe Karst::CLI::Verification do
   SearchResult = Karst::Access::Search::Result
   Attempt = Karst::Access::Search::PopulationAttempt
 
-  def outcome(status: 200, callback: nil, redirect: nil, exception: nil, writes: 0)
-    Outcome.new(principal: Descriptor.new(model_name: "User", id: 27, display_label: "User #27"),
+  # rubocop:disable Metrics/ParameterLists
+  def outcome(status: 200, callback: nil, redirect: nil, exception: nil, writes: 0, confirmation: :confirmed)
+    requested = Descriptor.new(model_name: "User", id: 27, display_label: "User #27")
+    Outcome.new(principal: requested,
                 status: status, redirect: redirect, exception_class: exception, writes_observed: writes.positive?,
                 write_count: writes, elapsed_ms: 2.5, database_rollback_attempted: true,
-                sampling_reasons: [].freeze, body_marker_observed: nil, halted_callback: callback)
+                sampling_reasons: [].freeze, body_marker_observed: nil, halted_callback: callback,
+                identity: identity_evidence(requested, confirmation), controller: "ImportsController",
+                action: "index")
+  end
+  # rubocop:enable Metrics/ParameterLists
+
+  def identity_evidence(requested, confirmation)
+    observed = (Karst::Identity::ObservedPrincipal.new(model_name: "User", id: 27) if confirmation == :confirmed)
+    Karst::Identity::Evidence.new(requested: requested, observed: observed, confirmation: confirmation,
+                                  observed_at: :request_completion, observation_source: :configured,
+                                  observation_error: nil, establishment: :established, establishment_error: nil,
+                                  cleanup_error: nil, changed_during_request: false)
   end
 
   def sweep(outcomes)
@@ -43,8 +56,12 @@ RSpec.describe Karst::CLI::Verification do
     document = JSON.parse(text)
 
     expect(code).to eq(0)
-    expect(document).to include("schema_version" => 1, "verified_usable" => true, "populations" => [])
-    expect(document.dig("verified_principal", "label")).to eq("User #27")
+    expect(document).to include("schema_version" => 2, "verified_usable" => true, "populations" => [])
+    expect(document.dig("verified_identity", "requested", "label")).to eq("User #27")
+    expect(document.dig("verified_identity", "observed")).to eq("model" => "User", "id" => 27)
+    expect(document.dig("verified_identity", "confirmation")).to eq("confirmed")
+    expect(document.dig("probe", "identity")).to eq("application_identities")
+    expect(document["provenance"]).to include("karst_version" => Karst::VERSION)
     expect(text).not_to include("secret")
   end
 
@@ -55,10 +72,11 @@ RSpec.describe Karst::CLI::Verification do
                               authentication_identifier: "user@example.com")
     attributes = outcome.to_h
     attributes[:principal] = inferred
+    attributes[:identity] = identity_evidence(inferred, :confirmed)
     item = Outcome.new(**attributes)
     _code, text = run(SearchResult.new(initial: sweep([item]), attempts: []))
 
-    expect(JSON.parse(text).dig("verified_principal", "label")).to eq("User #27")
+    expect(JSON.parse(text).dig("verified_identity", "requested", "label")).to eq("User #27")
     expect(text).not_to include("user@example.com")
   end
 
@@ -104,7 +122,7 @@ RSpec.describe Karst::CLI::Verification do
 
     expect(code).to eq(2)
     expect(JSON.parse(output.string)).to eq(
-      "schema_version" => 1, "error" => { "type" => "input_error", "message" => "local paths only" }
+      "schema_version" => 2, "error" => { "type" => "input_error", "message" => "local paths only" }
     )
   end
 
@@ -112,8 +130,70 @@ RSpec.describe Karst::CLI::Verification do
     code, text = run(SearchResult.new(initial: sweep([outcome]), attempts: []), json: false)
 
     expect(code).to eq(0)
-    expect(text).to include("Karst verification", "verified usable user: User #27", "1 requests")
+    expect(text).to include("Karst verification", "verified usable: User #27",
+                            "observed User #27 (identity confirmed)", "1 requests")
     expect { JSON.parse(text) }.to raise_error(JSON::ParserError)
+  end
+
+  describe "anonymous probes" do
+    def anonymous_run(outcomes, json: true)
+      output = StringIO.new
+      sweep_result = sweep(outcomes)
+      probe = instance_double(Karst::Access::Sweep, call: sweep_result)
+      allow(Karst::Access::Sweep).to receive(:new).and_return(probe)
+      code = described_class.new(path: "/admin/imports", output: output, json: json, identity: "anonymous").call
+      [code, output.string]
+    end
+
+    def anonymous_outcome(status: 302, callback: :authorize_admin)
+      attributes = outcome(status: status, callback: callback).to_h
+      attributes[:principal] = nil
+      attributes[:identity] = Karst::Identity::Evidence.new(
+        requested: nil, observed: nil, confirmation: :confirmed_anonymous, observed_at: :halted_callback,
+        observation_source: :warden, observation_error: nil, establishment: :cleared, establishment_error: nil,
+        cleanup_error: nil, changed_during_request: false
+      )
+      Outcome.new(**attributes)
+    end
+
+    it "runs without consulting a principal source at all" do
+      allow(Karst::Identity).to receive(:setup_state)
+        .and_return(Karst::Identity::SetupState.new(status: :unavailable, message: "nothing configured"))
+
+      code, text = anonymous_run([anonymous_outcome])
+      document = JSON.parse(text)
+
+      expect(code).to eq(1)
+      expect(document.dig("probe", "identity")).to eq("anonymous")
+      expect(document.dig("sample", "outcomes", 0, "identities", 0))
+        .to include("requested" => nil, "observed" => nil, "confirmation" => "confirmed_anonymous")
+    end
+
+    it "says what the application observed, not what was asked of it, in human output" do
+      _code, text = anonymous_run([anonymous_outcome], json: false)
+
+      expect(text).to include("Probe identity: anonymous",
+                              "observed no principal (anonymous confirmed)",
+                              "halted at authorize_admin", "not usable anonymously")
+    end
+
+    it "reports a contaminated anonymous probe as unusable evidence, never as anonymous" do
+      contaminated = anonymous_outcome(status: 200, callback: nil).to_h
+      contaminated[:identity] = Karst::Identity::Evidence.new(
+        requested: nil, observed: Karst::Identity::ObservedPrincipal.new(model_name: "User", id: 27),
+        confirmation: :contaminated, observed_at: :request_completion, observation_source: :warden,
+        observation_error: nil, establishment: :cleared, establishment_error: nil, cleanup_error: nil,
+        changed_during_request: false
+      )
+      _code, text = anonymous_run([Outcome.new(**contaminated)], json: false)
+
+      expect(text).to include("anonymous probe observed User #27 (CONTAMINATED)")
+    end
+
+    it "rejects an identity it does not implement rather than quietly running the ordinary search" do
+      expect { described_class.new(path: "/x", identity: "root") }
+        .to raise_error(ArgumentError, /anonymous/)
+    end
   end
 
   describe "#evidence" do
@@ -140,7 +220,7 @@ RSpec.describe Karst::CLI::Verification do
       allow(Karst::Access::Search).to receive(:new).and_raise(Karst::Access::UnsafeTarget, "local paths only")
 
       expect(evidence).to eq(
-        schema_version: 1, error: { type: "input_error", message: "local paths only" }
+        schema_version: 2, error: { type: "input_error", message: "local paths only" }
       )
     end
 
@@ -152,7 +232,7 @@ RSpec.describe Karst::CLI::Verification do
       document = described_class.new(path: "/admin/imports").evidence
 
       expect(document).to eq(
-        schema_version: 1, error: { type: "configuration_error", message: "no principal source is configured" }
+        schema_version: 2, error: { type: "configuration_error", message: "no principal source is configured" }
       )
     end
   end

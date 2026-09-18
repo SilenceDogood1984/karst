@@ -138,7 +138,7 @@ RSpec.describe "Karst MCP server over real stdio" do
     document = JSON.parse(call_response.dig("result", "content", 0, "text"))
 
     expect(status).to be_success
-    expect(document).to include("schema_version" => 1, "verified_usable" => true)
+    expect(document).to include("schema_version" => 2, "verified_usable" => true)
     expect(document.dig("verified_outcome", "status")).to eq(200)
   end
 
@@ -182,7 +182,7 @@ RSpec.describe "Karst MCP server over real stdio" do
 
     expect(tools.map { |tool| tool["name"] }).to eq(["verify_access"])
     schema_properties = tools.first.dig("inputSchema", "properties").keys
-    expect(schema_properties).to contain_exactly("path", "method")
+    expect(schema_properties).to contain_exactly("path", "method", "identity")
   end
 
   it "fails safely on an external URL instead of probing it, reporting a structured error rather than " \

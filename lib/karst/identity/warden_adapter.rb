@@ -49,6 +49,16 @@ module Karst
           defined?(Warden::Manager) && Warden::Manager.respond_to?(:on_request)
         end
 
+        # Drops any principal this thread queued but never consumed -- the
+        # exact state an anonymous probe must not inherit (see
+        # Access::IdentityProbe). A queued principal survives only until the
+        # next Warden request on this thread, so a probe whose request never
+        # reached Warden (construction failure, an exception before dispatch)
+        # would otherwise leave one behind for whichever probe ran next.
+        def discard_pending!
+          Karst::ExecutionContext.delete(PENDING_PRINCIPAL_KEY)
+        end
+
         def install_hook!
           return if @installed
 

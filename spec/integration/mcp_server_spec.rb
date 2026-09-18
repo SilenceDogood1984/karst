@@ -89,11 +89,19 @@ RSpec.describe "Karst MCP server, end to end against a real Rails application" d
       request.session[:karst_mcp_principal_id] = principal.id
     }
     Karst.config.clear_browser_identity = ->(request) { request.session.delete(:karst_mcp_principal_id) }
+    # The application's own runtime session for the request that just ran --
+    # not what Karst asked for. Without this seam (a non-Devise application
+    # that has not configured one) identity would be reported as
+    # unobservable, which is the fail-closed default.
+    Karst.config.observe_identity = lambda do |context|
+      KarstMcpPrincipal.find_by(id: context.request.session[:karst_mcp_principal_id])
+    end
   end
 
   after do
     Karst.config.principals = nil
     Karst.config.principal_populations = nil
+    Karst.config.observe_identity = nil
     Karst.config.access_sweep_limit = 25
   end
 
@@ -121,9 +129,10 @@ RSpec.describe "Karst MCP server, end to end against a real Rails application" d
     document, error = call_tool(path: "/mcp_documents/1")
 
     expect(error).to be(false)
-    expect(document).to include("verified_usable" => true, "schema_version" => 1)
+    expect(document).to include("verified_usable" => true, "schema_version" => 2)
     expect(document.dig("verified_outcome", "status")).to eq(200)
-    expect(document.dig("verified_principal", "id")).to eq(ok.id)
+    expect(document.dig("verified_identity", "observed", "id")).to eq(ok.id)
+    expect(document.dig("verified_identity", "confirmation")).to eq("confirmed")
     expect(document["source"]).to eq("type" => "sample", "name" => nil)
   end
 
@@ -146,7 +155,7 @@ RSpec.describe "Karst MCP server, end to end against a real Rails application" d
     document, = call_tool(path: "/mcp_documents/1")
 
     expect(document["verified_usable"]).to be(true)
-    expect(document.dig("verified_principal", "id")).to eq(working.id)
+    expect(document.dig("verified_identity", "observed", "id")).to eq(working.id)
     expect(document["source"]).to eq("type" => "population", "name" => "workers")
     expect(document["populations"]).to contain_exactly(include("name" => "workers", "state" => "usable"))
   end
@@ -160,7 +169,7 @@ RSpec.describe "Karst MCP server, end to end against a real Rails application" d
     expect(error).to be(false)
     expect(document["verified_usable"]).to be(false)
     expect(document["verified_outcome"]).to be_nil
-    expect(document["verified_principal"]).to be_nil
+    expect(document["verified_identity"]).to be_nil
   end
 
   it "keeps a 204 status with a halted callback non-usable, matching the configured usable policy" do
@@ -182,7 +191,7 @@ RSpec.describe "Karst MCP server, end to end against a real Rails application" d
 
     expect(error).to be(true)
     expect(document).to eq(
-      "schema_version" => 1,
+      "schema_version" => 2,
       "error" => { "type" => "input_error", "message" => "target must be a local application path" }
     )
   end
@@ -234,8 +243,13 @@ RSpec.describe "Karst MCP server, end to end against a real Rails application" d
     expect(second_document["verified_usable"]).to be(true)
 
     third_document, = call_tool(path: "/mcp_documents/1")
-    tested_ids = third_document.dig("sample", "outcomes").flat_map { |o| o["principals"] }.map { |p| p["id"] }
-    expect(tested_ids).to include(denied_only.id)
+    tested = third_document.dig("sample", "outcomes").flat_map { |outcome| outcome["identities"] }
+    expect(tested.map { |identity| identity.dig("requested", "id") }).to include(denied_only.id)
+    # Every probe observed exactly the identity it requested: no identity
+    # from an earlier tool call survived into this one.
+    expect(tested.map { |identity| identity["confirmation"] }).to all(eq("confirmed"))
+    expect(tested.map { |identity| identity.dig("observed", "id") })
+      .to eq(tested.map { |identity| identity.dig("requested", "id") })
   end
 
   it "preserves write and rollback-isolation evidence for a mutating request" do
@@ -283,7 +297,7 @@ RSpec.describe "Karst MCP server, end to end against a real Rails application" d
 
       expect(Karst.config.principal_populations).to eq({})
       expect(document["verified_usable"]).to be(true)
-      expect(document.dig("verified_principal", "id")).to eq(working.id)
+      expect(document.dig("verified_identity", "observed", "id")).to eq(working.id)
       expect(document["source"]).to eq("type" => "population", "name" => "workers")
     end
 
@@ -389,7 +403,7 @@ RSpec.describe "Karst MCP server, end to end against a real Rails application" d
 
       expect(error).to be(false)
       expect(document["verified_usable"]).to be(true)
-      expect(document.dig("verified_principal", "id")).to eq(working.id)
+      expect(document.dig("verified_identity", "observed", "id")).to eq(working.id)
     end
 
     it "verifies through MCP once only the second model is selected" do
@@ -400,8 +414,8 @@ RSpec.describe "Karst MCP server, end to end against a real Rails application" d
 
       expect(error).to be(false)
       expect(document["verified_usable"]).to be(true)
-      expect(document.dig("verified_principal", "id")).to eq(working.id)
-      expect(document.dig("verified_principal", "model")).to eq("KarstMcpSecondaryPrincipal")
+      expect(document.dig("verified_identity", "observed", "id")).to eq(working.id)
+      expect(document.dig("verified_identity", "requested", "model")).to eq("KarstMcpSecondaryPrincipal")
     end
 
     it "keeps both selected models as independent sources, with no Ruby configuration at all" do
@@ -445,8 +459,8 @@ RSpec.describe "Karst MCP server, end to end against a real Rails application" d
       document, = call_tool(path: "/mcp_documents/1")
 
       expect(document["verified_usable"]).to be(true)
-      expect(document.dig("verified_principal", "id")).to eq(working.id)
-      expect(document.dig("verified_principal", "model")).to eq("KarstMcpSecondaryPrincipal")
+      expect(document.dig("verified_identity", "observed", "id")).to eq(working.id)
+      expect(document.dig("verified_identity", "requested", "model")).to eq("KarstMcpSecondaryPrincipal")
     end
   end
 

@@ -154,6 +154,23 @@ RSpec.describe Karst::Identity do
     expect(session.principal).to be_nil
   end
 
+  # Several Devise models make "which scope is this?" unanswerable without a
+  # principal in hand, so a caller that assumed an identity must be able to
+  # hand the same one back when clearing it (see Access::IdentityProbe).
+  it "resolves the Warden scope to clear from the principal being cleared, not from the effective source" do
+    stub_const("Warden::Manager", Class.new)
+    stub_const("Devise", Module.new)
+    mapping = Struct.new(:to, :name)
+    allow(Devise).to receive(:mappings).and_return(
+      admin: mapping.new(KarstIdentitySpecPrincipal, :admin), user: mapping.new(Struct.new(:id), :user)
+    )
+    proxy = instance_double("Warden proxy", set_user: nil, logout: nil)
+
+    described_class.clear({ "warden" => proxy }, principal: KarstIdentitySpecPrincipal.new(3))
+
+    expect(proxy).to have_received(:logout).with(:admin)
+  end
+
   it "fails loudly when configured hooks are incomplete" do
     Karst.config.assume_identity = ->(_session, _principal) {}
 

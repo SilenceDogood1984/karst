@@ -14,7 +14,7 @@ Karst to read. Guessing from column names (`password_digest`), class names
 be exactly the kind of heuristic inference Karst deliberately never does for
 custom authentication (see [Custom or non-Devise
 authentication](advanced-configuration.md#custom-or-non-devise-authentication)).
-So this is a small, explicit recipe instead of a one-liner — five short
+So this is a small, explicit recipe instead of a one-liner — six short
 `Karst.configure` blocks below cover the whole thing, using this
 application's own generated `User`, `Session`, and `Authentication`
 concern exactly as the generator created them. Nothing here monkey-patches
@@ -99,7 +99,27 @@ observed" note](#note-database-writes-observed-is-honest-not-zero) below
 for the one visible side effect of this being a *real* database write,
 even though it never persists.
 
-## 4. Browser Test As
+## 4. Runtime-confirmed identity
+
+Karst reports which principal the *application* resolved, not the one it was
+asked to run as. The generated `Authentication` concern resolves exactly that
+into `Current.user`, so the whole observation is one line:
+
+```ruby
+Karst.configure do |config|
+  config.observe_identity = ->(_context) { Current.user }
+end
+```
+
+`Current` is request-local and reset by Rails' own executor between requests,
+so reading it after the probe request is reading that request's own resolved
+identity. A probe whose identity the application never established is then
+reported as `absent` rather than as the requested user having reached the
+route; an anonymous probe (`bin/rails karst:verify --anonymous`) is confirmed
+anonymous only when `Current.user` really was nil. See [Runtime-confirmed
+identity](advanced-configuration.md#runtime-confirmed-identity).
+
+## 5. Browser Test As
 
 Test As mutates the developer's real browser session directly, not through
 a sub-request — so it sets the same signed cookie
@@ -125,7 +145,7 @@ sits above Karst's middleware in the stack, the `Set-Cookie` header this
 produces is flushed on the way back out exactly like it would be for a real
 controller action.
 
-## 5. Stop Testing As
+## 6. Stop Testing As
 
 ```ruby
 Karst.configure do |config|
@@ -137,7 +157,7 @@ Karst.configure do |config|
 end
 ```
 
-This is the whole recipe. There is no sixth step, and nothing above reaches
+This is the whole recipe. There is no seventh step, and nothing above reaches
 into `Current`, `Session`, or a generated controller's internals —
 `start_new_session_for`/`terminate_session` are called as the application's
 own public-to-its-subclasses methods, exactly as a real controller action
