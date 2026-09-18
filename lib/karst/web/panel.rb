@@ -497,15 +497,41 @@ module Karst
           text.start_with?("<") && text.end_with?(">")
         end
 
+        # The same requested/observed/confirmation evidence verify_access
+        # reports, never a bare echo of the identity Karst assumed: a
+        # mismatch, an absence, or an unobservable outcome stays visible here
+        # exactly as it would in a "sent as User X" claim it is not entitled
+        # to make.
         def recipe_identity(identity)
-          assumed = identity[:assumed]
-          line = if assumed
-                   "#{escape(assumed[:label])} — identity assumed by Karst"
-                 else
-                   "No identity#{" (#{escape(identity[:reason])})" if identity[:reason]}"
-                 end
-          "<h3>Sent as</h3><p>#{line}</p><p class=\"unobserved\">Karst did not observe how an external " \
-            "client authenticates this endpoint.</p>"
+          html = "<h3>Identity</h3><p>#{escape(identity_confirmation_label(identity))}</p>"
+          html += "<p class=\"unobserved\">#{escape(identity[:reason])}</p>" if identity[:reason]
+          html += identity_failure_detail(identity)
+          "#{html}<p class=\"unobserved\">Karst assumed this identity directly; it did not exercise how an " \
+            "external client would authenticate this endpoint.</p>"
+        end
+
+        def identity_confirmation_label(identity)
+          requested = principal_summary(identity[:requested], "anonymous")
+          observed = principal_summary(identity[:observed], "no principal")
+          case identity[:confirmation]
+          when "confirmed" then "observed #{observed} (identity confirmed)"
+          when "confirmed_anonymous" then "observed no principal (anonymous confirmed)"
+          when "absent" then "requested #{requested}, observed no principal (NOT confirmed)"
+          when "mismatch" then "requested #{requested}, observed #{observed} (MISMATCH)"
+          when "contaminated" then "anonymous probe observed #{observed} (CONTAMINATED)"
+          else "identity unobservable#{": #{identity[:observation_error]}" if identity[:observation_error]}"
+          end
+        end
+
+        def principal_summary(value, absent_label)
+          value ? "#{value[:model]} ##{value[:id]}" : absent_label
+        end
+
+        def identity_failure_detail(identity)
+          detail = []
+          detail << "Identity setup: #{escape(identity[:establishment_error])}" if identity[:establishment_error]
+          detail << "Cleanup: #{escape(identity[:cleanup_error])}" if identity[:cleanup_error]
+          detail.map { |line| "<p class=\"unobserved\">#{line}</p>" }.join
         end
 
         def recipe_execution(execution)

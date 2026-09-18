@@ -13,7 +13,7 @@ RSpec.describe Karst::Reproduction::Curl do
       body_params: {}, body_representation: :none, content_type: nil, headers: {}, controller: nil,
       action: nil, status: 200, response_content_type: "application/json", redirect: nil,
       halted_callback: nil, exception_class: nil, writes_observed: false, write_count: 0,
-      database_rollback_attempted: true, elapsed_ms: 1.0, principal: nil, unobserved: []
+      database_rollback_attempted: true, elapsed_ms: 1.0, identity: nil, unobserved: []
     }
     Karst::Reproduction::Observation.new(**defaults, **overrides)
   end

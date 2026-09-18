@@ -2,6 +2,7 @@
 
 require "json"
 require_relative "../../karst"
+require_relative "identity_serialization"
 require_relative "../reproduction/exercise"
 require_relative "../reproduction/curl"
 
@@ -16,21 +17,25 @@ module Karst
     #
     # This class owns two decisions Exercise deliberately does not: which
     # identity to send the request under (the first candidate Karst's own
-    # sampler offers, or none), and how an Observation becomes a stable
-    # evidence document.
+    # sampler offers, or a genuine anonymous probe), and how an Observation
+    # becomes a stable evidence document.
     # rubocop:disable Metrics/ClassLength
     class Reproduction
-      SCHEMA_VERSION = 1
+      include IdentitySerialization
+
+      # 2 (was 1): `identity` is now a Karst::Identity::Evidence document --
+      # requested/observed/confirmation, exactly like verify_access -- rather
+      # than a mechanism/assumed pair that only ever described what Karst
+      # asked for. A consumer reading the old `assumed` key and believing it
+      # described the identity the request actually ran under is precisely
+      # the false attribution this schema exists to make impossible.
+      SCHEMA_VERSION = 2
 
       # Same-connection rollback contains database writes and nothing else.
       # Named in the document rather than left implicit, so an agent
       # reasoning about whether to issue a mutating request sees the real
       # boundary instead of assuming "isolated" means isolated.
       NOT_ISOLATED = ["background jobs", "mail", "outbound HTTP", "files", "other database connections"].freeze
-
-      IDENTITY_NOTE = "Karst sent this request under an application identity it assumed directly. It did not " \
-                      "observe how an external client authenticates this endpoint; any halted callback " \
-                      "reported under execution is the observed gate."
 
       # rubocop:disable Metrics/ParameterLists
       def initialize(path:, http_method: "GET", body: nil, content_type: nil, headers: {},
@@ -68,7 +73,8 @@ module Karst
       private
 
       def run
-        principal = @anonymous ? nil : sampled_principal
+        @identity_reason = nil
+        principal = @anonymous ? Identity::ANONYMOUS : sampled_principal
         Karst::Reproduction::Exercise.new(
           path: @path, http_method: @http_method, body: @body, content_type: @content_type,
           headers: @headers, principal: principal
@@ -77,16 +83,21 @@ module Karst
 
       # One candidate, not a sample: reproduction issues exactly one request,
       # so asking the sampler for more than one would query for records
-      # Karst has already decided it will never send.
+      # Karst has already decided it will never send. Falling back to
+      # Identity::ANONYMOUS (rather than a bare nil) when no candidate is
+      # available means this still runs, and is still confirmed, as a real
+      # anonymous probe -- never a request whose identity Karst simply never
+      # got around to establishing.
       def sampled_principal
-        @identity_reason = nil
         selection = Access::PrincipalSelection.new(sources: Identity.principal_sources, limit: 1).call
         principal = selection.principals.first
-        @identity_reason = "no principal was available from the configured principal source" unless principal
-        principal
+        return principal if principal
+
+        @identity_reason = "no principal was available from the configured principal source"
+        Identity::ANONYMOUS
       rescue Identity::Error => e
         @identity_reason = e.message
-        nil
+        Identity::ANONYMOUS
       end
 
       # rubocop:disable Metrics/MethodLength
@@ -115,13 +126,13 @@ module Karst
         }
       end
 
+      # The same requested/observed/confirmation document verify_access
+      # produces (see Karst::CLI::IdentitySerialization), plus `reason`: why
+      # Karst ran this request under no identity at all, when that was not
+      # what the caller asked for (an anonymous request the caller
+      # deliberately chose carries no reason -- there is nothing to explain).
       def identity(observation)
-        {
-          mechanism: observation.principal ? "karst_assumed_identity" : "anonymous",
-          assumed: observation.principal && principal(observation.principal),
-          reason: observation.principal ? nil : @identity_reason,
-          note: IDENTITY_NOTE
-        }
+        identity_document(observation.identity).merge(reason: @identity_reason)
       end
 
       def execution(observation)
@@ -142,22 +153,6 @@ module Karst
         Karst::Reproduction::Curl.render(observation, base_url: @base_url)
       end
 
-      # Mirrors Karst::CLI::Verification#principal exactly: a
-      # framework-inferred login identifier never crosses the machine-readable
-      # boundary, while an application-authored principal_label still does.
-      def principal(value)
-        label = if Karst.config.principal_label
-                  value.display_label.to_s
-                else
-                  "#{value.model_name} ##{value.id}"
-                end
-        { model: value.model_name.to_s, id: primitive_id(value.id), label: label }
-      end
-
-      def primitive_id(value)
-        value.is_a?(Integer) ? value : value.to_s
-      end
-
       def error_document(error)
         type = error.is_a?(Identity::Error) ? "configuration_error" : "input_error"
         { schema_version: SCHEMA_VERSION, error: { type: type, message: error.message } }
@@ -176,13 +171,10 @@ module Karst
       end
 
       def append_identity(lines, observation)
-        lines.push("", "Sent as")
-        lines << if observation.principal
-                   "  #{principal(observation.principal)[:label]} (identity assumed by Karst)"
-                 else
-                   "  no identity#{" (#{@identity_reason})" if @identity_reason}"
-                 end
-        lines << "  Karst did not observe how an external client authenticates this endpoint."
+        lines.push("", "Identity", "  #{identity_line(observation.identity)}")
+        lines << "  (#{@identity_reason})" if @identity_reason
+        lines << "  Karst assumed this identity directly; it did not exercise how an external " \
+                 "client would authenticate this endpoint."
       end
 
       def append_execution(lines, observation)

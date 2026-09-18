@@ -216,12 +216,17 @@ RSpec.describe "request reproduction Rails integration" do
         headers: { "Authorization" => "Bearer real-key" }, anonymous: true
       ).evidence
 
-      expect(document[:schema_version]).to eq(1)
+      expect(document[:schema_version]).to eq(2)
       expect(document[:request][:method]).to eq("POST")
       expect(document[:request][:body]["passcode"]).to eq("<FILTERED>")
       expect(document[:execution][:controller]).to eq("KarstReproductionFixtureController")
       expect(document[:response][:status]).to eq(201)
-      expect(document[:identity][:mechanism]).to eq("anonymous")
+      expect(document[:identity][:requested]).to be_nil
+      # KarstTestApplication has no Warden proxy and no config.observe_identity
+      # configured, so Karst has no seam to confirm the application actually
+      # ran anonymously -- it fails closed to unobservable rather than
+      # assuming the anonymous request it sent is the request that ran.
+      expect(document[:identity][:confirmation]).to eq("unobservable")
       expect(document[:isolation][:not_isolated]).to include("background jobs")
       expect(document[:reproduce][:curl]).to include("-X POST")
       expect(JSON.generate(document)).not_to include("hunter2", "real-key")

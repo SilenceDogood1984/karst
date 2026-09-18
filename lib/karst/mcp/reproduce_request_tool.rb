@@ -39,6 +39,13 @@ module Karst
         null and named in "unobserved"; nothing is inferred from routes,
         controller source, or strong parameters.
 
+        Identity in the result follows the same requested/observed/confirmation
+        contract as verify_access: "identity.confirmation" says whether the
+        application actually ran as the identity Karst assumed (or ran with no
+        principal, for an anonymous probe) -- "confirmed" or
+        "confirmed_anonymous" only. Never report this request as having run as
+        a user on the strength of "identity.requested" alone.
+
         Secrets are never returned. Request parameters pass through the
         application's own Rails config.filter_parameters plus a conservative
         credential-name filter, and credential-bearing headers are replaced by

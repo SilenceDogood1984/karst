@@ -131,12 +131,30 @@ issues exactly one request that the caller fully specified.
 By default Karst sends the request as one existing user drawn from your
 application's own configured principal source — the same machinery `/karst`
 uses to answer "who can use this?", so you do not have to know how your app
-signs anyone in. Pass `--anonymous` (or `anonymous: true`) to send with no
-identity at all, which is usually what you want for an endpoint an external
-system calls.
+signs anyone in. Pass `--anonymous` (or `anonymous: true`) for a genuinely
+identity-free probe: Karst establishes no identity at all, and then verifies
+that the application actually resolved none, which is usually what you want
+for an endpoint an external system calls.
 
-Karst reports which identity it assumed. It does not claim that is how the
-external caller authenticates.
+Karst assumes an identity directly rather than authenticating as an external
+client would, so the recipe's `identity` document reports what it *observed*
+the application resolve while running the request — not just what it asked
+for — through the same `requested`/`observed`/`confirmation` evidence
+`verify_access` reports:
+
+- `confirmed` — the application ran as exactly the requested user.
+- `confirmed_anonymous` — the application ran with no principal, as asked.
+- `mismatch` — the application resolved a *different* principal than requested.
+- `absent` — Karst's identity setup did not take, and the application resolved
+  no principal at all.
+- `contaminated` — an anonymous probe was requested, but the application
+  resolved a principal anyway (stale session state, most often).
+- `unobservable` — Karst has no way to see what the application resolved
+  (configure `config.observe_identity`, or use Karst's Devise/Warden
+  integration).
+
+Only `confirmed` and `confirmed_anonymous` mean the recipe ran under the
+identity it claims to.
 
 ## Limitations
 

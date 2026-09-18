@@ -25,7 +25,8 @@ module Rails
           boot_karst_application!
           exit(reproduction(method, path).call)
         rescue ArgumentError => e
-          document = { schema_version: 1, error: { type: "input_error", message: e.message } }
+          document = { schema_version: ::Karst::CLI::Reproduction::SCHEMA_VERSION,
+                       error: { type: "input_error", message: e.message } }
           puts(options[:json] ? JSON.generate(document) : "Karst cannot reproduce this request:\n#{e.message}")
           exit(2)
         end

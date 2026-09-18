@@ -13,6 +13,15 @@ module Karst
     # #unobserved, so a consumer can say "Karst did not see this" instead of
     # reading an absent value as a negative result.
     #
+    # `identity` is a Karst::Identity::Evidence, carrying the identity Karst
+    # was asked to send this request under (requested), what Karst's own
+    # seam established (establishment), and what the application itself
+    # resolved while running the request (observed) -- exactly the same
+    # lifecycle Access::Sweep runs. There is deliberately no bare "principal"
+    # field here: a requested/assumed identity is intent, not evidence about
+    # what ran, and only `identity.confirmation` may be read to decide
+    # whether they agree.
+    #
     # body_representation says how faithfully body_params describes what was
     # sent:
     #
@@ -25,7 +34,7 @@ module Karst
       :http_method, :url_path, :query_params, :route_params, :body_params, :body_representation,
       :content_type, :headers, :controller, :action, :status, :response_content_type, :redirect,
       :halted_callback, :exception_class, :writes_observed, :write_count,
-      :database_rollback_attempted, :elapsed_ms, :principal, :unobserved
+      :database_rollback_attempted, :elapsed_ms, :identity, :unobserved
     ) do
       def observed?(field)
         !unobserved.include?(field.to_s)

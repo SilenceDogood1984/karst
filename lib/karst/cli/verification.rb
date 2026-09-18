@@ -3,6 +3,7 @@
 require "json"
 require "time"
 require_relative "../../karst"
+require_relative "identity_serialization"
 
 module Karst
   module CLI
@@ -13,6 +14,8 @@ module Karst
     # place, keeping the versioned contract auditable.
     # rubocop:disable Metrics/ClassLength, Metrics/MethodLength, Metrics/AbcSize
     class Verification
+      include IdentitySerialization
+
       # 2 (was 1): every principal field is now explicitly either a
       # *requested* identity (what Karst was asked to run as) or an
       # *observed* one (what the application itself resolved at runtime),
@@ -103,7 +106,7 @@ module Karst
           probe: { identity: anonymous? ? "anonymous" : "application_identities" },
           provenance: provenance,
           verified_usable: !winner.nil?,
-          verified_identity: winner && identity(winner.identity),
+          verified_identity: winner && identity_document(winner.identity),
           verified_outcome: winner && outcome(winner),
           source: result.verified_source,
           sample: sweep(result.initial),
@@ -151,7 +154,7 @@ module Karst
       # made them.
       def grouped_outcomes(outcomes)
         outcomes.group_by { |item| outcome(item) }.map do |evidence, items|
-          evidence.merge(count: items.size, identities: items.map { |item| identity(item.identity) })
+          evidence.merge(count: items.size, identities: items.map { |item| identity_document(item.identity) })
         end
       end
 
@@ -162,46 +165,6 @@ module Karst
           write_count: item.write_count, database_rollback_attempted: item.database_rollback_attempted,
           elapsed_ms: item.elapsed_ms, controller: item.controller, action: item.action
         }
-      end
-
-      # The whole point of this schema version. `requested` is intent,
-      # `observed` is what the application resolved while running the
-      # request, and `confirmation` is the only field that says whether a
-      # principal claim about this request is true. Anything other than
-      # "confirmed"/"confirmed_anonymous" means it is not.
-      def identity(evidence)
-        return nil unless evidence
-
-        {
-          requested: evidence.requested && principal(evidence.requested),
-          observed: evidence.observed && { model: evidence.observed.model_name.to_s,
-                                           id: primitive_id(evidence.observed.id) },
-          confirmation: evidence.confirmation.to_s,
-          observed_at: evidence.observed_at&.to_s,
-          observation_source: evidence.observation_source&.to_s,
-          observation_error: evidence.observation_error,
-          establishment: evidence.establishment&.to_s,
-          establishment_error: evidence.establishment_error,
-          cleanup_error: evidence.cleanup_error,
-          changed_during_request: evidence.changed_during_request
-        }
-      end
-
-      def principal(value)
-        # JSON is also the MCP contract. Framework-inferred login identifiers
-        # must never cross that machine-readable boundary. An application-
-        # authored principal_label remains explicit configuration and keeps
-        # its longstanding serialization behavior.
-        label = if Karst.config.principal_label
-                  value.display_label.to_s
-                else
-                  "#{value.model_name} ##{value.id}"
-                end
-        { model: value.model_name.to_s, id: primitive_id(value.id), label: label }
-      end
-
-      def primitive_id(value)
-        value.is_a?(Integer) ? value : value.to_s
       end
 
       def error_document(error)
@@ -239,27 +202,6 @@ module Karst
         lines << "  redirect #{evidence.redirect}" if evidence.redirect
         lines << "  halted at #{evidence.halted_callback}" if evidence.halted_callback
         lines << "  exception #{evidence.exception_class}" if evidence.exception_class
-      end
-
-      # Says what the application actually did with identity, never what was
-      # asked of it.
-      def identity_line(evidence)
-        case evidence.confirmation
-        when :confirmed then "observed #{observed_label(evidence)} (identity confirmed)"
-        when :confirmed_anonymous then "observed no principal (anonymous confirmed)"
-        when :absent then "requested #{requested_label(evidence)}, observed no principal (NOT confirmed)"
-        when :mismatch then "requested #{requested_label(evidence)}, observed #{observed_label(evidence)} (MISMATCH)"
-        when :contaminated then "anonymous probe observed #{observed_label(evidence)} (CONTAMINATED)"
-        else "identity unobservable: #{evidence.observation_error}"
-        end
-      end
-
-      def observed_label(evidence)
-        evidence.observed ? "#{evidence.observed.model_name} ##{evidence.observed.id}" : "no principal"
-      end
-
-      def requested_label(evidence)
-        evidence.requested ? "#{evidence.requested.model_name} ##{evidence.requested.id}" : "anonymous"
       end
 
       def append_populations(lines, result)

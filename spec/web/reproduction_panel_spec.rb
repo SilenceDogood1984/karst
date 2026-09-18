@@ -14,15 +14,18 @@ RSpec.describe "Karst::Web::Panel request reproduction" do
 
   let(:document) do
     {
-      schema_version: 1,
+      schema_version: 2,
       request: {
         method: "POST", path: "/api/v1/inspections", url: "http://localhost:3000/api/v1/inspections",
         query_params: {}, route_params: {}, content_type: "application/json", body_format: "json",
         body: { "serial_number" => "ABC123", "passcode" => "<FILTERED>" },
         headers: { "Authorization" => "<AUTH_TOKEN>", "Content-Type" => "application/json" }
       },
-      identity: { mechanism: "karst_assumed_identity", assumed: { model: "User", id: 27, label: "User #27" },
-                  reason: nil, note: "..." },
+      identity: { requested: { model: "User", id: 27, label: "User #27" },
+                  observed: { model: "User", id: 27 }, confirmation: "confirmed",
+                  observed_at: "request_completion", observation_source: "configured",
+                  observation_error: nil, establishment: "established", establishment_error: nil,
+                  cleanup_error: nil, changed_during_request: false, reason: nil },
       execution: { controller: "Api::V1::InspectionsController", action: "create", halted_callback: nil,
                    exception_class: nil, writes_observed: true, write_count: 2,
                    database_rollback_attempted: true },
@@ -91,9 +94,38 @@ RSpec.describe "Karst::Web::Panel request reproduction" do
       expect(html).to include("<dd>application/json</dd>")
     end
 
-    it "says Karst did not observe how an external client authenticates" do
+    it "says Karst did not exercise how an external client authenticates" do
       expect(render(params: route, reproduction: document))
-        .to include("did not observe how an external client authenticates")
+        .to include("did not exercise how an external client would authenticate")
+    end
+
+    it "reports a confirmed identity as observed evidence, not a bare echo of what was requested" do
+      expect(render(params: route, reproduction: document)).to include("observed User #27 (identity confirmed)")
+    end
+
+    it "keeps a mismatch, an absence, or an unobservable identity visible rather than saying \"sent as\"" do
+      document[:identity] = { requested: { model: "User", id: 27, label: "User #27" }, observed: nil,
+                              confirmation: "absent", observed_at: "request_completion",
+                              observation_source: "configured", observation_error: nil,
+                              establishment: "established", establishment_error: nil, cleanup_error: nil,
+                              changed_during_request: false, reason: nil }
+
+      html = render(params: route, reproduction: document)
+
+      expect(html).to include("requested User #27, observed no principal (NOT confirmed)")
+      expect(html).not_to include("Sent as")
+    end
+
+    it "renders an unobservable identity with its observation error rather than assuming the request ran" do
+      document[:identity] = { requested: { model: "User", id: 27, label: "User #27" }, observed: nil,
+                              confirmation: "unobservable", observed_at: nil, observation_source: nil,
+                              observation_error: "no runtime identity observation seam is available",
+                              establishment: "established", establishment_error: nil, cleanup_error: nil,
+                              changed_during_request: false, reason: nil }
+
+      html = render(params: route, reproduction: document)
+
+      expect(html).to include("identity unobservable: no runtime identity observation seam is available")
     end
 
     it "reports a halted callback as observed evidence, without explaining it" do

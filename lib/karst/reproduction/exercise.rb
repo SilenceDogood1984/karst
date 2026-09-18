@@ -9,6 +9,7 @@ require_relative "../access/errors"
 require_relative "../access/local_path"
 require_relative "../access/probe_application"
 require_relative "../access/database_isolation"
+require_relative "../access/identity_probe"
 require_relative "../identity"
 
 module Karst
@@ -30,6 +31,18 @@ module Karst
     # writes on this connection are rolled back; jobs, mail, outbound HTTP,
     # files, and other connections are not. Callers are expected to say so
     # out loud, and every Karst surface that exposes this does.
+    #
+    # Identity runs through the exact same lifecycle Access::Sweep uses --
+    # Access::IdentityProbe, wrapping the probe endpoint in an
+    # Access::ObservedEndpoint so halt-time observation is possible -- rather
+    # than a second reproduction-specific identity implementation. `principal`
+    # is requested identity (intent); the Observation this class returns
+    # carries a Karst::Identity::Evidence, never a bare echo of what was
+    # asked for. A caller that wants a genuinely anonymous probe passes
+    # Karst::Identity::ANONYMOUS (the default): Karst then establishes no
+    # identity and verifies at runtime that the application resolved none,
+    # exactly as an anonymous verify_access probe does -- a bare absence of a
+    # principal is not the same claim.
     # rubocop:disable Metrics/ClassLength
     class Exercise
       METHODS = %w[GET HEAD POST PUT PATCH DELETE].freeze
@@ -64,7 +77,7 @@ module Karst
 
       # rubocop:disable Metrics/ParameterLists, Metrics/AbcSize, Metrics/MethodLength
       def initialize(path:, http_method: "GET", body: nil, content_type: nil, headers: {},
-                     principal: nil, application: nil)
+                     principal: Karst::Identity::ANONYMOUS, application: nil)
         @http_method = http_method.to_s.strip.upcase
         raise Access::UnsupportedMethod, "unsupported HTTP method" unless METHODS.include?(@http_method)
 
@@ -76,7 +89,12 @@ module Karst
         raise ArgumentError, "a content type is required when sending a request body" if @body && @content_type.empty?
 
         @headers = normalize_headers(headers)
-        @principal = principal
+        # A bare nil is treated exactly like Karst::Identity::ANONYMOUS
+        # (the default) rather than as some third, identity-lifecycle-free
+        # state: a caller that passes no principal still gets a real
+        # anonymous probe, with the application's own runtime state verified
+        # rather than silently assumed.
+        @identity = Access::IdentityProbe.new(principal || Karst::Identity::ANONYMOUS)
         @application = application || Rails.application
         @probe_application = build_probe_application
       end
@@ -93,9 +111,9 @@ module Karst
 
       private
 
-      # rubocop:disable Metrics/MethodLength
+      # rubocop:disable Metrics/MethodLength, Metrics/AbcSize
       def observe
-        session = ActionDispatch::Integration::Session.new(@probe_application)
+        session = ActionDispatch::Integration::Session.new(@identity.endpoint(@probe_application))
         configure_host(session)
         started = monotonic
         @writes = 0
@@ -104,7 +122,19 @@ module Karst
         @status = @redirect = @exception_class = nil
 
         with_rollback do
-          subscribed { as_principal(session) { issue(session) } }
+          subscribed do
+            # Never raises: a probe whose identity could not be established
+            # still runs, and reports what the application actually saw.
+            @identity.establish(session)
+            begin
+              issue(session)
+            ensure
+              # Strictly before release: clearing the identity is exactly
+              # what would make a completed request look anonymous.
+              @identity.observe(:request_completion)
+              @identity.release(session)
+            end
+          end
           read_response(session)
         rescue StandardError => e
           @exception_class = e.class.name
@@ -112,7 +142,7 @@ module Karst
 
         build(session, elapsed(started))
       end
-      # rubocop:enable Metrics/MethodLength
+      # rubocop:enable Metrics/MethodLength, Metrics/AbcSize
 
       # The query string travels in the target, exactly as a real client
       # sends it; `params` carries only the request body, so a GET never
@@ -132,20 +162,27 @@ module Karst
         headers
       end
 
-      # rubocop:disable Naming/BlockForwarding, Style/ArgumentsForwarding -- anonymous
-      # block forwarding (`&`) needs Ruby 3.1; Karst supports Ruby 2.7.
-      def as_principal(session, &block)
-        return yield unless @principal
-
-        Karst::Identity.with(session, @principal, &block)
-      end
-
+      # Notification subscriptions are process-wide, so every observer below
+      # ignores anything raised on another thread: a concurrent request in a
+      # real development server must never be mistaken for this
+      # reproduction's own evidence.
+      # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
       def subscribed(&block)
+        thread = Thread.current
         writes = lambda do |_name, _start, _finish, _id, payload|
-          @writes += 1 if Access::DatabaseIsolation.mutation?(payload[:sql])
+          @writes += 1 if thread.equal?(Thread.current) && Access::DatabaseIsolation.mutation?(payload[:sql])
         end
-        halts = ->(_name, _start, _finish, _id, payload) { @halted_callback = payload[:filter] }
-        dispatches = ->(_name, _start, _finish, _id, payload) { @dispatch = payload }
+        halts = lambda do |_name, _start, _finish, _id, payload|
+          next unless thread.equal?(Thread.current)
+
+          @halted_callback ||= payload[:filter]
+          # The identity the application had established when this access
+          # decision was made -- not after the request unwound.
+          @identity.observe(:halted_callback)
+        end
+        dispatches = lambda do |_name, _start, _finish, _id, payload|
+          @dispatch = payload if thread.equal?(Thread.current)
+        end
 
         ActiveSupport::Notifications.subscribed(writes, "sql.active_record") do
           ActiveSupport::Notifications.subscribed(halts, "halted_callback.action_controller") do
@@ -153,7 +190,7 @@ module Karst
           end
         end
       end
-      # rubocop:enable Naming/BlockForwarding, Style/ArgumentsForwarding
+      # rubocop:enable Metrics/AbcSize, Metrics/MethodLength
 
       def read_response(session)
         rendered = request_exception(session)
@@ -176,7 +213,7 @@ module Karst
           status: @status, response_content_type: response_type, redirect: @redirect,
           halted_callback: @halted_callback&.to_s, exception_class: @exception_class,
           writes_observed: @writes.positive?, write_count: @writes, database_rollback_attempted: true,
-          elapsed_ms: elapsed_ms, principal: @principal && Karst::Identity.describe(@principal),
+          elapsed_ms: elapsed_ms, identity: @identity.evidence,
           unobserved: unobserved(route, response_type).freeze
         )
       end
