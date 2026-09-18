@@ -2,12 +2,14 @@
 
 require "mcp"
 require_relative "verify_access_tool"
+require_relative "reproduce_request_tool"
 require_relative "../version"
 
 module Karst
   module Mcp
-    # Builds and runs Karst's stdio MCP server: one tool (VerifyAccessTool),
-    # no prompts, no resources, no other transport. The host Rails
+    # Builds and runs Karst's stdio MCP server: two tools
+    # (VerifyAccessTool, ReproduceRequestTool), no prompts, no resources, no
+    # other transport. The host Rails
     # application must already be booted (see
     # Rails::Command::Karst::Boot#boot_karst_application!, used by
     # `bin/rails karst:mcp`) before this is built -- the server itself never
@@ -35,6 +37,15 @@ module Karst
         "confirmed" or "confirmed_anonymous" means the request provably ran
         that way. Never report a principal as having reached a route on the
         strength of the requested identity alone.
+
+        Call reproduce_request(path:, method:, body:, content_type:) to answer a
+        different question: "something calls this endpoint -- what request do I
+        send to exercise the same behavior?". It issues exactly one request and
+        returns the observed controller/action, halted callback, response, and a
+        redacted cURL command for what Karst actually sent. Secrets are replaced
+        by placeholders; a command that needs a credential filled in is working
+        as intended. Identity in its evidence document follows the same
+        requested/observed/confirmation contract as verify_access.
       TEXT
 
       class << self
@@ -44,7 +55,7 @@ module Karst
             title: "Karst",
             version: Karst::VERSION,
             instructions: INSTRUCTIONS,
-            tools: [VerifyAccessTool],
+            tools: [VerifyAccessTool, ReproduceRequestTool],
             configuration: MCP::Configuration.new(exception_reporter: method(:report_exception))
           )
         end
