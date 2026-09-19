@@ -228,7 +228,8 @@ RSpec.describe "Karst MCP server, end to end against a real Rails application" d
     document, = call_tool(path: "/mcp_documents/1")
     cli_document = JSON.parse(JSON.generate(Karst::CLI::Verification.new(path: "/mcp_documents/1").evidence))
 
-    expect(strip_elapsed(document)).to eq(strip_elapsed(cli_document))
+    expect_valid_provenance_timestamps(document, cli_document)
+    expect(strip_execution_details(document)).to eq(strip_execution_details(cli_document))
   end
 
   it "performs multiple sequential tool calls without leaking a prior call's identity or DB state" do
@@ -313,7 +314,8 @@ RSpec.describe "Karst MCP server, end to end against a real Rails application" d
       document, = call_tool(path: "/mcp_documents/1")
       cli_document = JSON.parse(JSON.generate(Karst::CLI::Verification.new(path: "/mcp_documents/1").evidence))
 
-      expect(strip_elapsed(cli_document)).to eq(strip_elapsed(document))
+      expect_valid_provenance_timestamps(document, cli_document)
+      expect(strip_execution_details(cli_document)).to eq(strip_execution_details(document))
       expect(cli_document["populations"]).to contain_exactly(include("name" => "workers", "state" => "usable"))
     end
 
@@ -437,7 +439,8 @@ RSpec.describe "Karst MCP server, end to end against a real Rails application" d
       document, = call_tool(path: "/mcp_documents/1")
       cli_document = JSON.parse(JSON.generate(Karst::CLI::Verification.new(path: "/mcp_documents/1").evidence))
 
-      expect(strip_elapsed(document)).to eq(strip_elapsed(cli_document))
+      expect_valid_provenance_timestamps(document, cli_document)
+      expect(strip_execution_details(document)).to eq(strip_execution_details(cli_document))
     end
 
     it "reports the same structured error again once the selection goes stale, never guessing" do
@@ -472,6 +475,21 @@ RSpec.describe "Karst MCP server, end to end against a real Rails application" d
       value.map { |item| strip_elapsed(item) }
     else
       value
+    end
+  end
+
+  def strip_execution_details(document)
+    stripped = strip_elapsed(document)
+    stripped.fetch("provenance").delete("observed_at")
+    stripped
+  end
+
+  def expect_valid_provenance_timestamps(*documents)
+    documents.each do |document|
+      observed_at = document.dig("provenance", "observed_at")
+
+      expect(observed_at).to be_a(String)
+      expect { Time.iso8601(observed_at) }.not_to raise_error
     end
   end
 end
