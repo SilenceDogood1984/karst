@@ -2,6 +2,7 @@
 
 require "rails/command"
 require_relative "../boot"
+require "karst/mcp/compatibility"
 
 module Rails
   module Command
@@ -25,10 +26,11 @@ module Rails
 
         def load_mcp!
           begin
-            gem "mcp", "~> 0.9.0"
+            gem "mcp", ::Karst::Mcp::Compatibility::REQUIREMENT
           rescue Gem::LoadError
             abort "Karst MCP requires the optional dependency. " \
-                  'Add gem "mcp", "~> 0.9.0" to your Gemfile and run bundle install.'
+                  "Add gem \"mcp\", \"#{::Karst::Mcp::Compatibility::REQUIREMENT}\" " \
+                  "to your Gemfile and run bundle install."
           end
 
           require "karst/mcp/server"

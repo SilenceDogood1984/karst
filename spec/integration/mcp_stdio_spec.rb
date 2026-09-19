@@ -216,12 +216,11 @@ RSpec.describe "Karst MCP server over real stdio" do
     expect(status).to be_success
     frame = stdout.each_line.map { |line| JSON.parse(line) }.find { |item| item["id"] == 2 }
     # The tool's own signature accepts only path/method: an unknown argument
-    # never silently selects a principal -- it is refused as a structured
-    # tool error (a real Ruby ArgumentError from the unexpected keyword,
-    # caught by MCP::Server itself), never a 500 or a corrupted protocol
-    # frame.
-    expect(frame.dig("result", "isError")).to be(true)
-    expect(frame.dig("result", "content", 0, "text")).to include("principal_id")
+    # never silently selects a principal -- MCP 1.5 refuses it as a JSON-RPC
+    # error (after reporting the unexpected keyword through the configured
+    # exception reporter), never a process crash or corrupted protocol frame.
+    expect(frame.dig("error", "code")).to eq(-32_603)
+    expect(frame.dig("error", "message")).to eq("Internal error")
   end
 
   it "refuses to verify when config.enabled is false, the same off switch every other adapter honors" do

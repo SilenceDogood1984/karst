@@ -22,7 +22,7 @@ RSpec.describe Karst::Mcp::Server do
     it "advertises both tools over the real tools/list protocol handler" do
       server = described_class.build
 
-      response = server.handle(jsonrpc: "2.0", id: 1, method: "tools/list")
+      response = server.handle({ jsonrpc: "2.0", id: 1, method: "tools/list" })
 
       expect(response.dig(:result, :tools).map { |tool| tool[:name] }).to eq(%w[verify_access reproduce_request])
     end
