@@ -70,8 +70,8 @@ RSpec.describe "Karst MCP server, end to end against a real Rails application" d
   let(:server) { Karst::Mcp::Server.build }
 
   def call_tool(arguments)
-    response = server.handle(jsonrpc: "2.0", id: 1, method: "tools/call",
-                             params: { name: "verify_access", arguments: arguments })
+    response = server.handle({ jsonrpc: "2.0", id: 1, method: "tools/call",
+                               params: { name: "verify_access", arguments: arguments } })
     result = response.fetch(:result)
     [JSON.parse(result.fetch(:content).first.fetch(:text)), result.fetch(:isError)]
   end

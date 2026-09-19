@@ -135,7 +135,7 @@ MCP support is optional. Add its runtime dependency to your application's
 Gemfile and install it before starting the server:
 
 ```ruby
-gem "mcp", "~> 0.9.0"
+gem "mcp", "~> 1.5.0"
 ```
 
 ```bash
