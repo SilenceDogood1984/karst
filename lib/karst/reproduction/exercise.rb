@@ -119,28 +119,32 @@ module Karst
         @writes = 0
         @halted_callback = nil
         @dispatch = nil
-        @status = @redirect = @exception_class = nil
+        @status = @redirect = @exception_class = @response_content_type = nil
+        @route = { raw: {}, sanitized: {}, observed: false }
 
         with_rollback do
-          subscribed do
-            # Never raises: a probe whose identity could not be established
-            # still runs, and reports what the application actually saw.
-            @identity.establish(session)
-            begin
+          # Never raises: a probe whose identity could not be established
+          # still runs, and reports what the application actually saw.
+          @identity.establish(session)
+          begin
+            subscribed do
               issue(session)
-            ensure
+            end
+          ensure
+            begin
               # Strictly before release: clearing the identity is exactly
               # what would make a completed request look anonymous.
               @identity.observe(:request_completion)
+              capture_target(session)
+            ensure
               @identity.release(session)
             end
           end
-          read_response(session)
         rescue StandardError => e
           @exception_class = e.class.name
         end
 
-        build(session, elapsed(started))
+        build(elapsed(started))
       end
       # rubocop:enable Metrics/MethodLength, Metrics/AbcSize
 
@@ -198,13 +202,25 @@ module Karst
 
         @status = session.response.status
         @redirect = clean_redirect(session.response.location) if @status >= 300 && @status < 400
+        @response_content_type = response_content_type(session)
       end
 
-      # rubocop:disable Metrics/MethodLength, Metrics/AbcSize
-      def build(session, elapsed_ms)
-        route = route_params(session)
+      # Integration::Session is intentionally reused for identity setup,
+      # the target, and cleanup so cookies behave like one real client. Its
+      # request and response pointers therefore always describe the most
+      # recent request. Copy the target-owned values while the target is
+      # still current; cleanup may then mutate the session without becoming
+      # reproduction evidence.
+      def capture_target(session)
+        read_response(session)
+        @route = route_params(session)
+      end
+
+      # rubocop:disable Metrics/MethodLength
+      def build(elapsed_ms)
+        route = @route
         body_params, representation = body_state
-        response_type = response_content_type(session)
+        response_type = @response_content_type
         Observation.new(
           http_method: @http_method, url_path: displayed_path(route), query_params: sanitized_query,
           route_params: route[:sanitized], body_params: body_params, body_representation: representation,
@@ -217,7 +233,7 @@ module Karst
           unobserved: unobserved(route, response_type).freeze
         )
       end
-      # rubocop:enable Metrics/MethodLength, Metrics/AbcSize
+      # rubocop:enable Metrics/MethodLength
 
       def dispatched(key)
         value = @dispatch && @dispatch[key]

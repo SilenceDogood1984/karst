@@ -119,6 +119,18 @@ RSpec.describe "request reproduction identity evidence" do
     expect(evidence.confirmation).to eq(:confirmed)
   end
 
+  it "reports the target request after named-principal cleanup issues a different request" do
+    observation = exercise(path: "/reproduction_identity/document", principal: member)
+
+    expect(observation.http_method).to eq("GET")
+    expect(observation.url_path).to eq("/reproduction_identity/document")
+    expect(observation.controller).to eq("KarstReproductionIdentityController")
+    expect(observation.action).to eq("document")
+    expect(observation.status).to eq(200)
+    expect(observation.identity.confirmation).to eq(:confirmed)
+    expect(@cleared).to eq(1)
+  end
+
   it "reports absent when Karst's identity setup did not take" do
     Karst.config.assume_identity = ->(_session, _principal) {} # establishes nothing
     observation = exercise(path: "/reproduction_identity/document", principal: member)
@@ -151,6 +163,10 @@ RSpec.describe "request reproduction identity evidence" do
     expect(evidence.observed).to be_nil
     expect(evidence.confirmation).to eq(:confirmed_anonymous)
     expect(evidence.establishment).to eq(:cleared)
+    expect(observation.controller).to eq("KarstReproductionIdentityController")
+    expect(observation.action).to eq("document")
+    expect(observation.status).to eq(200)
+    expect(@cleared).to eq(1)
   end
 
   it "reports a stale principal surviving an anonymous probe as contaminated, never as anonymous" do
@@ -178,6 +194,9 @@ RSpec.describe "request reproduction identity evidence" do
   it "captures identity at the halted callback, preferring halt-time evidence for the reported identity" do
     observation = exercise(path: "/reproduction_identity/admin_document", principal: member)
 
+    expect(observation.controller).to eq("KarstReproductionIdentityController")
+    expect(observation.action).to eq("admin_document")
+    expect(observation.status).to eq(403)
     expect(observation.halted_callback).to eq("authorize_admin")
     expect(observation.identity.observed_at).to eq(:halted_callback)
     expect(observation.identity.confirmation).to eq(:confirmed)
@@ -187,9 +206,23 @@ RSpec.describe "request reproduction identity evidence" do
   it "still observes identity and still cleans up when the request raises" do
     observation = exercise(path: "/reproduction_identity/boom", principal: member)
 
+    expect(observation.controller).to eq("KarstReproductionIdentityController")
+    expect(observation.action).to eq("boom")
     expect(observation.exception_class).to eq("RuntimeError")
     expect(observation.identity.confirmation).to eq(:confirmed)
     expect(@cleared).to eq(1)
+  end
+
+  it "keeps target evidence and honestly reports a cleanup failure" do
+    Karst.config.clear_identity = ->(_session) { raise "cleanup exploded" }
+
+    observation = exercise(path: "/reproduction_identity/document", principal: member)
+
+    expect(observation.controller).to eq("KarstReproductionIdentityController")
+    expect(observation.action).to eq("document")
+    expect(observation.status).to eq(200)
+    expect(observation.identity.confirmation).to eq(:confirmed)
+    expect(observation.identity.cleanup_error).to eq("RuntimeError: cleanup exploded")
   end
 
   it "still cleans up when the request halts" do
@@ -209,6 +242,8 @@ RSpec.describe "request reproduction identity evidence" do
       until stop
         ActiveSupport::Notifications.instrument("sql.active_record", sql: "INSERT INTO nowhere VALUES (1)")
         ActiveSupport::Notifications.instrument("halted_callback.action_controller", filter: :intruder_filter)
+        ActiveSupport::Notifications.instrument("process_action.action_controller",
+                                                controller: "IntruderController", action: "intrude")
       end
     end
 
@@ -218,6 +253,8 @@ RSpec.describe "request reproduction identity evidence" do
 
     expect(observation.write_count).to eq(0)
     expect(observation.halted_callback).to be_nil
+    expect(observation.controller).to eq("KarstReproductionIdentityController")
+    expect(observation.action).to eq("document")
     expect(observation.identity.confirmation).to eq(:confirmed)
     expect(observation.identity.observed.id).to eq(member.id)
   end
@@ -237,6 +274,9 @@ RSpec.describe "request reproduction identity evidence" do
                                                     label: label)
       expect(document[:identity][:observed]).to eq(model: "KarstReproductionIdentityPrincipal", id: impostor.id)
       expect(document[:identity][:confirmation]).to eq("mismatch")
+      expect(document[:request]).to include(method: "GET", path: "/reproduction_identity/document")
+      expect(document[:execution]).to include(controller: "KarstReproductionIdentityController", action: "document")
+      expect(document[:response][:status]).to eq(200)
     end
 
     it "never labels an absent identity as though the requested user ran" do
@@ -261,6 +301,9 @@ RSpec.describe "request reproduction identity evidence" do
       expect(document[:identity]).to include(:requested, :observed, :confirmation)
       expect(document[:identity][:confirmation]).to eq("confirmed")
       expect(document[:identity][:observed][:id]).to eq(member.id)
+      expect(document[:request]).to include(method: "GET", path: "/reproduction_identity/document")
+      expect(document[:execution]).to include(controller: "KarstReproductionIdentityController", action: "document")
+      expect(document[:response][:status]).to eq(200)
     end
   end
 end
