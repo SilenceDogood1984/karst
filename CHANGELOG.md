@@ -30,6 +30,29 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   become placeholders such as `<API_KEY>` without their values ever being read.
   See [docs/request-reproduction.md](docs/request-reproduction.md).
 - MCP now exposes two tools. `verify_access` is unchanged and stays GET-only.
+- Reproduction evidence now reports `execution.controller_completed` (did the
+  Rails controller lifecycle finish without raising -- distinct from whether
+  it dispatched at all), `execution.exception_phase` (the most specific phase
+  -- `controller`, `render`, or `unknown` -- that instrumentation actually
+  proves a raised exception occurred in, derived from
+  `ActiveSupport::Notifications` events rather than the exception's class or
+  message), and `execution.rendered` (the templates, partials, and layouts
+  Karst observed being rendered or raising, by structural virtual path only).
+
+### Fixed
+
+- **Stale cross-request response evidence in reproduction.** If a request run
+  on the same session immediately before the target (identity establishment,
+  most often) completed, and the target then raised before producing a
+  response of its own, Karst could report the *earlier* request's status,
+  content type, and redirect as if it had observed them for the target --
+  because `ActionDispatch::Integration::Session` only updates its
+  request/response objects after the target's own `app.call` returns without
+  raising. Response evidence (`status`, `response_content_type`, `redirect`)
+  is now read only when Karst can prove it belongs to the target request;
+  otherwise it is `nil` and named in `unobserved`, exactly like any other
+  fact Karst did not observe. See
+  [docs/request-reproduction.md](docs/request-reproduction.md).
 
 ### Changed
 
@@ -38,6 +61,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   failed schema validation with JSON 3.x.
 - **Evidence schema is now version 2.** The ambiguous `principal` / `verified_principal` keys are gone rather than renamed in place: a consumer reading "principal" and believing it described the request that actually ran is exactly the false attribution this schema exists to make impossible. Outcomes carry `identities` (each with `requested`, `observed`, `confirmation`), and the top level carries `verified_identity`.
 - **Reproduction evidence schema is now version 2.** Its `identity` document reports `requested`/`observed`/`confirmation` (a `Karst::Identity::Evidence`) rather than echoing back the identity Karst assumed as if it were what ran; a mismatch, absence, or unobservable outcome now stays visible instead of being reported as "sent as User X."
+- **Reproduction evidence schema is now version 3.** `execution` gained `controller_completed`, `exception_phase`, and `rendered` (additive), but `response.status`/`response_content_type`/`redirect` also stopped trusting `session.request`/`session.response` once a target request raised before producing one -- see Fixed, above. A consumer that read those fields after `execution.exception_class` was already set was reading a value from an earlier request; it now reads `nil`, named in `unobserved`.
 - A probe whose identity setup fails now still runs and is still observed, and reports the failure as `identity.establishment` rather than as an application exception — "asked for User #123, application saw nobody, halted at `authorize_admin`" is the evidence that matters most there.
 - Per-probe write and halted-callback observation now ignores notifications raised on other threads, so a concurrent request in a development server cannot be counted as a probe's own evidence.
 

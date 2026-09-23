@@ -216,7 +216,7 @@ RSpec.describe "request reproduction Rails integration" do
         headers: { "Authorization" => "Bearer real-key" }, anonymous: true
       ).evidence
 
-      expect(document[:schema_version]).to eq(2)
+      expect(document[:schema_version]).to eq(3)
       expect(document[:request][:method]).to eq("POST")
       expect(document[:request][:body]["passcode"]).to eq("<FILTERED>")
       expect(document[:execution][:controller]).to eq("KarstReproductionFixtureController")

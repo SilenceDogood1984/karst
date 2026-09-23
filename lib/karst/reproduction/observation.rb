@@ -30,10 +30,49 @@ module Karst
     #   :form    a form-encoded body, parsed and sanitized key by key
     #   :opaque  a body Karst sent verbatim but will not echo back, because
     #            it could not parse it well enough to sanitize it
+    #
+    # controller_completed, exception_class/exception_phase, and response
+    # (status/redirect/response_content_type) are three separate target-scoped
+    # facts, deliberately never inferred from one another:
+    #
+    #   controller_completed  true  -- process_action.action_controller finished
+    #                                  with no exception
+    #                         false  -- it finished carrying one
+    #                       nil/unobserved -- it never fired for this request
+    #                                  at all (nothing dispatched)
+    #
+    #   exception_phase        the most specific instrumentation-proven phase
+    #                          an observed exception occurred in --
+    #                          "controller", "render", or "unknown" -- derived
+    #                          by matching the exception object (and its
+    #                          #cause chain, since ActionView wraps a render
+    #                          exception in ActionView::Template::Error before
+    #                          it reaches the controller) against instrumented
+    #                          render events. nil whenever exception_class is
+    #                          nil: there is no phase to report for a request
+    #                          that raised nothing.
+    #
+    # Both are read off ActiveSupport::Notifications payloads captured while
+    # the target request ran, never off session.request/session.response --
+    # those two objects are only updated by ActionDispatch::Integration::Session
+    # *after* Rack::Test's app.call returns without raising. A target request
+    # that raises before producing a response leaves them holding whatever the
+    # previous request on the same session (identity establishment, most
+    # often) last wrote, so reading them post-hoc would silently attribute an
+    # earlier request's status/content type/location to this one.
+    #
+    # rendered is an Array of { virtual_path:, completed: } entries, one per
+    # ActionView template/partial/layout Karst observed the target request
+    # attempt (via "!render_template.action_view", the only notification
+    # exposing a template's own relative virtual_path rather than its
+    # absolute source file), in the order each one finished or raised.
+    # completed is false exactly when that specific render carried an
+    # exception; never inferred from the request's overall outcome.
     Observation = Value.define(
       :http_method, :url_path, :query_params, :route_params, :body_params, :body_representation,
-      :content_type, :headers, :controller, :action, :status, :response_content_type, :redirect,
-      :halted_callback, :exception_class, :writes_observed, :write_count,
+      :content_type, :headers, :controller, :action, :controller_completed,
+      :status, :response_content_type, :redirect,
+      :halted_callback, :exception_class, :exception_phase, :rendered, :writes_observed, :write_count,
       :database_rollback_attempted, :elapsed_ms, :identity, :unobserved
     ) do
       def observed?(field)
