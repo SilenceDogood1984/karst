@@ -540,11 +540,32 @@ module Karst
                        else
                          "<span class=\"unobserved\">no controller dispatched</span>"
                        end
+          "<h3>Observed execution</h3><p>#{dispatched}</p>#{recipe_controller_completed(execution)}" \
+            "#{recipe_execution_detail(execution)}#{recipe_rendered(execution[:rendered])}"
+        end
+
+        def recipe_execution_detail(execution)
           halted = execution[:halted_callback]
           exception = execution[:exception_class]
-          "<h3>Observed execution</h3><p>#{dispatched}</p>" \
-            "#{"<p>Halted at #{escape(halted)}</p>" if halted}" \
-            "#{"<p>Exception: #{escape(exception)}</p>" if exception}"
+          "#{"<p>Halted at #{escape(halted)}</p>" if halted}" \
+            "#{"<p>Exception: #{escape(exception)} (during #{escape(execution[:exception_phase])})</p>" if exception}"
+        end
+
+        def recipe_controller_completed(execution)
+          completed = execution[:controller_completed]
+          return "" if completed.nil?
+
+          "<p class=\"meta\">Controller completed: #{completed}</p>"
+        end
+
+        def recipe_rendered(rendered)
+          return "" if rendered.nil? || rendered.empty?
+
+          items = rendered.map do |template|
+            state = template[:completed] ? "" : " <span class=\"unobserved\">(raised)</span>"
+            "<li>#{escape(template[:virtual_path])}#{state}</li>"
+          end.join
+          "<p>Rendered:</p><ul>#{items}</ul>"
         end
 
         def recipe_response(response)

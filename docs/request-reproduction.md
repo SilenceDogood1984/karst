@@ -17,12 +17,23 @@ Karst issues **exactly one** request through the real Rails stack, inside a
 rolled-back database transaction, and reports:
 
 - the controller and action that actually dispatched
+- whether the controller lifecycle *completed* (`controller_completed`) --
+  distinct from dispatching: a controller can dispatch and still raise
 - the route parameters the router actually bound
 - the halted callback, if a `before_action` stopped the request
-- any raised exception
+- any raised exception, and the most specific phase Karst can prove it
+  happened in -- `controller`, `render`, or `unknown`
+- which templates, partials, and layouts were observed rendering (or
+  raising), by structural virtual path only -- never their content
 - the response status and content type
 - how many database writes the request made
 - a **cURL command for exactly what Karst sent**
+
+Every one of these is scoped strictly to the one request you asked for. If it
+raised before producing a response, the response fields are `null` and named
+in `unobserved` -- never a status, content type, or redirect left over from an
+earlier request Karst ran on the same session (identity establishment, most
+often).
 
 Then you iterate. A first attempt that halts at `authenticate_api_key!` has
 told you the endpoint's real gate. Add the header, send again, get a `201`,

@@ -23,13 +23,18 @@ module Karst
     class Reproduction
       include IdentitySerialization
 
-      # 2 (was 1): `identity` is now a Karst::Identity::Evidence document --
-      # requested/observed/confirmation, exactly like verify_access -- rather
-      # than a mechanism/assumed pair that only ever described what Karst
-      # asked for. A consumer reading the old `assumed` key and believing it
-      # described the identity the request actually ran under is precisely
-      # the false attribution this schema exists to make impossible.
-      SCHEMA_VERSION = 2
+      # 3 (was 2): `execution` gained controller_completed, exception_phase,
+      # and rendered -- additive -- but `response` (status/content_type/
+      # redirect) also stopped trusting session.request/session.response
+      # once a target request raised before producing one. Those fields
+      # could previously read back an *earlier* request's status, content
+      # type, or location on the same reproduction session (identity
+      # establishment's own request, most often); they now report nil, named
+      # in `unobserved`, in exactly that situation. This is a correctness
+      # fix, not a new failure mode: any consumer reading `response.status`
+      # after `execution.exception_class` was already set was reading a
+      # value Karst should never have reported.
+      SCHEMA_VERSION = 3
 
       # Same-connection rollback contains database writes and nothing else.
       # Named in the document rather than left implicit, so an agent
@@ -138,7 +143,9 @@ module Karst
       def execution(observation)
         {
           controller: observation.controller, action: observation.action,
+          controller_completed: observation.controller_completed,
           halted_callback: observation.halted_callback, exception_class: observation.exception_class,
+          exception_phase: observation.exception_phase, rendered: observation.rendered,
           writes_observed: observation.writes_observed, write_count: observation.write_count,
           database_rollback_attempted: observation.database_rollback_attempted
         }
@@ -184,8 +191,25 @@ module Karst
                  else
                    "  no controller dispatched"
                  end
+        append_execution_detail(lines, observation)
+        append_rendered(lines, observation.rendered)
+      end
+
+      def append_execution_detail(lines, observation)
+        lines << "  controller completed: #{observation.controller_completed}" \
+                 unless observation.controller_completed.nil?
         lines << "  halted at #{observation.halted_callback}" if observation.halted_callback
-        lines << "  exception #{observation.exception_class}" if observation.exception_class
+        lines << "  exception #{observation.exception_class} (during #{observation.exception_phase})" \
+                 if observation.exception_class
+      end
+
+      def append_rendered(lines, rendered)
+        return if rendered.empty?
+
+        lines << "  rendered:"
+        rendered.each do |template|
+          lines << "    #{template[:virtual_path]}#{' (raised)' unless template[:completed]}"
+        end
       end
 
       def append_response(lines, observation)

@@ -29,15 +29,27 @@ module Karst
         Use this to answer "something calls this Rails endpoint -- what request
         do I send to exercise the same behavior?". Karst executes the real
         application inside a rolled-back database transaction and reports what
-        actually happened: the controller and action that dispatched, any halted
-        callback (this is the observed authentication or authorization gate --
-        Karst never infers one from code), any raised exception, observed
-        database writes, response status and content type, plus a cURL command
-        for the exact request Karst sent.
+        actually happened: the controller and action that dispatched, whether
+        the controller lifecycle completed ("execution.controller_completed" --
+        distinct from dispatch: a controller can dispatch and still raise), any
+        halted callback (this is the observed authentication or authorization
+        gate -- Karst never infers one from code), any raised exception together
+        with the most specific phase instrumentation actually proves it happened
+        in ("execution.exception_phase": "controller", "render", or "unknown"),
+        which templates/partials/layouts were observed rendering or raising
+        ("execution.rendered", by structural virtual_path only -- never
+        content), observed database writes, response status and content type,
+        plus a cURL command for the exact request Karst sent.
+
+        Response facts (status/content_type/redirect) are strictly scoped to
+        this one request: if the target raised before producing a response,
+        they are null and named in "unobserved" rather than reflecting an
+        earlier request Karst ran on the same session (identity establishment,
+        most often).
 
         This is observed runtime evidence. A field Karst could not observe is
         null and named in "unobserved"; nothing is inferred from routes,
-        controller source, or strong parameters.
+        controller source, exception class/message, or strong parameters.
 
         Identity in the result follows the same requested/observed/confirmation
         contract as verify_access: "identity.confirmation" says whether the

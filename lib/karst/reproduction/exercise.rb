@@ -119,7 +119,9 @@ module Karst
         @writes = 0
         @halted_callback = nil
         @dispatch = nil
-        @status = @redirect = @exception_class = @response_content_type = nil
+        @render_events = []
+        @controller_completed = nil
+        @status = @redirect = @exception_class = @exception_object = @exception_phase = @response_content_type = nil
         @route = { raw: {}, sanitized: {}, observed: false }
 
         with_rollback do
@@ -141,9 +143,11 @@ module Karst
             end
           end
         rescue StandardError => e
-          @exception_class = e.class.name
+          @exception_class ||= e.class.name
+          @exception_object ||= e
         end
 
+        @exception_phase = exception_phase if @exception_object
         build(elapsed(started))
       end
       # rubocop:enable Metrics/MethodLength, Metrics/AbcSize
@@ -187,33 +191,78 @@ module Karst
         dispatches = lambda do |_name, _start, _finish, _id, payload|
           @dispatch = payload if thread.equal?(Thread.current)
         end
+        renders = render_subscriber(thread)
 
         ActiveSupport::Notifications.subscribed(writes, "sql.active_record") do
           ActiveSupport::Notifications.subscribed(halts, "halted_callback.action_controller") do
-            ActiveSupport::Notifications.subscribed(dispatches, "process_action.action_controller", &block)
+            ActiveSupport::Notifications.subscribed(renders, "!render_template.action_view") do
+              ActiveSupport::Notifications.subscribed(dispatches, "process_action.action_controller", &block)
+            end
           end
         end
       end
       # rubocop:enable Metrics/AbcSize, Metrics/MethodLength
 
-      def read_response(session)
-        rendered = request_exception(session)
-        return @exception_class = rendered.class.name if rendered
+      # "!render_template.action_view" -- not the higher-level, no-bang
+      # "render_template.action_view" -- because it is the one event
+      # ActionView::Template itself fires for every template, partial, and
+      # layout it renders, and the only one carrying that template's own
+      # relative virtual_path rather than an absolute source file. It fires
+      # once per Template#render call, whether that call completed or raised
+      # (ActiveSupport::Notifications::Instrumenter#instrument always
+      # delivers its payload, setting payload[:exception] /
+      # [:exception_object] first when the block raised), so it is a
+      # faithful, ordered record of what Karst actually observed being
+      # rendered for this one target request.
+      def render_subscriber(thread)
+        lambda do |_name, _start, _finish, _id, payload|
+          next unless thread.equal?(Thread.current) && payload[:virtual_path]
 
-        @status = session.response.status
-        @redirect = clean_redirect(session.response.location) if @status >= 300 && @status < 400
-        @response_content_type = response_content_type(session)
+          @render_events << { virtual_path: payload[:virtual_path].to_s, completed: !payload.key?(:exception),
+                              exception_object: payload[:exception_object] }
+        end
       end
 
-      # Integration::Session is intentionally reused for identity setup,
-      # the target, and cleanup so cookies behave like one real client. Its
-      # request and response pointers therefore always describe the most
-      # recent request. Copy the target-owned values while the target is
-      # still current; cleanup may then mutate the session without becoming
-      # reproduction evidence.
-      def capture_target(session)
-        read_response(session)
+      # Only ever called when the target request completed without raising:
+      # session.response (and session.request, for #route_params) are then
+      # guaranteed to describe this request, because
+      # ActionDispatch::Integration::Session#process only assigns them after
+      # Rack::Test's app.call returns -- see #capture_target.
+      def capture_response(session)
+        rendered = request_exception(session)
+        if rendered
+          @exception_class = rendered.class.name
+          @exception_object = rendered
+        else
+          @status = session.response.status
+          @redirect = clean_redirect(session.response.location) if @status >= 300 && @status < 400
+          @response_content_type = response_content_type(session)
+        end
         @route = route_params(session)
+      end
+
+      # Integration::Session is intentionally reused for identity setup, the
+      # target, and cleanup so cookies behave like one real client -- but that
+      # means session.request/session.response are only ever the most
+      # *recently completed* request's, not necessarily the target's. When
+      # the target raises before Rack::Test's app.call returns,
+      # ActionDispatch::Integration::Session#process never reassigns them, so
+      # they are left holding identity establishment's own response. $! is
+      # this method's only reliable signal that this happened: it runs from
+      # the ensure of the begin block wrapping the target dispatch, so while
+      # that block is unwinding because of a raised exception, $! is that
+      # exception -- checked here, before anything is read off the session,
+      # rather than trusting the session objects and finding out from
+      # #capture_response too late.
+      def capture_target(session)
+        target_exception = $! # rubocop:disable Style/SpecialGlobalVars
+        if target_exception
+          @exception_class = target_exception.class.name
+          @exception_object = target_exception
+        else
+          capture_response(session)
+        end
+        @controller_completed = !@dispatch.key?(:exception) if @dispatch
       end
 
       # rubocop:disable Metrics/MethodLength
@@ -226,8 +275,10 @@ module Karst
           route_params: route[:sanitized], body_params: body_params, body_representation: representation,
           content_type: @content_type.empty? ? nil : @content_type, headers: Sanitizer.headers(outgoing_headers),
           controller: dispatched(:controller), action: dispatched(:action),
+          controller_completed: @controller_completed,
           status: @status, response_content_type: response_type, redirect: @redirect,
           halted_callback: @halted_callback&.to_s, exception_class: @exception_class,
+          exception_phase: @exception_class ? @exception_phase : nil, rendered: rendered_evidence,
           writes_observed: @writes.positive?, write_count: @writes, database_rollback_attempted: true,
           elapsed_ms: elapsed_ms, identity: @identity.evidence,
           unobserved: unobserved(route, response_type).freeze
@@ -240,10 +291,52 @@ module Karst
         value.to_s.empty? ? nil : value.to_s
       end
 
+      def rendered_evidence
+        @render_events.map { |event| { virtual_path: event[:virtual_path], completed: event[:completed] }.freeze }
+                      .freeze
+      end
+
+      # The most specific phase Karst can actually prove an observed
+      # exception occurred in, never guessed from its class or message.
+      #
+      # A render-level exception reaches the controller wrapped in a new
+      # ActionView::Template::Error (see ActionView::Template#handle_render_
+      # error), so the object process_action/session ultimately saw is not
+      # the one "!render_template.action_view" recorded -- it is that
+      # object's #cause, or its #cause's #cause for a partial nested inside a
+      # template inside a layout. Walking #cause is therefore required, not
+      # optional, to recognize a render exception at all once it has
+      # unwound past the template that raised it.
+      def exception_phase
+        return "render" if raised_during_render?
+        return "controller" if @dispatch&.key?(:exception)
+
+        "unknown"
+      end
+
+      def raised_during_render?
+        @render_events.any? { |event| same_exception?(@exception_object, event[:exception_object]) }
+      end
+
+      def same_exception?(exception, candidate)
+        return false unless candidate
+
+        chain = exception
+        depth = 0
+        while chain && depth < 20
+          return true if chain.equal?(candidate)
+
+          chain = chain.respond_to?(:cause) ? chain.cause : nil
+          depth += 1
+        end
+        false
+      end
+
       def unobserved(route, response_type)
         missing = []
         missing << "controller" unless dispatched(:controller)
         missing << "action" unless dispatched(:action)
+        missing << "controller_completed" if @controller_completed.nil?
         missing << "route_params" unless route[:observed]
         missing << "status" if @status.nil?
         missing << "response_content_type" if response_type.nil?
