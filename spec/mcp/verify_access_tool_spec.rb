@@ -29,6 +29,15 @@ RSpec.describe Karst::Mcp::VerifyAccessTool do
       .to eq(%w[application_identities anonymous])
   end
 
+  # The CLI's --as (see Karst::CLI::Verification/PrincipalReference) is
+  # deliberately human-only: an agent can pick a path, but never a
+  # principal. This tool's #call signature is the actual enforcement --
+  # the input schema above only documents it -- so this pins both.
+  it "never gains a human-only principal selector such as --as" do
+    expect(described_class.input_schema.to_h[:properties].keys).not_to include(:as, :principal, :principal_id)
+    expect(described_class.method(:call).parameters.map(&:last)).not_to include(:as, :principal, :principal_id)
+  end
+
   it "delegates to Karst::CLI::Verification with the given path and method" do
     stub_evidence({ schema_version: 1, verified_usable: true })
 

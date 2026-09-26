@@ -47,6 +47,21 @@ Custom or non-Devise authentication needs a few lines of setup — see [Custom a
 4. Every result shows what actually happened: status, redirect, halted callback, exception, and observed database writes.
 5. Found a usable user? Click **Test as** to become them in your own browser and keep working.
 
+## Working with an existing record
+
+**Karst runs against records already in your development database, however they got there.** Console, seeds, `db:fixtures:load`, FactoryBot run in development/console, your app's own UI, or a tool like Body Double — Karst doesn't care, and doesn't require Body Double specifically. If a row exists in your development database, Karst can probe with it or as it.
+
+What Karst does *not* do is start from an object and find routes for you — you still bring the path. The workflow is:
+
+1. **Know a concrete path** — `/admin/imports/123`, from your own knowledge of the app.
+2. **Verify it** — `bin/rails karst:verify GET /admin/imports/123`, or press **Who can use this?** at `/karst`.
+3. **Optionally run as a specific user** — `--as User:72` on the CLI (see [CLI](#cli) below), or **Test as** on the panel once a usable user is found.
+4. **The panel/badge workflow** — every page in development carries a **Karst** badge linking straight to `/karst?controller=...&action=...`, already scoped to what rendered it.
+
+One caveat worth being explicit about: a record created and then rolled back *inside a transactional test spec* never reaches the development database at all, so there's nothing there for Karst to run against. Data loaded into the development database itself — by any of the mechanisms above — is what "existing record" means here.
+
+Karst does not claim to find every route a given user can reach, does not claim to prove nobody else can reach a route, and does not start a search from an arbitrary object. It runs the one route you name, as the identity you choose (sampled or explicit), and reports what it observed.
+
 ## Candidate populations
 
 Sometimes the right user is rare and won't show up in a normal recent-user sample. Karst can find these groups itself — no configuration needed. When the ordinary sample comes up empty, `/karst` says so:
@@ -82,6 +97,14 @@ bin/rails karst:verify GET /admin/imports/123 --json
 ```
 
 Runs the same search as `/karst` from a shell. Exit code `0` means a usable user was found, `1` means the search completed without one, `2` means a setup error. The `--json` form is a stable, schema-versioned evidence document meant for scripts and tools.
+
+Already know which existing record you want to test as — from the console, a seed, `db:fixtures:load`, or your app's own UI? Skip sampling and name it directly:
+
+```bash
+bin/rails karst:verify GET /admin/imports/123 --as User:72
+```
+
+`--as MODEL:ID` resolves that record through Karst's own configured principal source (the same lookup the panel's **Test as** button uses) and runs the route as exactly that principal — never a bespoke `constantize`/`find`, so a record outside your configured source(s) simply won't resolve. It's human-only: neither `verify_access` nor `reproduce_request` over MCP accepts it, and an agent can never pick a principal through Karst.
 
 ## Reproducing a request
 
@@ -122,6 +145,8 @@ That halted callback is the endpoint's real gate — observed, not inferred from
 reading the controller. Add the credential it wants, send again, and the cURL
 you copy is one you have watched work.
 
+`karst:reproduce` takes the same `--as MODEL:ID` as `karst:verify` above, to send that one request as a specific existing record instead of the ordinary sampled one.
+
 Secrets never come back out. Parameters go through your app's own
 `config.filter_parameters`, and credential-bearing headers become placeholders
 like `<API_KEY>` without their values ever being read. The same thing is
@@ -156,7 +181,7 @@ Claude Code or another [MCP](https://modelcontextprotocol.io) client gets two to
 - `verify_access` — exactly the evidence `karst:verify --json` prints. An agent can guess who *should* have access by reading code; only Karst can show who actually does.
 - `reproduce_request` — exactly the evidence `karst:reproduce --json` prints, including the redacted cURL command.
 
-In both cases the agent picks the request — it can't choose a user, skip the rollback, raise a limit, or use Test As.
+In both cases the agent picks the request — it can't choose a user, skip the rollback, raise a limit, or use Test As. That includes `--as`: it's a CLI-only, human-only option (see [CLI](#cli) above), and neither MCP tool accepts it in any form.
 
 ## Configuration
 

@@ -196,6 +196,72 @@ RSpec.describe Karst::CLI::Verification do
     end
   end
 
+  describe "running as one specific requested principal (--as)" do
+    def as_run(outcomes, as: "User:72", json: true)
+      output = StringIO.new
+      sweep_result = sweep(outcomes)
+      probe = instance_double(Karst::Access::Sweep, call: sweep_result)
+      allow(Karst::Access::Sweep).to receive(:new).and_return(probe)
+      allow(Karst::Identity).to receive(:setup_state).and_return(
+        Karst::Identity::SetupState.new(status: :ready_explicit, message: nil)
+      )
+      allow(Karst::Identity).to receive(:principal_sources).and_return(default: double)
+      code = described_class.new(path: "/admin/imports", output: output, json: json, as: as).call
+      [code, output.string]
+    end
+
+    it "resolves the requested principal through Identity.resolve, not an arbitrary lookup" do
+      principal = double("principal", id: 72)
+      allow(Karst::Identity).to receive(:resolve).with(model_name: "User", id: "72").and_return(principal)
+
+      code, text = as_run([outcome])
+
+      expect(Karst::Access::Sweep).to have_received(:new).with(hash_including(principals: [principal], limit: 1))
+      expect(JSON.parse(text).dig("probe", "identity")).to eq("specific_principal")
+      expect(code).to eq(0)
+    end
+
+    it "runs exactly one request against that principal, never a sample or a population retry" do
+      principal = double("principal", id: 72)
+      allow(Karst::Identity).to receive(:resolve).and_return(principal)
+
+      _code, text = as_run([outcome])
+
+      expect(JSON.parse(text)["populations"]).to eq([])
+    end
+
+    it "fails with an input error, never falling back to sampling, for an id Identity.resolve cannot find" do
+      allow(Karst::Identity).to receive(:resolve).with(model_name: "User", id: "9999").and_return(nil)
+
+      code, text = as_run([], as: "User:9999")
+      document = JSON.parse(text)
+
+      expect(code).to eq(2)
+      expect(document["error"]).to include("type" => "input_error")
+      expect(document["error"]["message"]).to match(/did not resolve/)
+      expect(Karst::Access::Sweep).not_to have_received(:new)
+    end
+
+    it "fails with a structured input error for a model outside any configured principal source" do
+      allow(Karst::Identity).to receive(:resolve).with(model_name: "Ghost", id: "1").and_return(nil)
+
+      code, text = as_run([], as: "Ghost:1")
+
+      expect(code).to eq(2)
+      expect(JSON.parse(text)["error"]["message"]).to match(/no Ghost #1/)
+    end
+
+    it "refuses a malformed --as reference immediately, at construction" do
+      expect { described_class.new(path: "/x", as: "not-a-reference") }
+        .to raise_error(ArgumentError, /MODEL:ID/)
+    end
+
+    it "refuses combining --anonymous and --as" do
+      expect { described_class.new(path: "/x", identity: "anonymous", as: "User:72") }
+        .to raise_error(ArgumentError, /--anonymous and --as cannot be combined/)
+    end
+  end
+
   describe "#evidence" do
     def evidence(path: "/admin/imports")
       allow(Karst::Identity).to receive(:setup_state).and_return(

@@ -45,5 +45,18 @@ RSpec.describe Rails::Command::Karst::ReproduceCommand do
   it "sends no headers when none are given" do
     expect(command.send(:headers)).to eq({})
   end
+
+  it "passes --as straight through to the reproduction as a MODEL:ID reference" do
+    reproduction = command("/api/v1/inspections", "--as", "User:72").send(:reproduction, "GET",
+                                                                          "/api/v1/inspections")
+
+    expect(reproduction.instance_variable_get(:@as)).to eq("User:72")
+  end
+
+  it "leaves --as unset by default" do
+    reproduction = command("/api/v1/inspections").send(:reproduction, "GET", "/api/v1/inspections")
+
+    expect(reproduction.instance_variable_get(:@as)).to be_nil
+  end
 end
 # rubocop:enable Metrics/BlockLength

@@ -17,6 +17,10 @@ module Rails
         class_option :header, type: :array, default: [], desc: "Request header, as 'Name: value' (repeatable)"
         class_option :anonymous, type: :boolean, default: false,
                                  desc: "Send without assuming any application identity"
+        class_option :as, type: :string,
+                          desc: "Send as one specific existing principal instead of the ordinary sampled " \
+                                "one, e.g. --as User:72. Resolved only through Karst's own configured " \
+                                "principal source(s); cannot be combined with --anonymous"
         class_option :base_url, type: :string, desc: "Base URL for the generated cURL command"
 
         desc "Issue one local request and print a reproducible, redacted recipe for it"
@@ -36,7 +40,8 @@ module Rails
         def reproduction(method, path)
           ::Karst::CLI::Reproduction.new(
             path: path, http_method: method, body: options[:body], content_type: options[:content_type],
-            headers: headers, anonymous: options[:anonymous], base_url: options[:base_url], json: options[:json]
+            headers: headers, anonymous: options[:anonymous], as: options[:as],
+            base_url: options[:base_url], json: options[:json]
           )
         end
 
