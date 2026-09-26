@@ -4,6 +4,7 @@ require "json"
 require "time"
 require_relative "../../karst"
 require_relative "identity_serialization"
+require_relative "principal_reference"
 
 module Karst
   module CLI
@@ -32,13 +33,26 @@ module Karst
       # Karst could not otherwise test.
       ANONYMOUS = :anonymous
 
-      def initialize(path:, http_method: "GET", output: $stdout, json: false, identity: nil)
+      # `as`, when given, is a human-only "MODEL:ID" reference (e.g.
+      # "User:72") naming one existing principal to run this probe as
+      # instead of sampling one -- see Karst::CLI::PrincipalReference. It is
+      # resolved exclusively through Karst::Identity.resolve, so it can never
+      # select a record outside a configured principal source. Mutually
+      # exclusive with `identity: "anonymous"`; nothing about this reaches
+      # the MCP verify_access tool, which never accepts it.
+      # rubocop:disable Metrics/ParameterLists
+      def initialize(path:, http_method: "GET", output: $stdout, json: false, identity: nil, as: nil)
         @path = path
         @http_method = http_method
         @output = output
         @json = json
         @identity = normalize_identity(identity)
+        PrincipalReference.parse(as) if as
+        raise ArgumentError, "--anonymous and --as cannot be combined" if anonymous? && as
+
+        @as = as
       end
+      # rubocop:enable Metrics/ParameterLists
 
       def call
         result = run_search
@@ -74,11 +88,37 @@ module Karst
         @identity == ANONYMOUS
       end
 
+      # An additive third value alongside the documented "anonymous" and
+      # "application_identities": a --as probe is still a real application
+      # identity, just a human-selected one rather than one Karst sampled --
+      # a distinction worth reporting honestly rather than folding into
+      # "application_identities" and implying this result came from the
+      # ordinary search.
+      def probe_identity
+        return "anonymous" if anonymous?
+        return "specific_principal" if @as
+
+        "application_identities"
+      end
+
       def run_search
         return anonymous_search if anonymous?
 
         validate_setup!
+        return as_search if @as
+
         Access::Search.new(path: @path, http_method: @http_method, sources: Identity.principal_sources).call
+      end
+
+      # One request against exactly the requested principal, never a sample
+      # and never a population retry: --as means "run as this one existing
+      # record," not "start a search that happens to prefer it." Wrapped in
+      # Access::Search::Result (with no attempts) purely so every downstream
+      # adapter method below stays the same for every probe kind.
+      def as_search
+        principal = PrincipalReference.resolve(@as)
+        sweep = Access::Sweep.new(path: @path, http_method: @http_method, principals: [principal], limit: 1).call
+        Access::Search::Result.new(initial: sweep, attempts: [].freeze)
       end
 
       # One request, no principal source consulted and none required: the
@@ -103,7 +143,7 @@ module Karst
         {
           schema_version: SCHEMA_VERSION,
           request: { method: result.http_method, path: result.path },
-          probe: { identity: anonymous? ? "anonymous" : "application_identities" },
+          probe: { identity: probe_identity },
           provenance: provenance,
           verified_usable: !winner.nil?,
           verified_identity: winner && identity_document(winner.identity),
@@ -174,14 +214,28 @@ module Karst
 
       def human(result)
         lines = ["Karst verification", "", "#{result.http_method} #{result.path}",
-                 "Probe identity: #{anonymous? ? 'anonymous' : "the application's own identities"}", "",
-                 anonymous? ? "Probe" : "Sample",
+                 "Probe identity: #{probe_identity_description}", "",
+                 probe_section_heading,
                  "  #{result.initial.outcomes.size} #{anonymous? ? 'request' : 'users tested'}"]
         lines << "  #{sample_usable_count(result)} verified usable" unless anonymous?
         append_key_evidence(lines, result.initial.outcomes)
         append_populations(lines, result)
         append_result(lines, result)
         lines.join("\n")
+      end
+
+      def probe_identity_description
+        return "anonymous" if anonymous?
+        return "the specific principal requested via --as" if @as
+
+        "the application's own identities"
+      end
+
+      def probe_section_heading
+        return "Probe" if anonymous?
+        return "Requested" if @as
+
+        "Sample"
       end
 
       def sample_usable_count(result)

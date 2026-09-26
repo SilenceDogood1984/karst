@@ -105,6 +105,24 @@ bin/rails karst:verify --anonymous /admin/imports/123
 
 or, over MCP, `verify_access(path:, identity: "anonymous")`. Karst establishes no identity, drops any identity queued for the probe session, runs the application's own `clear_identity` hook when one is configured, and then verifies at runtime that the application really did see no principal. If stale state produces one anyway, the result is `contaminated` — never "anonymous". An anonymous probe needs no principal source at all, so it works in an application Karst could not otherwise test.
 
+### Running as a specific principal
+
+`karst:verify` and `karst:reproduce` both accept `--as MODEL:ID`, a human-only way to run as one already-existing record instead of a sampled one:
+
+```bash
+bin/rails karst:verify GET /admin/imports/123 --as User:72
+bin/rails karst:reproduce GET /admin/imports/123 --as User:72
+```
+
+`MODEL:ID` is resolved exclusively through `Identity.resolve` — the same lookup the `/karst` panel's own **Test as** button already uses (see `Karst::Web::BrowserIdentity#assume`). It tries each configured principal source in turn and only ever runs a scoped query (or, for a plain Array/Enumerable source, an in-memory comparison) against that source's own records; a model name or id that does not belong to any configured source simply resolves to nothing. There is no `constantize`/`find` fallback and no way to reach a record Karst wasn't already configured to consider.
+
+A few things this deliberately is not:
+
+- It cannot be combined with `--anonymous` — one request has exactly one identity, requested one way.
+- It never falls back to sampling or to anonymous when the reference doesn't resolve; an explicit `--as` that fails to resolve is a hard, structured error (`error.type: "input_error"`).
+- It is not available over MCP. Neither `verify_access` nor `reproduce_request` accepts a principal argument in any form — an agent can choose *what* to request, never *who* to request it as. This is the same boundary that keeps Test As out of MCP.
+- It does not turn an object into a route. You still bring the concrete path; Karst still only runs the one route you name.
+
 ## Authentication identifiers in local human output
 
 Without `config.principal_label`, Karst normally labels a principal `Model #id`.

@@ -3,6 +3,7 @@
 require "json"
 require_relative "../../karst"
 require_relative "identity_serialization"
+require_relative "principal_reference"
 require_relative "../reproduction/exercise"
 require_relative "../reproduction/curl"
 
@@ -42,20 +43,32 @@ module Karst
       # boundary instead of assuming "isolated" means isolated.
       NOT_ISOLATED = ["background jobs", "mail", "outbound HTTP", "files", "other database connections"].freeze
 
-      # rubocop:disable Metrics/ParameterLists
+      # `as`, when given, is a human-only "MODEL:ID" reference (e.g.
+      # "User:72") naming one existing principal to send this one request as,
+      # instead of the ordinary sampled candidate -- see
+      # Karst::CLI::PrincipalReference. Resolved exclusively through
+      # Karst::Identity.resolve, so it can never select a record outside a
+      # configured principal source. Mutually exclusive with `anonymous`;
+      # nothing about this reaches the MCP reproduce_request tool, which
+      # never accepts it.
+      # rubocop:disable Metrics/ParameterLists, Metrics/MethodLength
       def initialize(path:, http_method: "GET", body: nil, content_type: nil, headers: {},
-                     anonymous: false, base_url: nil, output: $stdout, json: false)
+                     anonymous: false, as: nil, base_url: nil, output: $stdout, json: false)
+        PrincipalReference.parse(as) if as
+        raise ArgumentError, "--anonymous and --as cannot be combined" if anonymous && as
+
         @path = path
         @http_method = http_method
         @body = body
         @content_type = content_type
         @headers = headers || {}
         @anonymous = anonymous
+        @as = as
         @base_url = base_url.to_s.empty? ? Karst::Reproduction::Curl::DEFAULT_BASE_URL : base_url.to_s
         @output = output
         @json = json
       end
-      # rubocop:enable Metrics/ParameterLists
+      # rubocop:enable Metrics/ParameterLists, Metrics/MethodLength
 
       def call
         observation = run
@@ -77,14 +90,22 @@ module Karst
 
       private
 
+      # rubocop:disable Metrics/MethodLength
       def run
         @identity_reason = nil
-        principal = @anonymous ? Identity::ANONYMOUS : sampled_principal
+        principal = if @anonymous
+                      Identity::ANONYMOUS
+                    elsif @as
+                      PrincipalReference.resolve(@as)
+                    else
+                      sampled_principal
+                    end
         Karst::Reproduction::Exercise.new(
           path: @path, http_method: @http_method, body: @body, content_type: @content_type,
           headers: @headers, principal: principal
         ).call
       end
+      # rubocop:enable Metrics/MethodLength
 
       # One candidate, not a sample: reproduction issues exactly one request,
       # so asking the sampler for more than one would query for records

@@ -119,9 +119,13 @@ bin/rails karst:reproduce POST /api/v1/inspections \
 ```
 
 Add `--json` for the same schema-versioned evidence document the MCP tool
-returns. `--anonymous` sends without assuming any identity. Exit code `0`
-means Karst observed a response, `1` means the request raised, `2` means Karst
-could not issue it at all.
+returns. `--anonymous` sends without assuming any identity. `--as MODEL:ID`
+(e.g. `--as User:72`) sends as one specific existing record instead of the
+ordinary sampled one, resolved only through Karst's own configured principal
+source — see [Running as a specific principal](advanced-configuration.md#running-as-a-specific-principal)
+in the advanced configuration docs. `--as` is CLI-only and cannot be combined
+with `--anonymous`. Exit code `0` means Karst observed a response, `1` means
+the request raised, `2` means Karst could not issue it at all.
 
 ### From a coding agent
 

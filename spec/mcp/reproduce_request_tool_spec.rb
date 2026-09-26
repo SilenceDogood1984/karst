@@ -33,6 +33,15 @@ RSpec.describe Karst::Mcp::ReproduceRequestTool do
       .to contain_exactly(:path, :method, :body, :content_type, :headers, :anonymous, :base_url)
   end
 
+  # The CLI's --as (see Karst::CLI::Reproduction/PrincipalReference) is
+  # deliberately human-only: an agent can pick a request, but never a
+  # principal. This tool's #call signature is the actual enforcement --
+  # the input schema above only documents it -- so this pins both.
+  it "never gains a human-only principal selector such as --as" do
+    expect(described_class.input_schema.to_h[:properties].keys).not_to include(:as, :principal, :principal_id)
+    expect(described_class.method(:call).parameters.map(&:last)).not_to include(:as, :principal, :principal_id)
+  end
+
   it "tells an agent that this issues one real request whose non-database effects are not isolated" do
     expect(described_class.description).to include("exactly one request", "not isolated")
   end
