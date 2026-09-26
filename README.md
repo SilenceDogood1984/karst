@@ -49,7 +49,9 @@ Custom or non-Devise authentication needs a few lines of setup — see [Custom a
 
 ## Working with an existing record
 
-**Karst runs against records already in your development database, however they got there.** Console, seeds, `db:fixtures:load`, FactoryBot run in development/console, your app's own UI, or a tool like Body Double — Karst doesn't care, and doesn't require Body Double specifically. If a row exists in your development database, Karst can probe with it or as it.
+**Karst runs against records already in your development database, however they got there.** Console, seeds, `db:fixtures:load`, FactoryBot run in development/console, your app's own UI, or a tool like Body Double — Karst doesn't care how they were created, and doesn't require Body Double specifically.
+
+That's true of the *path* unconditionally — `/admin/imports/123` is just a string, and any row backing it is fair game. It's true of *identity* only within a boundary: to run a probe as a specific principal (`--as`, or **Test as** on the panel), that record must be one Karst's configured principal source(s) can actually resolve (see [Identity.resolve](docs/advanced-configuration.md#running-as-a-specific-principal)) — an arbitrary development-database row is not automatically assumable as a principal just because it exists.
 
 What Karst does *not* do is start from an object and find routes for you — you still bring the path. The workflow is:
 
@@ -60,7 +62,7 @@ What Karst does *not* do is start from an object and find routes for you — you
 
 One caveat worth being explicit about: a record created and then rolled back *inside a transactional test spec* never reaches the development database at all, so there's nothing there for Karst to run against. Data loaded into the development database itself — by any of the mechanisms above — is what "existing record" means here.
 
-Karst does not claim to find every route a given user can reach, does not claim to prove nobody else can reach a route, and does not start a search from an arbitrary object. It runs the one route you name, as the identity you choose (sampled or explicit), and reports what it observed.
+Karst does not claim to find every route a given user can reach, does not claim to prove nobody else can reach a route, and does not start a search from an arbitrary object. It runs the one route you name, using either Karst's sampled identity or the explicit principal you select, and reports what it observed.
 
 ## Candidate populations
 
