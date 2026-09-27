@@ -6,7 +6,7 @@ require_relative "observed_endpoint"
 module Karst
   module Access
     # One probe request's complete identity lifecycle, kept out of
-    # Access::Sweep so the rule it exists to enforce stays readable:
+    # Access::Probe so the rule it exists to enforce stays readable:
     #
     #   a requested identity is intent, an established one is setup, and only
     #   an observed one is evidence.
@@ -48,6 +48,15 @@ module Karst
         @request_env = env
       end
 
+      # Called as the target request starts. Identity setup may already have
+      # issued requests on the same session (a sign-in endpoint, a clear
+      # hook), and only the target's own env may ever be observed -- so
+      # whatever setup left behind is forgotten here, and a target that never
+      # reaches the application leaves nothing to observe at all.
+      def begin_target
+        @request_env = nil
+      end
+
       def establish(session)
         @anonymous ? establish_anonymous(session) : establish_principal(session)
       end
@@ -65,6 +74,20 @@ module Karst
         Identity::WardenAdapter.discard_pending!
       end
 
+      # Karst's own sign-in raised inside the target request itself (see
+      # Identity::EstablishmentError): identity was never established, and
+      # the request stopped before the application dispatched it. Whatever
+      # half-applied state its env holds is not the application's, so
+      # nothing is observed from it.
+      def establishment_failed(message)
+        @establishment = :failed
+        @establishment_error = message
+        @request_env = nil
+        @observations[:request_completion] ||=
+          Identity::Observation.new(principal: nil, source: nil,
+                                    error: "the request stopped during Karst's own sign-in, before the application ran")
+      end
+
       # Called at each moment worth observing. Ignores events raised on
       # another thread: ActiveSupport::Notifications subscriptions are
       # process-wide, and a concurrent request in a real development server
@@ -72,17 +95,7 @@ module Karst
       def observe(phase)
         return unless Thread.current == @thread
 
-        @dispatched ||= dispatched_from(@request_env)
         @observations[phase] ||= Identity::Observer.observe(@request_env, requested: observable_principal)
-      end
-
-      # The controller class and action the probed request actually reached,
-      # recorded at observation time rather than read back afterwards: an
-      # identity seam that signs a probe out through its own endpoint issues
-      # a second request on the same session, and the last env Karst holds is
-      # then that sign-out request's, not the probed route's.
-      def dispatched
-        @dispatched || [nil, nil]
       end
 
       def observed_this_probe?(phase)
@@ -98,15 +111,6 @@ module Karst
       end
 
       private
-
-      def dispatched_from(env)
-        instance = env && env["action_controller.instance"]
-        return nil unless instance
-
-        [instance.class.name, (instance.action_name if instance.respond_to?(:action_name))]
-      rescue StandardError
-        nil
-      end
 
       def observable_principal
         @anonymous ? nil : @principal

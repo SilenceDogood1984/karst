@@ -19,7 +19,7 @@ RSpec.describe Karst::CLI::Verification do
     Outcome.new(principal: requested,
                 status: status, redirect: redirect, exception_class: exception, writes_observed: writes.positive?,
                 write_count: writes, elapsed_ms: 2.5, database_rollback_attempted: true,
-                sampling_reasons: [].freeze, body_marker_observed: nil, halted_callback: callback,
+                sampling_reasons: [].freeze, halted_callback: callback,
                 identity: identity_evidence(requested, confirmation), controller: "ImportsController",
                 action: "index")
   end

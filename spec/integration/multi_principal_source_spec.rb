@@ -33,19 +33,26 @@ RSpec.describe "multiple configured principal sources" do
     attr_accessor :status, :location
   end
 
+  # Issues each request through the endpoint Karst hands it, exactly as
+  # ActionDispatch::Integration::Session does, so Access::Probe observes a
+  # request that really reached the application.
   class MultiSourceSession
     attr_reader :response
 
-    def initialize(_application)
+    def initialize(application)
+      @application = application
       @response = MultiSourceResponse.new
     end
 
     attr_writer :identity
 
-    def get(_path)
+    def process(_method, path, **)
+      @application.call("PATH_INFO" => path)
       @response.status = @identity.behavior == "forbidden" ? 403 : 200
     end
   end
+
+  MULTI_SOURCE_APPLICATION = ->(_env) { [200, {}, []] }
 
   before(:all) do
     MultiSourceFixtureRecord.connection.create_table :multi_source_authors, force: true do |t|
@@ -106,7 +113,7 @@ RSpec.describe "multiple configured principal sources" do
 
     sampled = Karst::Access::PrincipalSelection.new(sources: Karst::Identity.principal_sources, limit: 6).call
     result = Karst::Access::Sweep.new(
-      path: "/documents", principals: sampled.principals, application: Object.new
+      path: "/documents", principals: sampled.principals, application: MULTI_SOURCE_APPLICATION
     ).call
 
     expect(result.outcomes.size).to eq(6)
@@ -123,7 +130,7 @@ RSpec.describe "multiple configured principal sources" do
 
     sampled = Karst::Access::PrincipalSelection.new(sources: Karst::Identity.principal_sources, limit: 2).call
     result = Karst::Access::Sweep.new(
-      path: "/documents", principals: sampled.principals, application: Object.new
+      path: "/documents", principals: sampled.principals, application: MULTI_SOURCE_APPLICATION
     ).call
 
     expect(result.outcomes.map(&:principal).map(&:model_name)).to contain_exactly("MultiSourceAuthor",
@@ -149,7 +156,8 @@ RSpec.describe "multiple configured principal sources" do
     sampled = Karst::Access::PrincipalSelection.new(sources: Karst::Identity.principal_sources, limit: 10).call
     reasons = sampled.candidates.to_h { |c| [c.principal, c.reasons] }
     result = Karst::Access::Sweep.new(
-      path: "/documents", principals: sampled.principals, sampling_reasons: reasons, application: Object.new
+      path: "/documents", principals: sampled.principals, sampling_reasons: reasons,
+      application: MULTI_SOURCE_APPLICATION
     ).call
 
     premium_outcome = result.outcomes.find do |o|

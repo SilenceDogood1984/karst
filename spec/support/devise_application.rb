@@ -72,6 +72,11 @@ ActiveRecord::Schema.define do
     t.string :reset_password_token
     t.datetime :reset_password_sent_at
     t.datetime :remember_created_at
+    t.integer :sign_in_count, default: 0, null: false
+    t.datetime :current_sign_in_at
+    t.datetime :last_sign_in_at
+    t.string :current_sign_in_ip
+    t.string :last_sign_in_ip
     t.timestamps null: false
   end
   add_index :karst_devise_users, :email, unique: true
@@ -82,7 +87,12 @@ ActiveRecord::Schema.define do
 end
 
 class KarstDeviseUser < ActiveRecord::Base
-  devise :database_authenticatable, :registerable, :recoverable, :rememberable, :validatable
+  # :trackable is what makes this fixture's identity setup write: Devise
+  # records every sign-in (an UPDATE of sign_in_count and friends) from a
+  # Warden after_set_user hook, and Karst's automatic identity is applied by
+  # exactly that set_user, inside the probe request itself. The UPDATE is
+  # Karst's own sign-in, never the probed route's behavior.
+  devise :database_authenticatable, :registerable, :recoverable, :rememberable, :validatable, :trackable
 
   has_one :karst_devise_admin_grant
 

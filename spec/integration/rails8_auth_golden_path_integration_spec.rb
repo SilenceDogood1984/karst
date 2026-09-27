@@ -117,18 +117,20 @@ RSpec.describe "Rails 8 generated authentication golden path, real Rails, no Dev
 
     # 1. Ordinary sample: real probes through the real signed-cookie session
     # resume path, each correctly authenticated as themselves and correctly
-    # halted by the real controller's own authorization check. Unlike the
-    # Devise/Warden and plain-session-hash golden paths, this is honestly
-    # NOT zero-write evidence: Rails' generated auth persists a `Session`
-    # row per sign-in, so assume_identity/clear_identity's own login/logout
-    # (not the probed route) insert and delete that row on every probe --
-    # observed and reported like any other write, and rolled back like any
-    # other write (see the residual-count assertions below).
+    # halted by the real controller's own authorization check. Rails'
+    # generated auth persists a `Session` row per sign-in, so
+    # assume_identity/clear_identity's own login/logout (not the probed
+    # route) insert and delete that row on every probe -- but that is
+    # identity setup/teardown, not the route's own behavior, so it is never
+    # counted as this probe's write evidence (see Access::Probe's
+    # target-only observation window). It is still rolled back like any
+    # other write on the connection (see the residual-count assertions
+    # below).
     first = browser.post("/karst", operation: "access_sweep", method: "GET", path: "/reports/1")
     expect(first.status).to eq(200)
     expect(first.body).to include("No verified usable user found")
     expect(first.body).to include("403 Forbidden", "halted at authorize_admin")
-    expect(first.body).to include("⚠ Database writes observed during 25 probes.")
+    expect(first.body).to include("Database writes observed: 0")
 
     # 2. system_admins is discoverable (source parsed, never executed) but
     # not yet searched.
@@ -191,8 +193,9 @@ RSpec.describe "Rails 8 generated authentication golden path, real Rails, no Dev
     expect(KarstRails8AuthSession.count).to eq(0)
   end
 
-  it "observes, but never persists, the Session row assume_identity/clear_identity's own login/logout " \
-     "create -- rolled back inside Access::Sweep's same-connection transaction along with everything else" do
+  it "never attributes the Session row assume_identity/clear_identity's own login/logout creates and " \
+     "destroys to the route's own evidence, and never persists it -- rolled back inside Access::Sweep's " \
+     "same-connection transaction along with everything else" do
     configure_karst_for_rails8_auth!
     reachable = KarstRails8AuthUser.create!(email_address: "reachable@example.com", password_digest: "x")
     KarstRails8AuthAdminGrant.create!(karst_rails8_auth_user: reachable)
@@ -203,9 +206,11 @@ RSpec.describe "Rails 8 generated authentication golden path, real Rails, no Dev
     )
 
     expect(analysis.body).to include("Verified usable user", "KarstRails8AuthUser ##{reachable.id}")
-    # The two writes are the probe login's Session#create! and logout's
-    # Session#destroy -- not the (read-only) restricted route itself.
-    expect(analysis.body).to include("2 database writes observed")
+    # The probe login's Session#create! and logout's Session#destroy are
+    # identity setup/teardown, not the (read-only) restricted route itself,
+    # so they are never reported as this probe's write evidence -- no
+    # "database writes observed" suffix appears for this outcome at all.
+    expect(analysis.body).not_to include("database writes observed")
     expect(KarstRails8AuthSession.count).to eq(0)
   end
 end
