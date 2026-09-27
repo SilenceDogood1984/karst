@@ -338,6 +338,43 @@ RSpec.describe Karst::Web::Panel do
     end
   end
 
+  describe "one identity snapshot per render" do
+    it "asks nothing of the live identity configuration per listed user" do
+      snapshot = Karst::Identity::Snapshot.new(principal_sources: { default: double }, browser_supported: true,
+                                               setup_state: nil)
+      allow(Karst::Identity).to receive(:browser_supported?)
+      allow(Karst::Identity).to receive(:principal_sources)
+      allow(Karst::Identity).to receive(:setup_state)
+      outcomes = (1..25).map { |id| access_outcome(id: id, status: id == 25 ? 200 : 403) }
+
+      body = described_class.render(params: analyzed_route, csrf_token: "token", identity_snapshot: snapshot,
+                                    access_result: access_result(outcomes)).last.join
+
+      expect(body).to include("Test as")
+      expect(Karst::Identity).not_to have_received(:browser_supported?)
+      expect(Karst::Identity).not_to have_received(:principal_sources)
+      expect(Karst::Identity).not_to have_received(:setup_state)
+    end
+
+    it "offers no Test As anywhere when the snapshot says browser identity is unsupported" do
+      snapshot = Karst::Identity::Snapshot.new(principal_sources: { default: double }, browser_supported: false,
+                                               setup_state: Karst::Identity::SetupState.new(status: :ready_explicit,
+                                                                                            message: nil))
+      body = described_class.render(params: analyzed_route, csrf_token: "token", identity_snapshot: snapshot,
+                                    access_result: access_result([access_outcome(id: 1, status: 200)])).last.join
+
+      expect(body).not_to include("Test as</button>")
+    end
+
+    it "lists the largest outcome group first" do
+      outcomes = [access_outcome(id: 1, status: 404)] + (2..4).map { |id| access_outcome(id: id, status: 403) }
+
+      body = described_class.render(params: analyzed_route, access_result: access_result(outcomes)).last.join
+
+      expect(body.index("403 Forbidden — 3")).to be < body.index("404 Not Found — 1")
+    end
+  end
+
   describe "one-run evidence" do
     it "groups repeats while preserving exact user identities in expandable details" do
       outcomes = [1, 7, 18].map do |id|

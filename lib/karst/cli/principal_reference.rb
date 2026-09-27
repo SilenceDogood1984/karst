@@ -32,9 +32,14 @@ module Karst
       # never nil, and never a fallback to sampling or to anonymous. A
       # caller who explicitly asked to run as one principal gets that
       # principal or a clear failure, not a silent substitute.
-      def self.resolve(value)
+      #
+      # `sources:`, when given, is the operation's already-resolved principal
+      # source Hash (see Karst::Identity::Snapshot).
+      def self.resolve(value, sources: nil)
         reference = parse(value)
-        principal = Identity.resolve(model_name: reference.model_name, id: reference.id)
+        lookup = { model_name: reference.model_name, id: reference.id }
+        lookup[:sources] = sources if sources
+        principal = Identity.resolve(**lookup)
         return principal if principal
 
         raise ArgumentError,

@@ -14,6 +14,9 @@ module Karst
 
       Candidate = Value.define(:model_name, :method_name, :principal_source)
 
+      UNRESOLVED = Object.new.freeze
+      private_constant :UNRESOLVED
+
       ModelGroup = Value.define(:model_name, :candidate_names, :principal_source) do
         def candidates
           candidate_names.map do |method_name|
@@ -26,6 +29,13 @@ module Karst
         def candidates
           model_groups.flat_map(&:candidates)
         end
+      end
+
+      # `principal_sources:`, when given, is the caller's already-resolved
+      # effective principal source Hash (see Karst::Identity::Snapshot), used
+      # instead of resolving configuration again here.
+      def initialize(principal_sources: UNRESOLVED)
+        @principal_sources = principal_sources
       end
 
       def call
@@ -119,7 +129,7 @@ module Karst
       # and re-parse model source once per model group too.
       def principal_source_klasses
         @principal_source_klasses ||= begin
-          sources = Karst.config.principal_sources || {}
+          sources = (@principal_sources.equal?(UNRESOLVED) ? Karst.config.principal_sources : @principal_sources) || {}
           sources.each_with_object({}) do |(name, source), memo|
             klass = source.record_klass
             memo[name] = klass if klass

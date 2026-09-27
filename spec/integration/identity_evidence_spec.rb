@@ -349,7 +349,7 @@ RSpec.describe "runtime-confirmed identity evidence" do
       document = Karst::CLI::Verification.new(path: "/identity_evidence/admin_document",
                                               identity: "anonymous").evidence
 
-      expect(document[:schema_version]).to eq(2)
+      expect(document[:schema_version]).to eq(3)
       expect(document[:probe]).to eq(identity: "anonymous")
       expect(document[:verified_usable]).to be(false)
       outcome = document[:sample][:outcomes].first

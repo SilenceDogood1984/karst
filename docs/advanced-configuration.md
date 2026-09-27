@@ -208,6 +208,12 @@ Deliberately machine-local, git-ignored development state, not project configura
 
 An approval only ever becomes executable for a model that is already a configured or Devise-inferred principal source (the class always comes from that source, never from the file), and only in development/test — production never reads the file. `config.principal_populations`/`config.principal_sources[...] :populations` keeps working unchanged and wins outright over an approval of the same name; Karst compares by name only, since it never inspects a configured callable's body. Approved populations reach `Access::Search` the same way configured ones do, so `/karst`, `bin/rails karst:verify`, and the MCP `verify_access` tool all pick them up automatically with no adapter-specific wiring.
 
+## When configuration is read
+
+Working out the effective principal sources is real work: reading the local approval and selection files, parsing model source with `Ripper`, and calling your `principals`/`principal_sources` callables. Karst does it **once per operation** — one `bin/rails karst:verify` run, one MCP `verify_access` call, one `/karst` request — and every part of that operation (setup checks, sampling, population retries, `--as` lookup, **Test as** availability for every listed user) reuses that one result. Within an operation, each principal source callable is called once.
+
+Nothing is cached beyond the operation. The next operation reads everything again, so an approval revoked at `/karst/populations`, a scope deleted from a model, or a changed initializer takes effect on the next analysis without restarting the server. Callables that run per request by design — `assume_identity`, `clear_identity`, `observe_identity`, `principal_label` — and `usable_access_outcome`, which is applied to each outcome, are unaffected.
+
 
 ## Full configuration reference
 

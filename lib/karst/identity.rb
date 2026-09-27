@@ -78,6 +78,38 @@ module Karst
     # probe/browser identity still couldn't be wired up automatically.
     SetupState = Value.define(:status, :message)
 
+    # One high-level operation's view of the effective identity
+    # configuration -- a `bin/rails karst:verify` run, one MCP verify_access
+    # call, one /karst request -- taken once, when the operation starts, from
+    # exactly one Configuration#principal_sources resolution (approval file
+    # read, model-source parse, principal source callables evaluated once
+    # each). Everything the operation asks about identity setup reads this
+    # value instead of re-resolving configuration: readiness, browser Test As
+    # support, and which principal sources to sample or resolve from.
+    #
+    # Deliberately operation-scoped, never cached beyond that: the next
+    # operation takes a fresh snapshot, so a revoked approval, a deleted
+    # scope, or a changed initializer takes effect without a restart. A
+    # caller that changes local state (saving a selection, approving a
+    # population) takes its snapshot after that write, not before.
+    #
+    # `principal_sources` is nil when no principal source is configured.
+    Snapshot = Value.define(:principal_sources, :setup_state, :browser_supported) do
+      # Identity.principal_sources' contract, over this snapshot.
+      def principal_sources!
+        principal_sources || raise(Unavailable, "no principal source is configured")
+      end
+
+      def browser_supported?
+        browser_supported
+      end
+    end
+
+    # Marks "the caller did not resolve principal sources; resolve them
+    # here" -- distinct from a caller-resolved nil, which means none exist.
+    UNRESOLVED = Object.new.freeze
+    private_constant :UNRESOLVED
+
     # Delegates identity operations to the application's configured hooks.
     class ConfiguredAdapter
       def initialize(assume_hook, clear_hook)
@@ -120,6 +152,14 @@ module Karst
         raise Unavailable, "no principal source is configured" unless sources
 
         sources
+      end
+
+      # See Snapshot. Resolves principal sources exactly once and derives
+      # every other answer from that one resolution.
+      def snapshot
+        sources = safe_principal_sources
+        Snapshot.new(principal_sources: sources, setup_state: setup_state(sources: sources),
+                     browser_supported: browser_supported?(sources: sources))
       end
 
       def with(session, principal)
@@ -184,16 +224,20 @@ module Karst
       # principal outside a configured relation is never resolved. A generic
       # Enumerable source (no scoped-query capability) keeps the original
       # enumerate-and-compare behavior, bounded to that one source.
-      def resolve(model_name:, id:)
-        principal_sources.each_value do |source|
+      #
+      # `sources:` is an already-resolved principal source Hash (see
+      # Snapshot); omitted, the effective configuration is resolved here.
+      def resolve(model_name:, id:, sources: nil)
+        (sources || principal_sources).each_value do |source|
           resolved = resolve_within_source(source, model_name: model_name, id: id)
           return resolved if resolved
         end
         nil
       end
 
-      def browser_supported?
-        explicit_browser_hooks? || automatic_browser_identity_available?
+      # `sources:` as for #setup_state.
+      def browser_supported?(sources: UNRESOLVED)
+        explicit_browser_hooks? || automatic_browser_identity_available?(lazy_sources(sources))
       end
 
       # Returns the Devise/Warden scope this browser identity was actually
@@ -237,10 +281,16 @@ module Karst
       # panel already does on every render to type-check its result (see
       # Access::PrincipalSampler.representative_capable?) -- never to
       # enumerate or query it.
-      def setup_state
+      #
+      # `sources:` is an already-resolved principal source Hash (possibly
+      # nil -- none configured), as a Snapshot holds; omitted, principal
+      # sources are resolved here, at most once per call.
+      def setup_state(sources: UNRESOLVED)
         return SetupState.new(status: :ambiguous, message: ambiguous_message) if ambiguous_principal_source?
         return SetupState.new(status: :unavailable, message: nil) unless principal_source_ready?
-        return SetupState.new(status: :unavailable, message: unavailable_message) unless identity_channels_ready?
+        unless identity_channels_ready?(lazy_sources(sources))
+          return SetupState.new(status: :unavailable, message: unavailable_message)
+        end
 
         SetupState.new(status: ready_status, message: nil)
       end
@@ -305,9 +355,23 @@ module Karst
         nil
       end
 
-      def identity_channels_ready?
-        (explicit_probe_hooks? || automatic_identity_available?) &&
-          (explicit_browser_hooks? || automatic_browser_identity_available?)
+      def identity_channels_ready?(sources)
+        (explicit_probe_hooks? || automatic_identity_available?(sources)) &&
+          (explicit_browser_hooks? || automatic_browser_identity_available?(sources))
+      end
+
+      # Resolves principal sources only if a check actually needs them, and
+      # then only once, however many checks ask. `sources` is either a
+      # caller's resolution (used as-is) or UNRESOLVED.
+      def lazy_sources(sources)
+        resolved = false
+        lambda do
+          unless resolved
+            sources = safe_principal_sources if sources.equal?(UNRESOLVED)
+            resolved = true
+          end
+          sources
+        end
       end
 
       # Only called once every channel is already known to be ready (see
@@ -373,11 +437,11 @@ module Karst
       # Probe-identity eligibility. Preserves the pre-existing bare-Warden
       # fallback (no Devise, no scope) for a non-Devise application already
       # relying on Karst's isolated integration session -- see WardenAdapter.
-      def automatic_identity_available?
+      def automatic_identity_available?(sources)
         return false unless warden_available?
         return true unless DeviseSupport.available?
 
-        every_effective_source_scoped?
+        every_effective_source_scoped?(sources.call)
       end
 
       # Browser-identity eligibility. Deliberately stricter than probe
@@ -385,10 +449,10 @@ module Karst
       # browser session is only safe once Karst can prove the Devise
       # scope -- a bare bootstrapped Warden proxy with no scope is never
       # enough here, unlike the isolated probe session.
-      def automatic_browser_identity_available?
+      def automatic_browser_identity_available?(sources)
         return false unless warden_available? && DeviseSupport.available?
 
-        every_effective_source_scoped?
+        every_effective_source_scoped?(sources.call)
       end
 
       # True once every currently effective principal source resolves to its
@@ -401,8 +465,7 @@ module Karst
       # sources; this governs only "no principal yet" eligibility and the
       # bare-clear fallback, so it still refuses to guess when a source is
       # not provably Devise-scoped.
-      def every_effective_source_scoped?
-        sources = safe_principal_sources
+      def every_effective_source_scoped?(sources)
         return false unless sources&.any?
 
         sources.values.all? { |source| devise_scope_for_source(source) }

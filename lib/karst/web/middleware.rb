@@ -96,11 +96,16 @@ module Karst
         reproduction, denied = reproduction_result(env, params, csrf)
         return denied if denied
 
-        result = analyze(env, params, approval: approval)
-        candidates = inline_population_candidates(result)
+        # Every local-state write this request may make (selection,
+        # approval) has happened by now, so one snapshot of the effective
+        # identity configuration serves the analysis, discovery, and the
+        # whole page render -- never one resolution per rendered user.
+        identity = Identity.snapshot
+        result = analyze(env, params, identity, approval: approval)
+        candidates = inline_population_candidates(result, identity)
         Panel.render(params: params, access_result: result, route_lookup_limitation: lookup&.limitation,
-                     csrf_token: csrf_token(csrf),
-                     browser_identity_active: browser_identity_active?(browser_identity),
+                     csrf_token: csrf_token(csrf), identity_snapshot: identity,
+                     browser_identity_active: browser_identity_active?(browser_identity, identity),
                      unapproved_candidates: candidates, population_approval_error: approval&.error,
                      principal_source_selection_saved: !selection.nil? && selection.error.nil?,
                      principal_source_selection_error: selection&.error, reproduction: reproduction)
@@ -180,8 +185,9 @@ module Karst
         return [nil, forbidden] unless approved_origin?(env)
 
         csrf.verify!(params["csrf_token"])
-        discovery = Access::PopulationDiscovery.new.call
-        approval = Access::PopulationApproval.new(discovery: discovery, principal_sources: Identity.principal_sources,
+        sources = Identity.principal_sources
+        discovery = Access::PopulationDiscovery.new(principal_sources: sources).call
+        approval = Access::PopulationApproval.new(discovery: discovery, principal_sources: sources,
                                                   submitted: params["population"]).call
         [approval, nil]
       rescue Csrf::InvalidToken, Identity::Error
@@ -288,12 +294,12 @@ module Karst
       # "try this population" operation for a developer to press --
       # and no path by which a merely discovered, unapproved population
       # name can be executed.
-      def analyze(env, params, approval: nil)
+      def analyze(env, params, identity, approval: nil)
         return nil unless env["REQUEST_METHOD"] == "POST"
         return nil unless params["operation"] == "access_sweep" || approval
 
         Access::Search.new(path: params["path"], http_method: params["method"],
-                           sources: Identity.principal_sources).call
+                           sources: identity.principal_sources!).call
       rescue Access::Error, Identity::Error, ArgumentError => e
         e
       end
@@ -304,11 +310,12 @@ module Karst
       # actionable -- so an ordinary panel render never parses model source,
       # and the main page stays a contextual approval step rather than a
       # population-management dashboard. Discovery executes nothing.
-      def inline_population_candidates(result)
+      def inline_population_candidates(result, identity)
         return [] unless result.is_a?(Access::Search::Result) && result.verified_outcome.nil?
 
         record = Access::PopulationApprovals.load
-        Access::PopulationDiscovery.new.call.candidates.select do |candidate|
+        discovery = Access::PopulationDiscovery.new(principal_sources: identity.principal_sources)
+        discovery.call.candidates.select do |candidate|
           candidate.principal_source && !record.approved?(candidate.model_name, candidate.method_name)
         end
       rescue StandardError
@@ -342,8 +349,8 @@ module Karst
         nil
       end
 
-      def browser_identity_active?(browser_identity)
-        Identity.browser_supported? && browser_identity.active?
+      def browser_identity_active?(browser_identity, identity)
+        identity.browser_supported? && browser_identity.active?
       rescue Identity::Error
         false
       end

@@ -14,11 +14,12 @@ RSpec.describe Karst::CLI::Verification do
   Attempt = Karst::Access::Search::PopulationAttempt
 
   # rubocop:disable Metrics/ParameterLists
-  def outcome(status: 200, callback: nil, redirect: nil, exception: nil, writes: 0, confirmation: :confirmed)
-    requested = Descriptor.new(model_name: "User", id: 27, display_label: "User #27")
+  def outcome(status: 200, callback: nil, redirect: nil, exception: nil, writes: 0, confirmation: :confirmed,
+              id: 27, elapsed_ms: 2.5)
+    requested = Descriptor.new(model_name: "User", id: id, display_label: "User ##{id}")
     Outcome.new(principal: requested,
                 status: status, redirect: redirect, exception_class: exception, writes_observed: writes.positive?,
-                write_count: writes, elapsed_ms: 2.5, database_rollback_attempted: true,
+                write_count: writes, elapsed_ms: elapsed_ms, database_rollback_attempted: true,
                 sampling_reasons: [].freeze, body_marker_observed: nil, halted_callback: callback,
                 identity: identity_evidence(requested, confirmation), controller: "ImportsController",
                 action: "index")
@@ -26,7 +27,10 @@ RSpec.describe Karst::CLI::Verification do
   # rubocop:enable Metrics/ParameterLists
 
   def identity_evidence(requested, confirmation)
-    observed = (Karst::Identity::ObservedPrincipal.new(model_name: "User", id: 27) if confirmation == :confirmed)
+    observed = (if confirmation == :confirmed
+                  Karst::Identity::ObservedPrincipal.new(model_name: "User",
+                                                         id: requested.id)
+                end)
     Karst::Identity::Evidence.new(requested: requested, observed: observed, confirmation: confirmation,
                                   observed_at: :request_completion, observation_source: :configured,
                                   observation_error: nil, establishment: :established, establishment_error: nil,
@@ -56,7 +60,7 @@ RSpec.describe Karst::CLI::Verification do
     document = JSON.parse(text)
 
     expect(code).to eq(0)
-    expect(document).to include("schema_version" => 2, "verified_usable" => true, "populations" => [])
+    expect(document).to include("schema_version" => 3, "verified_usable" => true, "populations" => [])
     expect(document.dig("verified_identity", "requested", "label")).to eq("User #27")
     expect(document.dig("verified_identity", "observed")).to eq("model" => "User", "id" => 27)
     expect(document.dig("verified_identity", "confirmation")).to eq("confirmed")
@@ -122,7 +126,7 @@ RSpec.describe Karst::CLI::Verification do
 
     expect(code).to eq(2)
     expect(JSON.parse(output.string)).to eq(
-      "schema_version" => 2, "error" => { "type" => "input_error", "message" => "local paths only" }
+      "schema_version" => 3, "error" => { "type" => "input_error", "message" => "local paths only" }
     )
   end
 
@@ -133,6 +137,56 @@ RSpec.describe Karst::CLI::Verification do
     expect(text).to include("Karst verification", "verified usable: User #27",
                             "observed User #27 (identity confirmed)", "1 requests")
     expect { JSON.parse(text) }.to raise_error(JSON::ParserError)
+  end
+
+  describe "semantic outcome groups" do
+    # The regression this schema version exists for: timing used to be part
+    # of the grouping key, so every one of these became its own group.
+    def denied_at(id, elapsed_ms)
+      outcome(id: id, status: 403, callback: :require_admin, elapsed_ms: elapsed_ms)
+    end
+
+    let(:denied) { [denied_at(1, 17.2), denied_at(2, 21.8), denied_at(3, 19.1)] }
+
+    it "reports one group for the same denial observed at different speeds by different users" do
+      _code, text = run(SearchResult.new(initial: sweep(denied + [outcome(id: 4)]), attempts: []))
+      groups = JSON.parse(text).dig("sample", "outcomes")
+
+      expect(groups.map { |group| group["count"] }).to eq([3, 1])
+      expect(groups.first).to include("status" => 403, "halted_callback" => "require_admin",
+                                      "verified_usable" => false)
+      expect(groups.first["identities"].map { |identity| identity.dig("requested", "id") }).to eq([1, 2, 3])
+      expect(groups.last).to include("status" => 200, "verified_usable" => true)
+      expect(groups).to all(satisfy { |group| !group.key?("elapsed_ms") })
+    end
+
+    it "keeps per-probe timing on the single verified outcome and the summary" do
+      _code, text = run(SearchResult.new(initial: sweep(denied + [outcome(id: 4)]), attempts: []))
+      document = JSON.parse(text)
+
+      expect(document.dig("verified_outcome", "elapsed_ms")).to eq(2.5)
+      expect(document.dig("summary", "elapsed_ms")).to eq(3.0)
+    end
+
+    it "answers the access question in the human summary before any detail, without a line per user" do
+      many = (1..42).map { |id| denied_at(id, id.to_f) } + [outcome(id: 43)] +
+             [outcome(id: 44, status: nil, exception: "NoMethodError")]
+      _code, text = run(SearchResult.new(initial: sweep(many), attempts: []), json: false)
+
+      expect(text).to include("Sample: 44 users tested, 1 verified usable",
+                              "42  403 Forbidden · halted at require_admin",
+                              "1  200 OK · verified usable", "1  exception NoMethodError",
+                              "User #43", "User #44", "identity: 44 confirmed")
+      expect(text).not_to include("User #1,", "User #20")
+      expect(text.lines.size).to be < 25
+    end
+
+    it "surfaces probes whose identity was not confirmed, even inside the largest outcome" do
+      unconfirmed = outcome(id: 9, status: 403, callback: :require_admin, confirmation: :absent)
+      _code, text = run(SearchResult.new(initial: sweep(denied + [unconfirmed]), attempts: []), json: false)
+
+      expect(text).to include("4  403 Forbidden · halted at require_admin", "identity: 3 confirmed, 1 absent")
+    end
   end
 
   describe "anonymous probes" do
@@ -212,7 +266,8 @@ RSpec.describe Karst::CLI::Verification do
 
     it "resolves the requested principal through Identity.resolve, not an arbitrary lookup" do
       principal = double("principal", id: 72)
-      allow(Karst::Identity).to receive(:resolve).with(model_name: "User", id: "72").and_return(principal)
+      allow(Karst::Identity).to receive(:resolve).with(hash_including(model_name: "User",
+                                                                      id: "72")).and_return(principal)
 
       code, text = as_run([outcome])
 
@@ -231,7 +286,7 @@ RSpec.describe Karst::CLI::Verification do
     end
 
     it "fails with an input error, never falling back to sampling, for an id Identity.resolve cannot find" do
-      allow(Karst::Identity).to receive(:resolve).with(model_name: "User", id: "9999").and_return(nil)
+      allow(Karst::Identity).to receive(:resolve).with(hash_including(model_name: "User", id: "9999")).and_return(nil)
 
       code, text = as_run([], as: "User:9999")
       document = JSON.parse(text)
@@ -243,7 +298,7 @@ RSpec.describe Karst::CLI::Verification do
     end
 
     it "fails with a structured input error for a model outside any configured principal source" do
-      allow(Karst::Identity).to receive(:resolve).with(model_name: "Ghost", id: "1").and_return(nil)
+      allow(Karst::Identity).to receive(:resolve).with(hash_including(model_name: "Ghost", id: "1")).and_return(nil)
 
       code, text = as_run([], as: "Ghost:1")
 
@@ -286,7 +341,7 @@ RSpec.describe Karst::CLI::Verification do
       allow(Karst::Access::Search).to receive(:new).and_raise(Karst::Access::UnsafeTarget, "local paths only")
 
       expect(evidence).to eq(
-        schema_version: 2, error: { type: "input_error", message: "local paths only" }
+        schema_version: 3, error: { type: "input_error", message: "local paths only" }
       )
     end
 
@@ -298,7 +353,7 @@ RSpec.describe Karst::CLI::Verification do
       document = described_class.new(path: "/admin/imports").evidence
 
       expect(document).to eq(
-        schema_version: 2, error: { type: "configuration_error", message: "no principal source is configured" }
+        schema_version: 3, error: { type: "configuration_error", message: "no principal source is configured" }
       )
     end
   end

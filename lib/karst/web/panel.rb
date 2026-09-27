@@ -7,6 +7,7 @@ require "active_support"
 require "active_support/number_helper"
 require "base64"
 require "digest"
+require_relative "../access/outcome_groups"
 
 module Karst
   module Web
@@ -164,12 +165,18 @@ module Karst
 
       # rubocop:disable Metrics/ClassLength
       class << self
+        # `identity_snapshot` is the request's one Karst::Identity::Snapshot;
+        # every identity-configuration question this page asks (principal
+        # sources, setup readiness, browser Test As support) reads it, never
+        # the live configuration, so rendering N users never resolves
+        # configuration N times. Taken here when the caller has none.
         # rubocop:disable Metrics/ParameterLists
         def render(params: {}, access_result: nil, csrf_token: nil, browser_identity_active: false,
                    route_lookup_limitation: nil, unapproved_candidates: [], population_approval_error: nil,
                    principal_source_selection_saved: false, principal_source_selection_error: nil,
-                   reproduction: nil)
+                   reproduction: nil, identity_snapshot: nil)
           state = { csrf_token: csrf_token, browser_identity_active: browser_identity_active,
+                    identity: identity_snapshot || Identity.snapshot,
                     route_lookup_limitation: route_lookup_limitation,
                     unapproved_candidates: unapproved_candidates,
                     population_approval_error: population_approval_error,
@@ -200,7 +207,7 @@ module Karst
           action = string_param(params, "action")
           http_method = string_param(params, "method")
           path = string_param(params, "path")
-          "#{testing_banner(path, state[:csrf_token], state[:browser_identity_active])}" \
+          "#{testing_banner(path, state)}" \
             "#{route_header(http_method, path, state[:route_lookup_limitation])}" \
             "#{access_section(http_method, path, controller, action, access_result, state)}" \
             "#{reproduction_section(params, http_method, path, state)}"
@@ -213,8 +220,9 @@ module Karst
 
         # -- Testing-as banner ------------------------------------------------
 
-        def testing_banner(path, csrf_token, active)
-          return "" unless active && Identity.browser_supported? && csrf_token
+        def testing_banner(path, state)
+          csrf_token = state[:csrf_token]
+          return "" unless state[:browser_identity_active] && state[:identity].browser_supported? && csrf_token
 
           fields = hidden("operation", "stop_test_as") + hidden("csrf_token", csrf_token) + hidden("path", path)
           <<~HTML
@@ -295,17 +303,16 @@ module Karst
         # away must still say so, rather than have the confirmation vanish
         # the moment `sources` becomes truthy.
         def setup_notice_section(state)
-          sources = principal_sources
+          sources = state[:identity].principal_sources
           notice = principal_source_selection_notice(state)
           return notice if sources
 
           heading = "<h2 class=\"sr-only\">Access analysis</h2>"
-          body = "#{notice}#{principal_source_hint(sources)}"
+          body = "#{notice}#{principal_source_hint(state[:identity])}"
           "<section class=\"access\">#{heading}#{body}</section>"
         end
 
         def analyze_form(context, state)
-          sources = principal_sources
           label = "Who can use this? (test #{Karst.config.access_sweep_limit} users)"
           operation = "<input type=\"hidden\" name=\"operation\" value=\"access_sweep\">"
           button = "<button class=\"primary\" type=\"submit\">#{escape(label)}</button>"
@@ -315,19 +322,13 @@ module Karst
           # `sources` truthy must still tell the developer it worked, rather
           # than have the confirmation vanish the moment it stops being
           # needed.
-          "#{principal_source_selection_notice(state)}#{form}#{principal_source_hint(sources)}"
+          "#{principal_source_selection_notice(state)}#{form}#{principal_source_hint(state[:identity])}"
         end
 
-        def principal_sources
-          Identity.principal_sources
-        rescue Identity::Error
-          nil
-        end
+        def principal_source_hint(identity)
+          return "" if identity.principal_sources
 
-        def principal_source_hint(sources)
-          return "" if sources
-
-          setup = Identity.setup_state
+          setup = identity.setup_state
           return principal_source_selection_form(setup) if setup.status == :ambiguous
 
           custom_auth_hint
@@ -605,13 +606,17 @@ module Karst
         # any automatic candidate-population retries as a single answer, so
         # a usable user found through a population reads exactly like one
         # found in the sample -- there is no second workflow to enter.
+        #
+        # Test As is offered per user, so whether it is available at all is
+        # decided once here: `test_as_token` is the CSRF token only when the
+        # snapshot says browser identity is supported, and nil otherwise.
         def search_result(result, state)
-          csrf_token = state[:csrf_token]
+          test_as_token = state[:csrf_token] if state[:identity].browser_supported?
           outcomes = result.all_outcomes
           usable = outcomes.select { |outcome| usable_outcome?(outcome) }
           write_count = outcomes.count(&:writes_observed)
-          "#{usable_outcomes(usable, result, state)}#{ordinary_sample(result, csrf_token)}" \
-            "#{populations_section(result, csrf_token)}#{write_evidence(write_count)}#{search_meta(result)}"
+          "#{usable_outcomes(usable, result, state, test_as_token)}#{ordinary_sample(result, nil)}" \
+            "#{populations_section(result, test_as_token)}#{write_evidence(write_count)}#{search_meta(result)}"
         end
 
         # -- Automatic candidate-population retries ----------------------------
@@ -722,17 +727,15 @@ module Karst
 
         # -- Usable principals ---------------------------------------------------
 
-        def usable_outcomes(outcomes, result, state)
-          csrf_token = state[:csrf_token]
+        def usable_outcomes(outcomes, result, state, test_as_token)
           body = if outcomes.empty?
                    candidate_review(state, result)
                  else
-                   usable_cards(outcomes,
-                                result, csrf_token)
+                   usable_cards(outcomes, result, test_as_token)
                  end
           heading = outcomes.empty? ? "No verified usable user found" : "Verified usable user"
           "<section class=\"usable\"><h2>#{heading}</h2>" \
-            "#{test_as_hint(outcomes, csrf_token)}#{body}</section>"
+            "#{test_as_hint(outcomes, state, test_as_token)}#{body}</section>"
         end
 
         # The one place /karst mentions candidate groups at all: a small
@@ -773,11 +776,11 @@ module Karst
           outcomes.map { |outcome| usable_principal(outcome, result, csrf_token) }.join
         end
 
-        def test_as_hint(outcomes, csrf_token)
-          return "" if outcomes.empty? || (Identity.browser_supported? && csrf_token)
+        def test_as_hint(outcomes, state, test_as_token)
+          return "" if outcomes.empty? || test_as_token
 
-          state = Identity.setup_state
-          return "<p class=\"hint\">#{escape(state.message)}</p>" if state.status == :ambiguous
+          setup = state[:identity].setup_state
+          return "<p class=\"hint\">#{escape(setup.message)}</p>" if setup.status == :ambiguous
 
           custom_auth_hint
         end
@@ -829,22 +832,19 @@ module Karst
 
         # -- Other observed outcomes (collapsed) ---------------------------------
 
+        # Semantic outcome groups, largest first -- the same grouping the CLI
+        # and MCP evidence use (see Karst::Access::OutcomeGroups).
         def observed_groups(outcomes, path, csrf_token)
-          outcomes.group_by { |item| outcome_group_key(item) }
-                  .map { |_key, grouped| outcome_group(grouped, path, csrf_token) }.join
+          Access::OutcomeGroups.group(outcomes).map { |group| outcome_group(group, path, csrf_token) }.join
         end
 
-        def outcome_group_key(item)
-          [item.status, item.redirect, item.exception_class, item.halted_callback,
-           item.writes_observed, item.write_count]
-        end
-
-        def outcome_group(outcomes, path, csrf_token)
-          first = outcomes.first
+        def outcome_group(group, path, csrf_token)
+          outcomes = group.outcomes
+          first = group.representative
           title = outcome_title(first)
           labels = outcomes.map { |item| outcome_principal(item, path, csrf_token) }.join
           halt = halted_callback(first)
-          usability = usable_outcome?(first) ? "Verified usable" : "Not verified as usable"
+          usability = group.usable ? "Verified usable" : "Not verified as usable"
           "<details><summary>#{title}#{halt_summary(first)} — #{outcomes.size}</summary>" \
             "#{halt}<p>#{usability}</p><ul>#{labels}</ul></details>"
         end
@@ -877,8 +877,10 @@ module Karst
             "#{identity_note(item)}#{action}</li>"
         end
 
+        # `csrf_token` is the search's test-as token: nil whenever browser
+        # identity is unsupported (see #search_result).
         def test_as_form(principal, path, csrf_token)
-          return "" unless Identity.browser_supported? && csrf_token
+          return "" unless csrf_token
 
           fields = hidden("operation", "test_as") + hidden("csrf_token", csrf_token) + hidden("path", path) +
                    hidden("principal_type", principal.model_name) + hidden("principal_id", principal.id)

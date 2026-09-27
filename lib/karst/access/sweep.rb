@@ -7,6 +7,7 @@ require_relative "local_path"
 require_relative "probe_application"
 require_relative "database_isolation"
 require_relative "identity_probe"
+require_relative "outcome_groups"
 require_relative "../identity"
 require_relative "../value"
 
@@ -41,8 +42,10 @@ module Karst
     # principal was considered.
     Result = Value.define(:path, :http_method, :outcomes, :elapsed_ms, :aborted_reason, :database_isolation,
                           :candidate_pool_size) do
+      # Semantic outcome groups (see Access::OutcomeGroups), largest first,
+      # as semantic key => member outcomes.
       def groups
-        outcomes.group_by { |item| [item.status, item.redirect, item.exception_class, item.halted_callback] }
+        OutcomeGroups.group(outcomes).to_h { |group| [group.key, group.outcomes] }
       end
     end
 
