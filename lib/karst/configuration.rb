@@ -181,9 +181,15 @@ module Karst
     # Karst::Identity::Snapshot) rather than calling this repeatedly. Within
     # one result, each source's records callable is evaluated at most once
     # (see Access::PrincipalSource#evaluated_once).
-    def principal_sources
+    #
+    # `record:`/`discovery:`, when given, are threaded straight to
+    # Access::ApprovedPopulations.merge -- a caller's already-loaded
+    # approval record and population discovery instance, reused instead of
+    # loaded and parsed again (see Karst::Identity::Snapshot).
+    def principal_sources(record: nil, discovery: nil)
       sources = configured_or_inferred_sources
-      Access::ApprovedPopulations.merge(sources&.transform_values(&:evaluated_once))
+      Access::ApprovedPopulations.merge(sources&.transform_values(&:evaluated_once), record: record,
+                                                                                     discovery: discovery)
     end
 
     def access_sweep_limit=(value)

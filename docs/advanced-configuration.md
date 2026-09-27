@@ -210,9 +210,11 @@ An approval only ever becomes executable for a model that is already a configure
 
 ## When configuration is read
 
-Working out the effective principal sources is real work: reading the local approval and selection files, parsing model source with `Ripper`, and calling your `principals`/`principal_sources` callables. Karst does it **once per operation** — one `bin/rails karst:verify` run, one MCP `verify_access` call, one `/karst` request — and every part of that operation (setup checks, sampling, population retries, `--as` lookup, **Test as** availability for every listed user) reuses that one result. Within an operation, each principal source callable is called once.
+Working out the effective principal sources is real work: reading the local approval and selection files, parsing model source with `Ripper`, and calling your `principals`/`principal_sources` callables. Karst does it **once per resolution**, and reuses that one result for everything else the same resolution answers — setup checks, sampling, population retries, `--as` lookup, **Test as** availability for every listed user, and (on `/karst`) discovering candidate populations to suggest. Within one resolution, each principal source callable is called once.
 
-Nothing is cached beyond the operation. The next operation reads everything again, so an approval revoked at `/karst/populations`, a scope deleted from a model, or a changed initializer takes effect on the next analysis without restarting the server. Callables that run per request by design — `assume_identity`, `clear_identity`, `observe_identity`, `principal_label` — and `usable_access_outcome`, which is applied to each outcome, are unaffected.
+Reading `bin/rails karst:verify`, an MCP `verify_access` call, and an ordinary `/karst` analysis each take exactly one resolution. **Approving a population is the one operation that takes two**: validating the submission needs the effective sources *before* the write (to confirm what was submitted is still real), and the render that follows needs them fresh *after* the write, so the approval just saved is reflected rather than the state from before it. Each of those two resolutions is still itself one file read and one parse, never repeated within itself.
+
+Nothing is cached beyond one resolution. The next operation reads everything again, so an approval revoked at `/karst/populations`, a scope deleted from a model, or a changed initializer takes effect on the next analysis without restarting the server. Callables that run per request by design — `assume_identity`, `clear_identity`, `observe_identity`, `principal_label` — and `usable_access_outcome`, which is applied to each outcome, are unaffected.
 
 
 ## Full configuration reference

@@ -31,9 +31,16 @@ module Karst
         end
       end
 
-      # `principal_sources:`, when given, is the caller's already-resolved
-      # effective principal source Hash (see Karst::Identity::Snapshot), used
-      # instead of resolving configuration again here.
+      # `principal_sources:`, when given, is either the caller's already-
+      # resolved effective principal source Hash (see
+      # Karst::Identity::Snapshot), or a zero-argument callable that resolves
+      # to one -- used, at most once, lazily, only if a check here actually
+      # needs it (#confirms? never does). The callable form lets a caller
+      # hand over a source of truth that is not resolved yet at construction
+      # time but will be by the time this discovery's #call actually runs
+      # (see Karst::Web::Middleware, which builds one discovery instance
+      # before resolving the operation's Identity::Snapshot and reuses it
+      # afterward). Omitted, configuration is resolved here instead.
       def initialize(principal_sources: UNRESOLVED)
         @principal_sources = principal_sources
       end
@@ -129,12 +136,19 @@ module Karst
       # and re-parse model source once per model group too.
       def principal_source_klasses
         @principal_source_klasses ||= begin
-          sources = (@principal_sources.equal?(UNRESOLVED) ? Karst.config.principal_sources : @principal_sources) || {}
+          sources = resolved_principal_sources || {}
           sources.each_with_object({}) do |(name, source), memo|
             klass = source.record_klass
             memo[name] = klass if klass
           end
         end
+      end
+
+      def resolved_principal_sources
+        return @principal_sources.call if @principal_sources.respond_to?(:call)
+        return Karst.config.principal_sources if @principal_sources.equal?(UNRESOLVED)
+
+        @principal_sources
       end
 
       # A deliberately small Ripper AST reader. It recognizes only literal

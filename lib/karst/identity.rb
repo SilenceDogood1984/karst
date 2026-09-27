@@ -147,17 +147,23 @@ module Karst
       # Every multi-source-aware caller (Identity.resolve,
       # Access::PrincipalSelection, the panel) reads this instead of
       # config.principals directly.
-      def principal_sources
-        sources = Karst.config.principal_sources
+      #
+      # `record:`/`discovery:`, when given, are threaded straight to
+      # Configuration#principal_sources -- a caller's already-loaded
+      # approval record and population discovery instance, reused instead of
+      # loaded and parsed again (see Snapshot).
+      def principal_sources(record: nil, discovery: nil)
+        sources = Karst.config.principal_sources(record: record, discovery: discovery)
         raise Unavailable, "no principal source is configured" unless sources
 
         sources
       end
 
       # See Snapshot. Resolves principal sources exactly once and derives
-      # every other answer from that one resolution.
-      def snapshot
-        sources = safe_principal_sources
+      # every other answer from that one resolution. `record:`/`discovery:`
+      # as for #principal_sources.
+      def snapshot(record: nil, discovery: nil)
+        sources = safe_principal_sources(record: record, discovery: discovery)
         Snapshot.new(principal_sources: sources, setup_state: setup_state(sources: sources),
                      browser_supported: browser_supported?(sources: sources))
       end
@@ -517,8 +523,8 @@ module Karst
         nil
       end
 
-      def safe_principal_sources
-        principal_sources
+      def safe_principal_sources(record: nil, discovery: nil)
+        principal_sources(record: record, discovery: discovery)
       rescue Error
         nil
       end
