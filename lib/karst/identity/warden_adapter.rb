@@ -59,6 +59,12 @@ module Karst
           Karst::ExecutionContext.delete(PENDING_PRINCIPAL_KEY)
         end
 
+        # The queued sign-in runs inside the probed request, so it is marked
+        # as identity setup (Identity.establishing): nothing it or the
+        # application's own after_set_user hooks do -- a Devise :trackable
+        # UPDATE, say -- is evidence about the probed route. If it raises,
+        # the route never runs, and EstablishmentError says so rather than
+        # letting the failure pass for the route's own exception.
         def install_hook!
           return if @installed
 
@@ -67,9 +73,18 @@ module Karst
             pending = Karst::ExecutionContext.delete(PENDING_PRINCIPAL_KEY)
             next unless pending
 
-            principal, scope = pending
+            apply_pending(proxy, *pending)
+          end
+        end
+
+        private
+
+        def apply_pending(proxy, principal, scope)
+          Karst::Identity.establishing do
             scope ? proxy.set_user(principal, scope: scope) : proxy.set_user(principal)
           end
+        rescue StandardError => e
+          raise Karst::Identity::EstablishmentError, "#{e.class}: #{e.message}"
         end
       end
 

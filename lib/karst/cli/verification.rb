@@ -207,8 +207,13 @@ module Karst
         }
       end
 
+      # observation_error: Karst could not observe the request it ran, so it
+      # reports nothing about the application rather than partial evidence.
       def error_document(error)
-        type = error.is_a?(Identity::Error) ? "configuration_error" : "input_error"
+        type = if error.is_a?(Identity::Error) then "configuration_error"
+               elsif error.is_a?(Access::ObservationError) then "observation_error"
+               else "input_error"
+               end
         { schema_version: SCHEMA_VERSION, error: { type: type, message: error.message } }
       end
 
