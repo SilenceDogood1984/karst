@@ -47,7 +47,7 @@ module Karst
       # authorization claim the application itself did not make.
       def describe(group)
         item = group.representative
-        parts = [response(item), (dispatch(item) if dispatch_varies?), body_marker(item.body_marker_observed),
+        parts = [response(item), (dispatch(item) if dispatch_varies?),
                  (writes(item.write_count) if item.writes_observed), ("verified usable" if group.usable)]
         parts.insert(1, "halted at #{item.halted_callback}") if item.halted_callback
         parts.compact.join(" · ")
@@ -121,13 +121,6 @@ module Karst
 
       def dispatch(item)
         item.controller ? "#{item.controller}##{item.action}" : "no controller dispatched"
-      end
-
-      # Only ever set when a caller asked Sweep to look for a body marker.
-      def body_marker(observed)
-        return nil if observed.nil?
-
-        observed ? "body marker observed" : "body marker absent"
       end
 
       def writes(count)

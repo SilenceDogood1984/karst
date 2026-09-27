@@ -26,7 +26,7 @@ module Karst
       # Observed facts about the request. Two outcomes that differ in any of
       # these are different outcomes.
       SEMANTIC_FIELDS = %i[status redirect exception_class halted_callback controller action
-                           body_marker_observed writes_observed write_count database_rollback_attempted].freeze
+                           writes_observed write_count database_rollback_attempted].freeze
 
       # Facts about the probe, not the request's outcome. Volatile (elapsed
       # time), per-identity (principal, identity evidence), or sampling

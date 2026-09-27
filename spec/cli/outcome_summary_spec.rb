@@ -11,7 +11,7 @@ RSpec.describe Karst::CLI::OutcomeSummary do
       principal: Karst::Identity::PrincipalDescriptor.new(model_name: "User", id: id, display_label: "User ##{id}"),
       status: status, redirect: redirect, exception_class: exception, writes_observed: writes.positive?,
       write_count: writes, elapsed_ms: rand * 20, database_rollback_attempted: true, sampling_reasons: [],
-      body_marker_observed: nil, halted_callback: callback, identity: nil, controller: "ReportsController",
+      halted_callback: callback, identity: nil, controller: "ReportsController",
       action: "show"
     )
   end
