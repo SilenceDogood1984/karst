@@ -157,26 +157,38 @@ RSpec.describe Karst::Access::Probe do
     end
   end
 
-  # Invariants 1-3: exactly one implementation executes and observes a
+  # Invariants 1-2: exactly one implementation executes and observes a
   # target request, and neither workflow carries a request engine of its
   # own. Checked against the source, so a second engine cannot quietly
   # reappear alongside this one.
+  #
+  # These check actual call sites, not incidental mentions of the event
+  # names -- karst/web/middleware.rb, for one, genuinely calls
+  # Notifications.subscribe("process_action.action_controller") for an
+  # unrelated, permanent, process-lifetime purpose (the debug badge's
+  # context capture, see Web::Middleware.ensure_context_capture!), and
+  # several files mention these notification names only in comments. What
+  # actually distinguishes Probe's ownership of target-request observation
+  # is the *ephemeral, block-scoped* Notifications.subscribed call -- active
+  # for exactly the duration of one target request, the mechanism the
+  # observation boundary this PR establishes depends on.
   describe "the single execution primitive" do
     let(:lib) { File.expand_path("../../lib", __dir__) }
 
-    def files_mentioning(pattern)
+    def files_matching(pattern)
       Dir[File.join(lib, "**/*.rb")].select { |file| File.read(file).match?(pattern) }
-                                     .map { |file| file.delete_prefix("#{lib}/") }
+                                    .map { |file| file.delete_prefix("#{lib}/") }
     end
 
     it "is the only code that opens an integration session to issue a request" do
-      expect(files_mentioning(/Integration::Session\.new/)).to eq(["karst/access/probe.rb"])
+      expect(files_matching(/Integration::Session\.new/)).to eq(["karst/access/probe.rb"])
     end
 
-    it "is the only code that observes request-level instrumentation" do
-      pattern = /halted_callback\.action_controller|process_action\.action_controller|render_template\.action_view/
+    it "is the only code that scopes a subscription to a single request's controller/render lifecycle" do
+      events = %w[halted_callback.action_controller process_action.action_controller !render_template.action_view]
+      pattern = /\.subscribed\(.*?"#{Regexp.union(events)}"/
 
-      expect(files_mentioning(pattern)).to eq(["karst/access/probe.rb"])
+      expect(files_matching(pattern)).to eq(["karst/access/probe.rb"])
     end
   end
 end

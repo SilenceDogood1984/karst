@@ -156,7 +156,8 @@ RSpec.describe "multiple configured principal sources" do
     sampled = Karst::Access::PrincipalSelection.new(sources: Karst::Identity.principal_sources, limit: 10).call
     reasons = sampled.candidates.to_h { |c| [c.principal, c.reasons] }
     result = Karst::Access::Sweep.new(
-      path: "/documents", principals: sampled.principals, sampling_reasons: reasons, application: MULTI_SOURCE_APPLICATION
+      path: "/documents", principals: sampled.principals, sampling_reasons: reasons,
+      application: MULTI_SOURCE_APPLICATION
     ).call
 
     premium_outcome = result.outcomes.find do |o|
