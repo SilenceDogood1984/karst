@@ -14,11 +14,11 @@ module Karst
     #
     # This is deliberately an orchestrator built on top of the existing
     # primitives rather than new behavior inside them. Access::Sweep still
-    # owns every actual request (and therefore every rollback, write
-    # observation, exception, and halted-callback observation), and
-    # CandidatePopulation still owns resolving one configured callable into
-    # bounded records. Search only decides what to run next and records what
-    # it chose not to run.
+    # issues every request (each one an Access::Probe, which owns every
+    # rollback, write observation, exception, and halted-callback
+    # observation), and CandidatePopulation still owns resolving one
+    # configured callable into bounded records. Search only decides what to
+    # run next and records what it chose not to run.
     #
     # Approval boundary: the populations considered here are exactly the
     # ones on the Karst::Access::PrincipalSource objects handed to this
@@ -164,10 +164,18 @@ module Karst
       def attempt_population(source_name, name, callable, source)
         return skip(source_name, name, :budget_exhausted) unless budget_remaining.positive?
 
-        resolved = candidate_records(source_name, name, callable, source)
+        resolved = resolve_population(source_name, name, callable, source)
         return resolved if resolved.is_a?(PopulationAttempt)
 
         sweep_population(source_name, name, resolved[:records], resolved[:population])
+      end
+
+      # A population that fails to *resolve* is reported as :unresolved. A
+      # failure while *probing* its records is not a fact about the
+      # population, so it is never folded into that state: it propagates
+      # exactly as it would from the ordinary sample.
+      def resolve_population(source_name, name, callable, source)
+        candidate_records(source_name, name, callable, source)
       rescue StandardError => e
         skip(source_name, name, :unresolved, error: "#{e.class}: #{e.message}")
       end

@@ -35,17 +35,22 @@ RSpec.describe Karst::Access::Search do
     attr_accessor :status, :location
   end
 
+  # Issues each request through the endpoint Karst hands it, exactly as
+  # ActionDispatch::Integration::Session does, so Access::Probe observes a
+  # request that really reached the application.
   class SearchSession
     attr_reader :response
 
-    def initialize(_application)
+    def initialize(application)
+      @application = application
       @response = SearchResponse.new
       @identity = nil
     end
 
     attr_writer :identity
 
-    def get(_path)
+    def process(_method, path, **)
+      @application.call("PATH_INFO" => path)
       PROBED << @identity.id
       @response.status = USABLE_IDS.include?(@identity.id) ? 200 : 302
       return unless @response.status == 302
@@ -100,7 +105,7 @@ RSpec.describe Karst::Access::Search do
                                                   populations: populations) }
   end
 
-  def search(populations, application: Object.new)
+  def search(populations, application: ->(_env) { [200, {}, []] })
     described_class.new(path: "/admin/imports", sources: sources(populations), application: application).call
   end
 

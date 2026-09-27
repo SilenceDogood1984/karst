@@ -91,28 +91,33 @@ RSpec.describe Karst::Access::IdentityProbe do
     expect(Karst::Identity::WardenAdapter).to have_received(:discard_pending!)
   end
 
-  it "records the controller and action of the request it observed, not of a later sign-out request" do
-    controller_class = Class.new do
-      def self.name
-        "ImportsController"
-      end
-    end
-    controller = double("controller", action_name: "index")
-    allow(controller).to receive(:class).and_return(controller_class)
+  it "forgets any env identity setup left behind once the target request starts" do
+    Karst.config.observe_identity = ->(context) { context.env["setup.principal"] }
     probe = probe_for(principal)
-    probe.capture_env({ "action_controller.instance" => controller })
-    probe.observe(:request_completion)
-    probe.capture_env({ "action_controller.instance" => double("sign-out", action_name: "destroy") })
+    probe.capture_env({ "setup.principal" => principal }) # e.g. a sign-in request's env
 
-    expect(probe.dispatched).to eq(%w[ImportsController index])
+    probe.begin_target
+    probe.observe(:request_completion)
+
+    expect(probe.request_env).to be_nil
+    expect(probe.evidence.confirmation).to eq(:unobservable)
   end
 
-  it "reports no controller at all for a request that never reached one" do
+  it "records Karst's own in-request sign-in failing as failed setup, observing nothing from that request" do
+    Karst.config.observe_identity = ->(_context) { principal }
     probe = probe_for(principal)
-    probe.capture_env({})
-    probe.observe(:request_completion)
+    probe.establish(session)
+    probe.capture_env({ "action_controller.instance" => nil })
 
-    expect(probe.dispatched).to eq([nil, nil])
+    probe.establishment_failed("Karst::Identity::EstablishmentError: serializer exploded")
+    probe.observe(:request_completion)
+    evidence = probe.evidence
+
+    expect(probe.request_env).to be_nil
+    expect(evidence.establishment).to eq(:failed)
+    expect(evidence.establishment_error).to include("serializer exploded")
+    expect(evidence.confirmation).to eq(:unobservable)
+    expect(evidence.observation_error).to include("before the application ran")
   end
 
   it "ignores observations raised on another thread" do

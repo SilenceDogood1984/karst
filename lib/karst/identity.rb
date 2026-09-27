@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "value"
+require_relative "execution_context"
 require_relative "identity/devise_support"
 require_relative "identity/warden_adapter"
 require_relative "identity/observation"
@@ -24,6 +25,15 @@ module Karst
     class Error < StandardError; end
     class Unavailable < Error; end
     class ConfigurationError < Error; end
+
+    # Karst's own sign-in raised while being applied inside a probed request
+    # (see WardenAdapter.install_hook!). Raised only there, and caught by
+    # Access::Probe, which reports it as failed identity setup -- never as
+    # the probed route raising, because the route never ran.
+    class EstablishmentError < Error; end
+
+    ESTABLISHING_KEY = :karst_identity_establishing
+    private_constant :ESTABLISHING_KEY
 
     # authentication_* is presentation-only evidence. Machine serializers
     # deliberately ignore it; it exists so local human interfaces can be
@@ -199,6 +209,24 @@ module Karst
 
       def anonymous?(principal)
         principal.equal?(ANONYMOUS)
+      end
+
+      # Marks identity setup Karst has to perform *inside* a probed request:
+      # the automatic Warden path can only sign a probe in once that request
+      # reaches Warden (see WardenAdapter), so the sign-in -- and anything the
+      # application's own after_set_user hooks do in response, such as a
+      # Devise :trackable UPDATE -- happens mid-request. Access::Probe records
+      # nothing as target evidence while this is in progress on the current
+      # thread: it is Karst's setup, not the route's behavior.
+      def establishing
+        ExecutionContext[ESTABLISHING_KEY] = true
+        yield
+      ensure
+        ExecutionContext.delete(ESTABLISHING_KEY)
+      end
+
+      def establishing?
+        ExecutionContext[ESTABLISHING_KEY] ? true : false
       end
 
       def describe(principal)

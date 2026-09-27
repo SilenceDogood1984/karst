@@ -15,17 +15,22 @@ RSpec.describe Karst::Access::Sweep do
     attr_accessor :status, :location
   end
 
+  # Issues each request through the endpoint Karst hands it, exactly as
+  # ActionDispatch::Integration::Session does, so Access::Probe observes a
+  # request that really reached the application.
   class FakeSession
     attr_reader :response
 
-    def initialize(_application)
+    def initialize(application)
+      @application = application
       @response = FakeResponse.new
       @identity = nil
     end
 
     attr_writer :identity
 
-    def get(path)
+    def process(_method, path, **)
+      @application.call("PATH_INFO" => path)
       raise "private value" if @identity.id == 4
 
       if [2, 3].include?(@identity.id)
@@ -40,6 +45,8 @@ RSpec.describe Karst::Access::Sweep do
       ActiveSupport::Notifications.instrument("sql.active_record", sql: "UPDATE documents SET seen = 1")
     end
   end
+
+  let(:application) { ->(_env) { [200, {}, []] } }
 
   before do
     allow(Rails).to receive(:env).and_return(ActiveSupport::StringInquirer.new("development"))
@@ -63,7 +70,7 @@ RSpec.describe Karst::Access::Sweep do
 
   it "records grouped observed outcomes, strips redirect queries, and continues after exceptions" do
     result = described_class.new(path: "/documents/123/edit?token=secret",
-                                 principals: (1..4).map { |id| Principal.new(id) }, application: Object.new).call
+                                 principals: (1..4).map { |id| Principal.new(id) }, application: application).call
 
     expect(result.path).to eq("/documents/123/edit")
     expect(result.outcomes.map(&:status)).to eq([200, 302, 403, nil])
@@ -89,7 +96,7 @@ RSpec.describe Karst::Access::Sweep do
 
   it "isolates halted callback observations between sequential probes" do
     result = described_class.new(path: "/documents", principals: [Principal.new(2), Principal.new(1)],
-                                 application: Object.new).call
+                                 application: application).call
 
     expect(result.outcomes.map(&:halted_callback)).to eq([:require_subscription, nil])
   end
@@ -122,9 +129,9 @@ RSpec.describe Karst::Access::Sweep do
 
   it "carries an optional candidate_pool_size through to the result, defaulting to nil" do
     with_pool = described_class.new(path: "/documents", principals: [Principal.new(1)], candidate_pool_size: 1_000,
-                                    application: Object.new).call
+                                    application: application).call
     without_pool = described_class.new(path: "/documents", principals: [Principal.new(1)],
-                                       application: Object.new).call
+                                       application: application).call
 
     expect(with_pool.candidate_pool_size).to eq(1_000)
     expect(without_pool.candidate_pool_size).to be_nil
@@ -137,14 +144,14 @@ RSpec.describe Karst::Access::Sweep do
     expect(relation).not_to receive(:to_a)
 
     result = described_class.new(path: "/documents", principals: relation, limit: 2,
-                                 application: Object.new).call
+                                 application: application).call
     expect(result.outcomes.size).to eq(2)
   end
 
   it "uses a fresh session for every principal and detects mutating SQL" do
     expect(ActionDispatch::Integration::Session).to receive(:new).twice.and_call_original
     result = described_class.new(path: "/writes", principals: [Principal.new(1), Principal.new(2)],
-                                 application: Object.new).call
+                                 application: application).call
 
     expect(result.outcomes.map(&:writes_observed)).to eq([true, true])
     expect(result.outcomes.map(&:write_count)).to eq([1, 1])
@@ -157,7 +164,7 @@ RSpec.describe Karst::Access::Sweep do
     expect { described_class.new(path: "/documents", principals: [], limit: 26) }.to raise_error(ArgumentError)
 
     allow(Rails).to receive(:env).and_return(ActiveSupport::StringInquirer.new("production"))
-    expect { described_class.new(path: "/documents", principals: [], application: Object.new).call }.to raise_error(Karst::Access::Unavailable)
+    expect { described_class.new(path: "/documents", principals: [], application: application).call }.to raise_error(Karst::Access::Unavailable)
   end
 end
 # rubocop:enable Metrics/BlockLength, Lint/ConstantDefinitionInBlock

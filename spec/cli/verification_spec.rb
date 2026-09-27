@@ -17,12 +17,21 @@ RSpec.describe Karst::CLI::Verification do
   def outcome(status: 200, callback: nil, redirect: nil, exception: nil, writes: 0, confirmation: :confirmed,
               id: 27, elapsed_ms: 2.5)
     requested = Descriptor.new(model_name: "User", id: id, display_label: "User ##{id}")
-    Outcome.new(principal: requested,
-                status: status, redirect: redirect, exception_class: exception, writes_observed: writes.positive?,
-                write_count: writes, elapsed_ms: elapsed_ms, database_rollback_attempted: true,
-                sampling_reasons: [].freeze, body_marker_observed: nil, halted_callback: callback,
-                identity: identity_evidence(requested, confirmation), controller: "ImportsController",
-                action: "index")
+    Outcome.new(
+      principal: requested,
+      status: status,
+      redirect: redirect,
+      exception_class: exception,
+      writes_observed: writes.positive?,
+      write_count: writes,
+      elapsed_ms: elapsed_ms,
+      database_rollback_attempted: true,
+      sampling_reasons: [].freeze,
+      halted_callback: callback,
+      identity: identity_evidence(requested, confirmation),
+      controller: "ImportsController",
+      action: "index"
+    )
   end
   # rubocop:enable Metrics/ParameterLists
 
