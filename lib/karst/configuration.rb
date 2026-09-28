@@ -23,15 +23,19 @@ module Karst
   # Karst), already true by default wherever it should be. What remains
   # below is for exceptional applications: custom (non-Devise)
   # authentication, identity spread across several models, and a handful of
-  # deliberately unprominent bounds. See docs/advanced-configuration.md.
+  # deliberately unprominent bounds. Mutating MCP reproduction is a separate,
+  # default-off capability because same-connection rollback cannot contain
+  # arbitrary application side effects. See docs/advanced-configuration.md.
   class Configuration
     # None of these are normal configuration. `enabled` is an off switch for
     # the exceptional case where Karst's default (on in development/test) is
     # wrong for this environment. The rest are escape hatches for custom
     # (non-Devise) authentication -- principals, assume_identity,
     # clear_identity, principal_label, and the browser Test-as pair -- and
-    # are documented as such.
-    attr_accessor :enabled, :principals, :assume_identity, :clear_identity, :principal_label,
+    # are documented as such. `mcp_mutating_requests` is the narrowly scoped
+    # opt-in that lets an MCP client issue POST/PUT/PATCH/DELETE reproduction;
+    # it is false by default and does not affect human reproduction.
+    attr_accessor :enabled, :mcp_mutating_requests, :principals, :assume_identity, :clear_identity, :principal_label,
                   :assume_browser_identity, :clear_browser_identity
 
     # How Karst observes which principal the *application itself* resolved
@@ -112,8 +116,10 @@ module Karst
       access_scenario: "artifact scenarios were removed; Karst analyzes routes, not record sweeps"
     }.freeze
 
+    # rubocop:disable Metrics/MethodLength
     def initialize
       @enabled = defined?(Rails) && Rails.respond_to?(:env) ? Rails.env.development? || Rails.env.test? : false
+      @mcp_mutating_requests = false
       @access_sweep_limit = 25
       @principal_candidate_pool_size = 1_000
       @population_retry_limit = 3
@@ -124,6 +130,7 @@ module Karst
          @assume_browser_identity @clear_browser_identity
          @observe_identity].each { |hook| instance_variable_set(hook, nil) }
     end
+    # rubocop:enable Metrics/MethodLength
 
     # An application-authored hint about meaningful candidate populations for
     # whatever config.principals returns -- a Hash of name => zero-argument

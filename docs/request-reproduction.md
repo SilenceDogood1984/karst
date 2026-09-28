@@ -134,6 +134,21 @@ headers:, anonymous:, base_url:)`. It returns the same document as `--json`:
 request, identity, execution, response, `unobserved`, isolation, and the cURL
 command.
 
+MCP reproduction permits only `GET` and `HEAD` by default. `POST`, `PUT`,
+`PATCH`, and `DELETE` fail with a structured `method_disabled` error before
+Karst constructs or executes an application request. A host application can
+make those methods available to MCP explicitly:
+
+```ruby
+Karst.configure { |config| config.mcp_mutating_requests = true }
+```
+
+That opt-in applies only to the MCP surface. Human-driven reproduction through
+`bin/rails karst:reproduce` and the `/karst` reproduction form continues to
+support all six methods without it. Enabling the MCP option means an agent can
+issue a real mutating request as an application principal; it is not a claim
+that the request is safe or free of side effects.
+
 It is a second tool rather than a mode of `verify_access` because the two have
 different blast radii. `verify_access` answers "which existing user can reach
 this page" by issuing up to 25 bounded GET requests automatically, and is
@@ -173,11 +188,13 @@ identity it claims to.
 
 ## Limitations
 
-- **Same-connection rollback is not side-effect isolation.** Database writes on
-  the request's own connection are rolled back. Background jobs, mail, outbound
-  HTTP, files, Redis, and other database connections are not. One `POST` that
-  enqueues a job really enqueues it. This is the same boundary the access sweep
-  documents, and it is why reproduction issues exactly one request and never a
+- **Same-connection rollback is not side-effect isolation.** Database rollback
+  is attempted for writes on the request's own connection. Background jobs,
+  mail, outbound HTTP, files, Redis/external stores, and other database
+  connections are not.
+  One `POST` that enqueues a job really enqueues it. MCP therefore refuses
+  mutating methods by default; opting in does not broaden transaction isolation.
+  Human reproduction remains explicit and issues exactly one request, never a
   sweep.
 - **Development only.** Reproduction refuses to run outside
   `Rails.env.development?`, refuses when `config.enabled` is false, and at

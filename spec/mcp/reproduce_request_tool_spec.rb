@@ -43,7 +43,7 @@ RSpec.describe Karst::Mcp::ReproduceRequestTool do
   end
 
   it "tells an agent that this issues one real request whose non-database effects are not isolated" do
-    expect(described_class.description).to include("exactly one request", "not isolated")
+    expect(described_class.description).to include("exactly one request", "does not make the request side-effect-free")
   end
 
   it "tells an agent that placeholders in the result are intentional, not a failure" do
@@ -52,6 +52,7 @@ RSpec.describe Karst::Mcp::ReproduceRequestTool do
 
   it "delegates to the one shared adapter rather than re-running an Exercise of its own" do
     stub_evidence(document)
+    Karst.config.mcp_mutating_requests = true
 
     described_class.call(path: "/api/v1/inspections", method: "POST", body: '{"a":1}',
                          content_type: "application/json", headers: { "X-Api-Key" => "k" })
@@ -61,6 +62,67 @@ RSpec.describe Karst::Mcp::ReproduceRequestTool do
       content_type: "application/json", headers: { "X-Api-Key" => "k" },
       anonymous: false, base_url: nil
     )
+  end
+
+  it "allows GET and HEAD with the default configuration" do
+    stub_evidence(document)
+
+    %w[GET HEAD].each do |method|
+      response = described_class.call(path: "/api/v1/inspections", method: method)
+      expect(response.error?).to be(false)
+    end
+
+    expect(Karst::CLI::Reproduction).to have_received(:new).twice
+  end
+
+  it "refuses every mutating method by default without constructing the application adapter" do
+    allow(Karst::CLI::Reproduction).to receive(:new)
+
+    %w[POST PUT PATCH DELETE].each do |method|
+      response = described_class.call(path: "/api/v1/inspections", method: method)
+      parsed = JSON.parse(response.content.first[:text])
+
+      expect(response.error?).to be(true)
+      expect(parsed).to eq(
+        "schema_version" => Karst::CLI::Reproduction::SCHEMA_VERSION,
+        "error" => {
+          "type" => "method_disabled",
+          "message" => "#{method} is disabled for MCP reproduction; the host application must " \
+                       "explicitly enable mutating MCP requests with config.mcp_mutating_requests = true"
+        }
+      )
+    end
+
+    expect(Karst::CLI::Reproduction).not_to have_received(:new)
+  end
+
+  it "normalizes casing and symbols before applying the fail-closed allowlist" do
+    allow(Karst::CLI::Reproduction).to receive(:new)
+
+    [" post ", :patch, nil, "unexpected"].each do |method|
+      expect(described_class.call(path: "/api/v1/inspections", method: method).error?).to be(true)
+    end
+
+    expect(Karst::CLI::Reproduction).not_to have_received(:new)
+  end
+
+  it "requires the opt-in to be the boolean true" do
+    allow(Karst::CLI::Reproduction).to receive(:new)
+    Karst.config.mcp_mutating_requests = "true"
+
+    expect(described_class.call(path: "/api/v1/inspections", method: :post).error?).to be(true)
+    expect(Karst::CLI::Reproduction).not_to have_received(:new)
+  end
+
+  it "allows explicitly enabled mutating methods to reach normal reproduction validation" do
+    stub_evidence(document)
+    Karst.config.mcp_mutating_requests = true
+
+    %w[POST PUT PATCH DELETE].each do |method|
+      expect(described_class.call(path: "/api/v1/inspections", method: method).error?).to be(false)
+    end
+
+    expect(Karst::CLI::Reproduction).to have_received(:new).exactly(4).times
   end
 
   it "defaults method to GET and headers to none when the caller omits them" do

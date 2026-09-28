@@ -2,7 +2,7 @@
 
 require "json"
 require "mcp"
-require_relative "../cli/reproduction"
+require_relative "reproduction"
 
 module Karst
   module Mcp
@@ -65,11 +65,13 @@ module Karst
         being read. A returned command that needs a credential filled in is
         working as intended.
 
-        Side effects: exactly one request is issued. Database writes on the
-        request's own connection are rolled back; background jobs, mail,
-        outbound HTTP, files, and other database connections are not isolated.
-        Prefer a non-GET method only when the caller actually asked to exercise
-        that behavior.
+        Side effects: GET and HEAD are enabled by default. POST, PUT, PATCH, and
+        DELETE are refused unless the host application explicitly opts in with
+        config.mcp_mutating_requests = true. When opted in, exactly one request
+        is issued. Database rollback is attempted on the request's own
+        connection; that does not make the request side-effect-free. Background
+        jobs, mail, outbound HTTP, files, Redis/external stores, and other
+        database connections are not isolated.
       DESCRIPTION
 
       input_schema(
@@ -81,7 +83,8 @@ module Karst
           },
           method: {
             type: "string",
-            description: "HTTP method to issue.",
+            description: "HTTP method to issue. GET and HEAD are enabled by default; mutating methods require " \
+                         "the host's config.mcp_mutating_requests opt-in.",
             enum: %w[GET HEAD POST PUT PATCH DELETE],
             default: "GET"
           },
@@ -117,8 +120,8 @@ module Karst
         # rubocop:disable Lint/UnusedMethodArgument, Metrics/ParameterLists
         def call(path:, method: "GET", body: nil, content_type: nil, headers: nil,
                  anonymous: false, base_url: nil, server_context: nil)
-          document = ::Karst::CLI::Reproduction.new(
-            path: path, http_method: method, body: body, content_type: content_type,
+          document = ::Karst::Mcp::Reproduction.new(
+            path: path, method: method, body: body, content_type: content_type,
             headers: headers || {}, anonymous: anonymous, base_url: base_url
           ).evidence
           MCP::Tool::Response.new([{ type: "text", text: JSON.generate(document) }], error: document.key?(:error))
