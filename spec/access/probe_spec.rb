@@ -21,7 +21,7 @@ RSpec.describe Karst::Access::Probe do
   # scripted for "the application" -- SQL, a halt, a raise.
   class ProbeSpecSession
     class << self
-      attr_accessor :script
+      attr_accessor :script, :redirect_to
     end
 
     attr_reader :response
@@ -39,7 +39,12 @@ RSpec.describe Karst::Access::Probe do
       env = { "PATH_INFO" => path }
       @application.call(env)
       self.class.script&.call(env)
-      @response.status = 200
+      if self.class.redirect_to
+        @response.status = 302
+        @response.location = self.class.redirect_to
+      else
+        @response.status = 200
+      end
     end
   end
 
@@ -60,6 +65,7 @@ RSpec.describe Karst::Access::Probe do
     end
     stub_const("ActionDispatch::Integration::Session", ProbeSpecSession)
     ProbeSpecSession.script = nil
+    ProbeSpecSession.redirect_to = nil
     # Identity setup and teardown each run SQL of their own -- like a sign-in
     # that inserts a session row and a sign-out that deletes it.
     Karst.config.assume_identity = ->(_session, _principal) { sql("INSERT INTO sessions VALUES (1)") }
@@ -70,12 +76,37 @@ RSpec.describe Karst::Access::Probe do
     %i[assume_identity clear_identity observe_identity].each { |hook| Karst.config.public_send("#{hook}=", nil) }
   end
 
-  def probe(script = nil)
+  def probe(script = nil, redirect_to: nil)
     ProbeSpecSession.script = script
+    ProbeSpecSession.redirect_to = redirect_to
     described_class.new(application).call(principal: principal, target: "/reports/1")
   end
 
   describe "the target observation window" do
+    it "strips the query string from an observed redirect" do
+      observation = probe(redirect_to: "/callback?token=KARST_MUST_NOT_LEAK_THIS")
+
+      expect(observation.redirect).to eq("/callback")
+    end
+
+    it "strips the fragment from an observed redirect, exactly like the query string" do
+      observation = probe(redirect_to: "/callback#access_token=KARST_MUST_NOT_LEAK_THIS")
+
+      expect(observation.redirect).to eq("/callback")
+    end
+
+    it "strips both the query string and the fragment together" do
+      observation = probe(redirect_to: "/callback?code=abc#access_token=KARST_MUST_NOT_LEAK_THIS")
+
+      expect(observation.redirect).to eq("/callback")
+    end
+
+    it "strips the fragment even from a redirect Karst cannot parse as a URI" do
+      observation = probe(redirect_to: "not a uri ???#access_token=KARST_MUST_NOT_LEAK_THIS")
+
+      expect(observation.redirect).not_to include("KARST_MUST_NOT_LEAK_THIS")
+    end
+
     it "counts the target's own writes, never identity setup's or teardown's" do
       observation = probe(->(_env) { sql("UPDATE reports SET views = views + 1") })
 

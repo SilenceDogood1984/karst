@@ -36,6 +36,13 @@ class KarstReproductionFixtureController < ActionController::Base
     render json: { token: params[:token] }
   end
 
+  # Stands in for an OAuth-style callback that hands a secret back in the
+  # URL: some in the query, some in the fragment (fragments never reach a
+  # real server, but nothing stops a controller from composing one anyway).
+  def oauth_callback
+    redirect_to "/session/create?code=#{params[:code]}#access_token=#{params[:code]}"
+  end
+
   private
 
   def authenticate_api_key!
@@ -51,6 +58,7 @@ KarstTestApplication.routes.send(:eval_block, proc {
   get "/karst_api/inspections", to: "karst_reproduction_fixture#index"
   post "/karst_api/inspections", to: "karst_reproduction_fixture#create"
   get "/karst_api/reset/:token", to: "karst_reproduction_fixture#reset"
+  get "/karst_api/oauth_callback", to: "karst_reproduction_fixture#oauth_callback"
 })
 
 # rubocop:disable Metrics/BlockLength
@@ -175,6 +183,107 @@ RSpec.describe "request reproduction Rails integration" do
                                              "X-Api-Key" => "<API_KEY>")
       command = Karst::Reproduction::Curl.render(observation)
       expect(command).not_to include("real-key", "abcd", "sk-live-123")
+    end
+
+    def sentinel
+      "KARST_MUST_NOT_LEAK_THIS"
+    end
+
+    it "strips a credential out of a Referer's query string rather than echoing it" do
+      %w[token api_key code].each do |param|
+        referer = "https://example.test/reset?#{param}=#{sentinel}"
+        observation = exercise(path: "/karst_api/inspections", headers: { "Referer" => referer })
+
+        expect(observation.headers["Referer"]).to eq("https://example.test/reset")
+        document = Karst::CLI::Reproduction.new(path: "/karst_api/inspections", anonymous: true,
+                                                headers: { "Referer" => referer }).evidence
+        expect(JSON.generate(document)).not_to include(sentinel)
+        expect(Karst::Reproduction::Curl.render(observation)).not_to include(sentinel)
+      end
+    end
+
+    it "strips a credential out of a Referer's fragment rather than echoing it" do
+      observation = exercise(path: "/karst_api/inspections",
+                             headers: { "Referer" => "https://example.test/callback##{sentinel}" })
+
+      expect(observation.headers["Referer"]).to eq("https://example.test/callback")
+      expect(Karst::Reproduction::Curl.render(observation)).not_to include(sentinel)
+    end
+
+    it "strips both the query string and the fragment from an observed redirect" do
+      observation = exercise(path: "/karst_api/oauth_callback?code=#{sentinel}")
+
+      expect(observation.redirect).to end_with("/session/create")
+      expect(observation.redirect).not_to include(sentinel, "?", "#")
+
+      # The incoming "code" query parameter is not itself credential-shaped
+      # by name (an application that considers it sensitive lists it in its
+      # own filter_parameters), so it is faithfully echoed as the request
+      # Karst actually sent -- only the *redirect Location* Karst observed
+      # is under test here.
+      document = Karst::CLI::Reproduction.new(path: "/karst_api/oauth_callback?code=#{sentinel}",
+                                              anonymous: true).evidence
+      expect(document[:response][:redirect]).to end_with("/session/create")
+    end
+
+    it "keeps nested filtered body values masked at every depth" do
+      body = JSON.generate(
+        user: { profile: { passcode: sentinel }, entries: [{ passcode: sentinel, note: "ok" }] }
+      )
+      observation = exercise(path: "/karst_api/inspections", http_method: "POST", body: body, content_type: json)
+
+      expect(JSON.generate(observation.body_params)).not_to include(sentinel)
+      expect(observation.body_params.dig("user", "profile", "passcode")).to eq("<FILTERED>")
+      expect(observation.body_params.dig("user", "entries", 0, "passcode")).to eq("<FILTERED>")
+      expect(observation.body_params.dig("user", "entries", 0, "note")).to eq("ok")
+    end
+
+    it "masks a credential-bearing header whatever its casing" do
+      %w[authorization AUTHORIZATION Authorization].each do |name|
+        observation = exercise(path: "/karst_api/inspections", headers: { name => "Bearer #{sentinel}" })
+
+        expect(observation.headers.values.join).not_to include(sentinel)
+      end
+    end
+
+    it "masks a credential-ish custom header it has never named explicitly" do
+      observation = exercise(path: "/karst_api/inspections", headers: { "X-Vendor-Secret" => sentinel })
+
+      expect(observation.headers["X-Vendor-Secret"]).to eq("<FILTERED>")
+    end
+
+    it "masks a percent-encoded credential-named query parameter" do
+      # %74oken decodes to "token".
+      observation = exercise(path: "/karst_api/inspections?%74oken=#{sentinel}")
+
+      expect(observation.query_params["token"]).to eq("<FILTERED>")
+      expect(JSON.generate(observation.query_params)).not_to include(sentinel)
+    end
+
+    it "never falls back to a different application's filter_parameters when this one's raises" do
+      decoy_config = double("config", filter_parameters: [:decoy_field])
+      decoy_application = double("application", config: decoy_config)
+      allow(Rails).to receive(:application).and_return(decoy_application)
+      allow(KarstTestApplication.config).to receive(:filter_parameters).and_raise(RuntimeError, "boom")
+
+      observation = exercise(path: "/karst_api/inspections?decoy_field=plain&status=passed")
+
+      expect(observation.query_params["decoy_field"]).to eq("plain")
+      expect(observation.query_params["status"]).to eq("passed")
+    end
+
+    it "generates a curl command carrying no sentinel anywhere, across every field at once" do
+      document = Karst::CLI::Reproduction.new(
+        path: "/karst_api/inspections", http_method: "POST",
+        body: JSON.generate(passcode: sentinel, note: "fine"), content_type: json,
+        headers: { "Authorization" => "Bearer #{sentinel}", "Cookie" => "_session=#{sentinel}",
+                   "X-Api-Key" => sentinel, "Referer" => "https://example.test/x?token=#{sentinel}",
+                   "X-Vendor-Secret" => sentinel },
+        anonymous: true
+      ).evidence
+
+      expect(JSON.generate(document)).not_to include(sentinel)
+      expect(document[:reproduce][:curl]).not_to include(sentinel)
     end
 
     it "substitutes a redacted route parameter back into the path it still appears in" do

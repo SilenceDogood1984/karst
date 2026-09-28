@@ -189,11 +189,19 @@ module Karst
 
       # The reproduced application's own filter_parameters, never a global:
       # Karst issued this request against @application, so @application's
-      # rules are the ones that decide what may be shown back.
+      # rules are the ones that decide what may be shown back. Always an
+      # Array, never nil -- Sanitizer.rails_filter treats a nil `filters` as
+      # "none given, read Rails.application" for callers outside a specific
+      # application, and this method already has one: if @application's own
+      # config raises, the honest answer is "this application declared no
+      # filters", never a silent fall-through to whatever Rails.application
+      # happens to be (which, when @application is a different object
+      # entirely -- as in a test harness -- would filter this application's
+      # parameters by a stranger's rules instead of its own).
       def filter_parameters
-        @application.config.filter_parameters
+        Array(@application.config.filter_parameters)
       rescue StandardError
-        nil
+        []
       end
 
       def body_state

@@ -86,9 +86,22 @@ that leaks one, so Karst always chooses the former.
   read, compared, or echoed. Headers that describe a request rather than
   authorize it (`Content-Type`, `Accept`, ...) are shown as sent; anything else
   whose name looks credential-shaped becomes `<FILTERED>`.
+- **Referer and Origin are URLs, so name-based header handling isn't enough
+  for them.** A `Referer` routinely carries the query string of whatever page
+  linked here — `?token=`, `?code=`, `?api_key=` — and, for an OAuth-style
+  redirect, a fragment such as `#access_token=`. Karst keeps the scheme, host,
+  and path (useful context: "this came from the password-reset page") and
+  discards the query, fragment, and any userinfo — structurally, by parsing
+  the header as a URL, never by inspecting the value for what looks like a
+  credential. A value that does not parse as a URL at all is shown as
+  `<FILTERED>` rather than echoed.
 - **Credentials in the path** — a password-reset token, a signed id — are
   substituted back out of the URL too, so `/reset/s3cret` becomes
   `/reset/<TOKEN>` in both the recipe and the cURL command.
+- **A redirect Karst observes** has its query string and fragment stripped
+  the same way, for the same reason: an OAuth-style callback's `Location`
+  can carry `?code=` or `#access_token=` every bit as much as a `Referer`
+  can.
 - **A body Karst cannot parse** (anything but JSON or form encoding) is sent
   as given but never echoed back; the command shows `<BODY>`.
 - **Nothing is persisted.** Karst writes no recipe, request, or credential to
@@ -197,6 +210,15 @@ identity it claims to.
   external system sends, Karst will faithfully report that your guess returned
   a `422` — which is still more than reading the controller gives you, but it
   is not the payload.
+- **Redaction is name-based (and, for Referer/Origin/redirects, structural),
+  never value-based.** A custom header, or a query or body field, whose name
+  neither your application's `filter_parameters` nor Karst's own
+  credential-name net recognizes is shown exactly as sent — even if its value
+  happens to hold a secret (a bespoke `X-Callback-Url` header carrying a
+  token in its own query string, say). If your application accepts secrets
+  under names Karst has no way to guess, add them to
+  `config.filter_parameters`; Karst's net is a supplement to that, never a
+  replacement for it.
 
 This is not API documentation, an OpenAPI generator, a request collection, or
 an HTTP client. It makes one workflow easier: reproducing a request the

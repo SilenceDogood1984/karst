@@ -94,6 +94,10 @@ RSpec.describe Karst::Reproduction::Sanitizer do
     end
   end
 
+  def sentinel
+    "KARST_MUST_NOT_LEAK_THIS"
+  end
+
   describe ".headers" do
     it "replaces credential-bearing headers with named placeholders" do
       result = described_class.headers(
@@ -103,6 +107,73 @@ RSpec.describe Karst::Reproduction::Sanitizer do
 
       expect(result).to eq("Authorization" => "<AUTH_TOKEN>", "Cookie" => "<SESSION_COOKIE>",
                            "X-Api-Key" => "<API_KEY>", "X-Csrf-Token" => "<CSRF_TOKEN>")
+    end
+
+    it "never returns a credential value regardless of header-name casing" do
+      %w[authorization Authorization AUTHORIZATION aUtHoRiZaTiOn].each do |name|
+        result = described_class.headers(name => "Bearer #{sentinel}")
+        expect(result.values.join).not_to include(sentinel)
+      end
+    end
+
+    it "masks a credential-ish custom header it has never named explicitly" do
+      result = described_class.headers("X-Vendor-Auth-Secret" => sentinel, "X-Partner-Passwd" => sentinel)
+
+      expect(result.values).to all(eq("<FILTERED>"))
+    end
+
+    it "strips the query string from a Referer, so a reset/callback token never comes back" do
+      %w[token api_key code].each do |param|
+        result = described_class.headers("Referer" => "https://example.test/reset?#{param}=#{sentinel}")
+
+        expect(result["Referer"]).to eq("https://example.test/reset")
+        expect(result["Referer"]).not_to include(sentinel)
+      end
+    end
+
+    it "strips the fragment from a Referer, so an OAuth-style access_token never comes back" do
+      result = described_class.headers("Referer" => "https://example.test/callback##{sentinel}")
+
+      expect(result["Referer"]).to eq("https://example.test/callback")
+      expect(result["Referer"]).not_to include(sentinel)
+    end
+
+    it "strips userinfo from a Referer" do
+      result = described_class.headers("Referer" => "https://user:#{sentinel}@example.test/path")
+
+      expect(result["Referer"]).to eq("https://example.test/path")
+      expect(result["Referer"]).not_to include(sentinel)
+    end
+
+    it "keeps a plain Referer's origin and path as useful context" do
+      result = described_class.headers("Referer" => "https://example.test/reset/step-two")
+
+      expect(result["Referer"]).to eq("https://example.test/reset/step-two")
+    end
+
+    it "masks a Referer Karst cannot parse as a URL at all, rather than echoing it" do
+      result = described_class.headers("Referer" => "not a url ??? #{sentinel}")
+
+      expect(result["Referer"]).to eq("<FILTERED>")
+    end
+
+    it "applies the same URL stripping to Origin, in case a caller supplies a non-conforming value" do
+      result = described_class.headers("Origin" => "https://example.test?token=#{sentinel}")
+
+      expect(result["Origin"]).to eq("https://example.test")
+      expect(result["Origin"]).not_to include(sentinel)
+    end
+
+    it "still echoes an ordinary, conforming Origin verbatim" do
+      result = described_class.headers("Origin" => "https://example.test")
+
+      expect(result["Origin"]).to eq("https://example.test")
+    end
+
+    it "strips a percent-encoded fragment/query from Referer the same way" do
+      result = described_class.headers("Referer" => "https://example.test/cb?token=%73%65%63%72%65%74")
+
+      expect(result["Referer"]).to eq("https://example.test/cb")
     end
 
     it "echoes headers that describe the request rather than authorize it" do

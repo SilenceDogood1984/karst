@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "active_support/parameter_filter"
+require "uri"
 
 module Karst
   module Reproduction
@@ -22,6 +23,14 @@ module Karst
     # echoed. It is replaced by a named placeholder purely on the strength
     # of its name, so a generated request always tells the engineer which
     # credential to supply without Karst ever having handled it.
+    #
+    # A URL-shaped header (Referer, Origin) is a third case: its *name* is
+    # not credential-shaped, so the name-based rules above would echo it
+    # verbatim, but its *value* is a URL that can structurally carry a query
+    # string or fragment -- exactly where a password-reset token or an
+    # OAuth access_token tends to live. Those two headers are parsed and
+    # stripped down to scheme/host/path rather than treated as safe or
+    # matched against the credential-name net; see URL_HEADERS.
     module Sanitizer
       # ActiveSupport::ParameterFilter's own mask. Rewritten to Karst's
       # angle-bracket form so a recipe uses one visual convention for
@@ -32,12 +41,27 @@ module Karst
       # Headers whose value Karst may echo verbatim: they describe the shape
       # of the request, never authorize it. An allowlist, so a header Karst
       # has never considered is handled by the rules below rather than
-      # trusted by default.
+      # trusted by default. Deliberately excludes Referer and Origin, even
+      # though both are otherwise request-shape headers -- see URL_HEADERS.
       SAFE_HEADERS = %w[
         accept accept-charset accept-encoding accept-language cache-control
-        content-length content-type host if-match if-none-match origin
-        referer user-agent x-request-id x-requested-with
+        content-length content-type host if-match if-none-match
+        user-agent x-request-id x-requested-with
       ].freeze
+
+      # Headers that are themselves URLs, so their name alone cannot make
+      # them safe to echo verbatim: a Referer routinely carries the query
+      # string (and, for an OAuth-style redirect, the fragment) of whatever
+      # page linked here, and either can hold a token, code, or other
+      # credential a request-shape header has no business exposing.
+      # #sanitized_url_header keeps only what identifies the origin/path --
+      # never a value comparison, just discarding the URL components that
+      # are structurally capable of carrying a secret. Origin is included
+      # for the same reason even though the header's own semantics never
+      # define a query, fragment, or userinfo component: Karst's headers
+      # are caller-supplied strings, not values the HTTP client validated
+      # against that grammar.
+      URL_HEADERS = %w[referer origin].freeze
 
       # Named placeholders for the headers a Rails application actually
       # authenticates with. The placeholder is chosen from the header name
@@ -113,6 +137,7 @@ module Karst
 
         def header_value(name, value)
           key = name.to_s.downcase.tr("_", "-")
+          return sanitized_url_header(value) if URL_HEADERS.include?(key)
           return value.to_s if SAFE_HEADERS.include?(key)
 
           placeholder = CREDENTIAL_HEADERS[key]
@@ -120,6 +145,24 @@ module Karst
           return MASK if credential_name?(key)
 
           value.to_s
+        end
+
+        # Structural, not value-based: parses the header as a URL and drops
+        # every component capable of carrying a credential (userinfo, query,
+        # fragment), keeping only scheme/host/path so the request context
+        # ("this came from the password-reset page") survives without the
+        # secrets a query or fragment on that URL might hold. A value Karst
+        # cannot parse as a URL at all is masked outright rather than echoed
+        # -- there is no structure left to trust it by.
+        def sanitized_url_header(value)
+          uri = URI.parse(value.to_s)
+          uri.user = nil
+          uri.password = nil
+          uri.query = nil
+          uri.fragment = nil
+          uri.to_s
+        rescue StandardError
+          MASK
         end
 
         def canonical(name)
