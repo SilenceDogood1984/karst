@@ -56,6 +56,6 @@ Compatibility decisions live behind exactly two narrow seams — `Karst::Value` 
 ### CI
 
 - `unit-test` — Ruby 3.2, the root `Gemfile` (RSpec + RuboCop against everything except `spec/integration`).
-- `rails-integration` matrix — `spec/integration` against a version-pinned `Gemfile` per row, each a real Rails application booted through Rack: Rails 6.1 on Ruby 2.7, Rails 7.0 and 7.1 on Ruby 3.2, Rails 7.2 and 8.0 on Ruby 3.3. Every row is a required, blocking job.
+- `rails-integration` matrix — `spec/integration` against a version-pinned `Gemfile` per row, each a real Rails application booted through Rack: Rails 6.1 on Ruby 2.7, Rails 7.0 and 7.1 on Ruby 3.2, and Rails 7.2, 8.0, and 8.1 on Ruby 3.3. Every row is a required, blocking job. Each row also runs the Devise, multi-Devise, custom-authentication, and Rails-generated-authentication golden paths in isolated processes.
 
 The Rails 6.1 row is what backs the compatibility claim in this document: it boots a real `Rails::Application`, exercises `GET` against ordinary routes and `/karst`, all against genuine Ruby 2.7 syntax and Rails 6.1 APIs — not an assumption that "this probably still works."

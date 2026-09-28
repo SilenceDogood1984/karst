@@ -5,6 +5,19 @@ require "karst"
 
 # rubocop:disable Metrics/BlockLength
 RSpec.describe "Karst::Configuration#principal_populations" do
+  describe "MCP mutation safety" do
+    it "disables mutating MCP requests by default" do
+      expect(Karst.config.mcp_mutating_requests).to be(false)
+    end
+
+    it "does not retain an opt-in after configuration is reset" do
+      Karst.config.mcp_mutating_requests = true
+      Karst.remove_instance_variable(:@config)
+
+      expect(Karst.config.mcp_mutating_requests).to be(false)
+    end
+  end
+
   describe "default usable access outcome" do
     subject(:usable) { Karst.config.usable_access_outcome }
 

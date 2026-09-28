@@ -306,7 +306,9 @@ RSpec.describe "request reproduction Rails integration" do
   end
 
   describe "the shared evidence document" do
-    it "is the same document the CLI prints, the MCP tool returns, and the panel renders" do
+    it "keeps POST available to the human CLI adapter without the MCP opt-in" do
+      expect(Karst.config.mcp_mutating_requests).to be(false)
+
       document = Karst::CLI::Reproduction.new(
         path: "/karst_api/inspections", http_method: "POST",
         body: JSON.generate(serial_number: "ABC123", passcode: "hunter2"), content_type: json,
@@ -380,6 +382,8 @@ RSpec.describe "request reproduction Rails integration" do
     end
 
     it "sends a JSON body and reports the observed gate that halted it" do
+      expect(Karst.config.mcp_mutating_requests).to be(false)
+
       response = post_reproduce({ "method" => "POST", "path" => "/karst_api/inspections",
                                   "content_type" => json, "body" => JSON.generate(serial_number: "ABC123") })
 

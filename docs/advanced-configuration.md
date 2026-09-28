@@ -4,6 +4,24 @@ Almost nothing here is part of installing Karst. A conventional single-model Dev
 
 If you are looking for an option that used to be here, check [Removed configuration](#removed-configuration) at the end.
 
+## Mutating MCP reproduction
+
+The MCP `reproduce_request` tool permits only `GET` and `HEAD` by default.
+Human-driven reproduction through `bin/rails karst:reproduce` and `/karst`
+still supports explicit mutating methods. To grant that capability to MCP as
+well, the host application must opt in:
+
+```ruby
+Karst.configure { |config| config.mcp_mutating_requests = true }
+```
+
+Without the opt-in, every other method is refused before an application
+request is constructed or executed. With it, MCP may issue `POST`, `PUT`,
+`PATCH`, and `DELETE` under Karst's normal reproduction constraints. Database
+rollback is same-connection best effort, not general side-effect isolation:
+outbound HTTP, email, jobs, files, Redis/external stores, writes through other
+database connections, and other non-transactional effects can still occur.
+
 ## Custom or non-Devise authentication
 
 Using Rails 8's own `bin/rails generate authentication` rather than Devise? See [rails8-authentication.md](rails8-authentication.md) for the exact, complete recipe — it is an instance of the same escape hatch documented below, filled in with that generator's own `User`/`Session`/`Current` objects. Karst has no registry to infer this from the way it does for Devise, so it needs the few lines below rather than nothing.
