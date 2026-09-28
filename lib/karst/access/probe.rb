@@ -369,12 +369,25 @@ module Karst
           nil
         end
 
+        # Query-and-fragment-stripped, never just query-stripped: a redirect
+        # target is exactly as capable of carrying a credential in its
+        # fragment (an OAuth-style "/callback#access_token=...") as in its
+        # query string, and a fragment is never sent back to the server on
+        # the follow-up request, so there is no reason reproduction needs it
+        # either. The regex fallback below mirrors that -- it drops
+        # everything from the first "?" *or* "#", whichever comes first --
+        # so a Location Karst cannot even parse as a URI still cannot leak
+        # through the one delimiter the query-only split used to miss.
         def clean_redirect(location)
-          return nil if location.to_s.empty?
+          text = location.to_s
+          return nil if text.empty?
 
-          URI.parse(location).tap { |uri| uri.query = nil }.to_s
-        rescue URI::InvalidURIError
-          location.to_s.split("?", 2).first
+          uri = URI.parse(text)
+          uri.query = nil
+          uri.fragment = nil
+          uri.to_s
+        rescue StandardError
+          text.split(/[?#]/, 2).first
         end
       end
       private_constant :TargetWindow

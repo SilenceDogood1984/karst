@@ -62,8 +62,12 @@ module Karst
         application's own Rails config.filter_parameters plus a conservative
         credential-name filter, and credential-bearing headers are replaced by
         placeholders such as <API_KEY> or <AUTH_TOKEN> without their values ever
-        being read. A returned command that needs a credential filled in is
-        working as intended.
+        being read. Referer and Origin -- headers whose *value* is a URL rather
+        than a credential -- have their query string, fragment, and userinfo
+        stripped structurally instead, so a token or access_token riding in
+        either one never comes back either. A redirect Karst observes is
+        stripped the same way. A returned command that needs a credential
+        filled in is working as intended.
 
         Side effects: GET and HEAD are enabled by default. POST, PUT, PATCH, and
         DELETE are refused unless the host application explicitly opts in with
