@@ -24,7 +24,7 @@ RSpec.describe Karst::Access::OutcomeGroups do
     Karst::Access::Outcome.new(
       principal: descriptor(id), status: status, redirect: redirect, exception_class: exception_class,
       writes_observed: writes.positive?, write_count: writes, elapsed_ms: elapsed_ms,
-      database_rollback_attempted: true, sampling_reasons: sampling_reasons, body_marker_observed: nil,
+      database_rollback_attempted: true, sampling_reasons: sampling_reasons,
       halted_callback: halted_callback, identity: identity || evidence(id), controller: controller, action: action
     )
   end
