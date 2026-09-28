@@ -197,9 +197,23 @@ bin/rails karst:mcp
 Claude Code or another [MCP](https://modelcontextprotocol.io) client gets two tools:
 
 - `verify_access` — exactly the evidence `karst:verify --json` prints. An agent can guess who *should* have access by reading code; only Karst can show who actually does.
-- `reproduce_request` — exactly the evidence `karst:reproduce --json` prints, including the redacted cURL command.
+- `reproduce_request` — exactly the evidence `karst:reproduce --json` prints, including the redacted cURL command. It permits `GET` and `HEAD` by default; mutating methods fail closed before an application request is executed.
 
 In both cases the agent picks the request — it can't choose a user, skip the rollback, raise a limit, or use Test As. That includes `--as`: it's a CLI-only, human-only option (see [CLI](#cli) above), and neither MCP tool accepts it in any form.
+
+Human-driven `bin/rails karst:reproduce` and `/karst` reproduction retain
+explicit `POST`, `PUT`, `PATCH`, and `DELETE` support. A host that deliberately
+wants to give an MCP client the same mutating capability must opt in:
+
+```ruby
+Karst.configure { |config| config.mcp_mutating_requests = true }
+```
+
+This permits real application requests; it does not make them side-effect-free.
+Karst only attempts rollback for database work on the request's own connection.
+Jobs, email, outbound HTTP, files, Redis/external stores, other database
+connections, and other non-transactional effects remain possible. See
+[request reproduction](docs/request-reproduction.md#from-a-coding-agent).
 
 ## Configuration
 
