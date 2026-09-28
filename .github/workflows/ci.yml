@@ -55,6 +55,9 @@ jobs:
           - rails: "8.0"
             ruby: "3.3"
             gemfile: rails_8_0.gemfile
+          - rails: "8.1"
+            ruby: "3.3"
+            gemfile: rails_8_1.gemfile
     env:
       BUNDLE_GEMFILE: ${{ github.workspace }}/gemfiles/${{ matrix.gemfile }}
       EXPECTED_RAILS_VERSION: ${{ matrix.rails }}
