@@ -260,18 +260,6 @@ RSpec.describe "request reproduction Rails integration" do
       expect(JSON.generate(observation.query_params)).not_to include(sentinel)
     end
 
-    it "never falls back to a different application's filter_parameters when this one's raises" do
-      decoy_config = double("config", filter_parameters: [:decoy_field])
-      decoy_application = double("application", config: decoy_config)
-      allow(Rails).to receive(:application).and_return(decoy_application)
-      allow(KarstTestApplication.config).to receive(:filter_parameters).and_raise(RuntimeError, "boom")
-
-      observation = exercise(path: "/karst_api/inspections?decoy_field=plain&status=passed")
-
-      expect(observation.query_params["decoy_field"]).to eq("plain")
-      expect(observation.query_params["status"]).to eq("passed")
-    end
-
     it "generates a curl command carrying no sentinel anywhere, across every field at once" do
       document = Karst::CLI::Reproduction.new(
         path: "/karst_api/inspections", http_method: "POST",

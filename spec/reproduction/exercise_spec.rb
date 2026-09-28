@@ -109,6 +109,56 @@ RSpec.describe Karst::Reproduction::Exercise do
     end
   end
 
+  # Unit-level rather than through a real request: the whole point is that
+  # this method must never make a real request-dispatch decision (it does
+  # not touch Rack, routing, or any Rails engine internals), so the safest
+  # way to prove it never reaches for the global Rails.application is to
+  # call it directly rather than issuing a request and hoping nothing else
+  # in a real Rails boot happens to read that global too (it does, on some
+  # Rails series -- see the history of this describe block).
+  describe "#filter_parameters" do
+    def build_with_config(filter_parameters: nil, raises: nil)
+      config = double("config")
+      if raises
+        allow(config).to receive(:filter_parameters).and_raise(raises)
+      else
+        allow(config).to receive(:filter_parameters).and_return(filter_parameters)
+      end
+      build(application: double("application", config: config))
+    end
+
+    it "returns the reproduced application's own filters as an Array" do
+      exercise = build_with_config(filter_parameters: [:passcode])
+
+      expect(exercise.send(:filter_parameters)).to eq([:passcode])
+    end
+
+    it "returns an empty Array, never nil, when the application declares none" do
+      exercise = build_with_config(filter_parameters: nil)
+
+      expect(exercise.send(:filter_parameters)).to eq([])
+    end
+
+    # Sanitizer.rails_filter treats a nil `filters` argument as "none given,
+    # read the global Rails.application" -- the one fallback Exercise must
+    # never trigger, because @application is a specific, deliberately chosen
+    # application (never necessarily Rails.application, as in this very
+    # spec file's own `application: Object.new`). Returning [] here rather
+    # than nil is what keeps that fallback from ever firing.
+    it "returns an empty Array, never nil, when the application's own filter_parameters raises" do
+      exercise = build_with_config(raises: RuntimeError.new("boom"))
+
+      expect(exercise.send(:filter_parameters)).to eq([])
+    end
+
+    it "never reaches for the global Rails.application, whether its own config succeeds or raises" do
+      allow(Rails).to receive(:application).and_raise("Exercise must never read the global Rails.application")
+
+      expect(build_with_config(filter_parameters: [:passcode]).send(:filter_parameters)).to eq([:passcode])
+      expect(build_with_config(raises: RuntimeError.new("boom")).send(:filter_parameters)).to eq([])
+    end
+  end
+
   describe "environment gates" do
     it "refuses to run outside development" do
       allow(Rails).to receive(:env).and_return(ActiveSupport::StringInquirer.new("production"))
