@@ -9,7 +9,7 @@ CUSTOM_AUTH_SPEC="spec/integration/custom_auth_golden_path_integration_spec.rb"
 RAILS8_AUTH_SPEC="spec/integration/rails8_auth_golden_path_integration_spec.rb"
 ISOLATED_SPECS_PATTERN="spec/integration/{devise_golden_path_integration_spec.rb,multi_devise_golden_path_integration_spec.rb,custom_auth_golden_path_integration_spec.rb,rails8_auth_golden_path_integration_spec.rb}"
 
-for version in 6_1 7_0 7_1 7_2 8_0; do
+for version in 6_1 7_0 7_1 7_2 8_0 8_1; do
   export BUNDLE_GEMFILE="$PWD/gemfiles/rails_${version}.gemfile"
   export EXPECTED_RAILS_VERSION="${version/_/.}"
   bundle install
