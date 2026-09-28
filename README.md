@@ -215,6 +215,8 @@ Jobs, email, outbound HTTP, files, Redis/external stores, other database
 connections, and other non-transactional effects remain possible. See
 [request reproduction](docs/request-reproduction.md#from-a-coding-agent).
 
+`bin/rails karst:mcp` requires the `mcp` gem to satisfy `~> 1.5.0` specifically — if your application already depends on `mcp` at a different version (directly, or through another gem), you'll see "Karst MCP requires the optional dependency" even though `mcp` is installed. Pin it to `~> 1.5.0` as shown above to resolve it.
+
 ## Configuration
 
 Usually, you don't. A conventional Devise app needs no initializer at all: the user model comes from Devise's own routing metadata, sampling states come from your schema, and candidate populations are approved inline after a failed analysis rather than written down.

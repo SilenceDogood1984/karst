@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Karst package acceptance test.
+#
+# Every other suite in this repository (bundle exec rspec, the
+# gemfiles/rails_*.gemfile integration matrix) runs Karst *as this checkout*
+# -- `require "karst"` resolves through this repo's own lib/, via a Gemfile
+# that says `gemspec`. That proves Karst's code is correct; it does not prove
+# Karst's packaging is correct. A missing `spec.files` entry, a stale
+# homepage, a generator template that never got added to the gemspec, or a
+# runtime dependency that isn't actually required at runtime, would pass
+# every one of those suites and still leave a fresh `gem install karst`
+# broken for every real user.
+#
+# This script answers a different, narrower question: "did we ship all the
+# pieces, and does the installed *artifact* actually work?" It:
+#
+#   1. builds karst.gemspec into a real .gem, exactly as `gem build` would
+#      for a release;
+#   2. installs *that .gem* (never this checkout, never a `path:` Gemfile
+#      source) into an isolated GEM_HOME;
+#   3. generates a throwaway Rails application that has never seen this
+#      repository;
+#   4. adds Karst to its Gemfile and `bundle install`s, the way README.md
+#      says to;
+#   5. exercises the headline documented entry points: application boot,
+#      `/karst`, `bin/rails karst:verify`, `bin/rails karst:reproduce`,
+#      `bin/rails generate karst:install`, and the MCP command's documented
+#      behavior both without and with its optional dependency.
+#
+# It intentionally does not repeat the Rails-version compatibility matrix
+# (gemfiles/rails_*.gemfile / .github/workflows/ci.yml's rails-integration
+# job already owns that) -- one representative, currently-supported Rails
+# version is enough to answer the packaging question this script exists for.
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+WORKDIR="$(mktemp -d -t karst-package-acceptance.XXXXXX)"
+cleanup() { rm -rf "$WORKDIR"; }
+trap cleanup EXIT
+
+log() { printf '\n== %s ==\n' "$1"; }
+
+log "Building karst.gemspec"
+GEM_FILE="$WORKDIR/karst.gem"
+(cd "$REPO_ROOT" && gem build karst.gemspec --output "$GEM_FILE" --silent)
+KARST_VERSION="$(ruby -e 'require_relative "'"$REPO_ROOT"'/lib/karst/version"; puts Karst::VERSION')"
+echo "Built karst-${KARST_VERSION}.gem"
+
+log "Verifying the built artifact actually contains the pieces the app needs"
+# Inspects data.tar.gz inside the built .gem directly -- not spec.files, which
+# only echoes back what the gemspec *declared* and would say nothing about a
+# packaging step that silently dropped a file.
+CONTENTS="$WORKDIR/gem-contents.txt"
+tar -xOf "$GEM_FILE" data.tar.gz | tar -tz > "$CONTENTS"
+for required in \
+  lib/karst.rb \
+  lib/karst/railtie.rb \
+  lib/karst/web/middleware.rb \
+  lib/rails/commands/karst/verify/verify_command.rb \
+  lib/rails/commands/karst/reproduce/reproduce_command.rb \
+  lib/rails/commands/karst/mcp/mcp_command.rb \
+  lib/generators/karst/install/install_generator.rb \
+  lib/generators/karst/install/templates/karst_initializer.rb \
+  lib/generators/karst/install/templates/karst_identity_controller.rb \
+  README.md LICENSE CHANGELOG.md; do
+  grep -qxF "$required" "$CONTENTS" || {
+    echo "FAIL: built gem is missing required file: $required" >&2
+    exit 1
+  }
+done
+echo "All required runtime files are present in the built artifact."
+
+log "Installing the built artifact into an isolated GEM_HOME"
+export GEM_HOME="$WORKDIR/gemhome"
+export GEM_PATH="$GEM_HOME"
+export PATH="$GEM_HOME/bin:$PATH"
+gem install "$GEM_FILE" --no-document
+
+log "Generating a fresh Rails application (never sees this checkout)"
+# Pinned to the 8.0 series deliberately: Rails 8.1 compatibility is a
+# separate, actively-worked-on task (see the parallel-work note in this
+# task's brief) and this script should not become a second, competing signal
+# for it.
+RAILS_VERSION="8.0.5"
+gem install rails --no-document --version "${RAILS_VERSION}" >/dev/null
+APP_DIR="$WORKDIR/fixture_app"
+rails _"${RAILS_VERSION}"_ new "$APP_DIR" \
+  --skip-git --skip-test --skip-system-test --skip-action-mailbox \
+  --skip-action-mailer --skip-active-storage --skip-jbuilder --skip-kamal \
+  --skip-thruster --skip-ci --skip-solid --skip-bundle --quiet
+
+cd "$APP_DIR"
+export BUNDLE_GEMFILE="$APP_DIR/Gemfile"
+
+# Environmental pin, not a Karst fix: a stock `rails new` app on Rails 8.0.x
+# resolves the `json` gem to 3.0, whose `JSON.generate`/`JSON.parse` dropped
+# the `quirks_mode:` keyword that this Rails series' ActiveSupport JSON coder
+# still passes -- any session-cookie write raises `ArgumentError: unknown
+# keyword: quirks_mode`, with zero Karst code involved (reproduces on a
+# brand-new app with no gems added at all). Pinned here only to keep this
+# script deterministic; see the launch-qualification report for detail.
+cat >> Gemfile <<RUBY
+gem "json", "< 3"
+gem "karst", "= ${KARST_VERSION}", group: :development
+RUBY
+
+log "bundle install (as README.md's Quick start says to)"
+bundle install
+
+log "Application boot: require/install Karst, no load-time errors"
+bundle exec rails runner 'raise "Karst did not load" unless defined?(Karst::VERSION); puts "Karst #{Karst::VERSION} loaded"'
+
+log "/karst: panel renders for an allowed local request"
+bundle exec rails runner '
+session = ActionDispatch::Integration::Session.new(Rails.application)
+# ActionDispatch::Integration::Session defaults to Host: www.example.com,
+# which ActionDispatch::HostAuthorization correctly blocks in development
+# with a 403 -- real browsers send Host: localhost:3000 and are unaffected.
+# Setting it here keeps the request "from" the same peer address
+# (127.0.0.1) a real local browser request would use, without that
+# integration-session-only artifact standing in for Karst behavior.
+session.get "/karst", headers: { "Host" => "localhost" }
+raise "expected 200, got #{session.response.status}" unless session.response.status == 200
+raise "panel did not render" unless session.response.body.include?("Karst")
+puts "GET /karst -> 200, panel rendered"
+'
+
+log "bin/rails karst:verify against a real route"
+set +e
+VERIFY_OUTPUT="$(bin/rails karst:verify GET / --anonymous 2>&1)"
+VERIFY_STATUS=$?
+set -e
+echo "$VERIFY_OUTPUT"
+[[ "$VERIFY_OUTPUT" == *"verified usable"* ]] || { echo "FAIL: karst:verify produced no useful output" >&2; exit 1; }
+[[ "$VERIFY_STATUS" == 0 ]] || { echo "FAIL: karst:verify --anonymous on a 200 route should exit 0, got $VERIFY_STATUS" >&2; exit 1; }
+
+log "bin/rails karst:reproduce against a real route, including --json"
+bin/rails karst:reproduce GET / >/dev/null
+REPRODUCE_JSON="$(bin/rails karst:reproduce GET / --json)"
+ruby -rjson -e 'JSON.parse(STDIN.read).fetch("schema_version")' <<<"$REPRODUCE_JSON" >/dev/null \
+  || { echo "FAIL: karst:reproduce --json did not produce valid, schema-versioned JSON" >&2; exit 1; }
+echo "karst:reproduce and its --json form both produced useful output"
+
+log "Documented generator: bin/rails generate karst:install"
+bin/rails generate karst:install >/dev/null
+for generated in \
+  config/initializers/karst.rb \
+  app/controllers/karst_identity_controller.rb; do
+  [[ -f "$generated" ]] || { echo "FAIL: generator did not create $generated" >&2; exit 1; }
+done
+# The scaffold's initializer references app-specific models/methods (that's
+# the point -- it's a TODO-filled escape hatch, not turnkey code) and would
+# break every later `bin/rails` boot in this fixture app if left in place;
+# the routes it adds are lazily dispatched and harmless to leave behind.
+rm -f config/initializers/karst.rb app/controllers/karst_identity_controller.rb
+echo "Generator produced all documented scaffold files"
+
+log "MCP without the optional dependency: documented, intentional failure"
+set +e
+MCP_ABSENT_OUTPUT="$(bin/rails karst:mcp </dev/null 2>&1)"
+MCP_ABSENT_STATUS=$?
+set -e
+echo "$MCP_ABSENT_OUTPUT"
+[[ "$MCP_ABSENT_STATUS" != 0 ]] || { echo "FAIL: karst:mcp should fail without the mcp gem" >&2; exit 1; }
+[[ "$MCP_ABSENT_OUTPUT" == *"optional dependency"* ]] || {
+  echo "FAIL: karst:mcp's failure message regressed away from the documented, clear error" >&2
+  exit 1
+}
+[[ "$MCP_ABSENT_OUTPUT" != *"LoadError"* ]] || {
+  echo "FAIL: karst:mcp leaked internal LoadError noise instead of a clean message" >&2
+  exit 1
+}
+
+log "MCP with the documented compatible dependency: server boots, tools listed"
+echo 'gem "mcp", "~> 1.5.0"' >> Gemfile
+bundle install >/dev/null
+MCP_LIST_OUTPUT="$(
+  {
+    echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"package-acceptance-test","version":"0"}}}'
+    echo '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+    echo '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
+    sleep 2
+  } | timeout 15 bin/rails karst:mcp
+)"
+echo "$MCP_LIST_OUTPUT" | grep -q '"verify_access"' || { echo "FAIL: MCP server did not expose verify_access" >&2; exit 1; }
+echo "$MCP_LIST_OUTPUT" | grep -q '"reproduce_request"' || { echo "FAIL: MCP server did not expose reproduce_request" >&2; exit 1; }
+echo "MCP server booted and listed both documented tools"
+
+log "PASS: the packaged karst-${KARST_VERSION}.gem works for a fresh Rails app"

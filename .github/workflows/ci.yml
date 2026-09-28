@@ -95,3 +95,19 @@ jobs:
       # Devise), so it gets the same isolated process -- see bin/test-rails.
       - name: Run Rails-8-generated-authentication golden-path smoke test
         run: bundle exec rspec spec/integration/rails8_auth_golden_path_integration_spec.rb
+
+  package-acceptance:
+    name: Packaged gem acceptance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+      # Answers a different question than the jobs above: not "is Karst's
+      # code correct" (they cover that against this checkout's lib/), but
+      # "did we ship all the pieces, and does the installed *artifact* work
+      # for a Rails application that has never seen this repository?" See
+      # bin/package-acceptance-test for what it does and why.
+      - name: Build, install, and exercise the packaged gem in a fresh Rails app
+        run: bin/package-acceptance-test
