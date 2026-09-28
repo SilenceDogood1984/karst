@@ -42,16 +42,19 @@ module Karst
         # populations extended by whatever its model has approved and
         # confirmed. Returns the argument untouched when nothing applies, so
         # the overwhelmingly common "no approvals" case costs one file stat.
-        def merge(sources)
+        # `record:`/`discovery:`, when given, are a caller's already-loaded
+        # PopulationApprovals::Record and PopulationDiscovery instance (see
+        # Karst::Identity::Snapshot, which resolves this once per operation
+        # and shares both with whatever else that operation needs to discover
+        # or confirm populations) -- reused instead of loading and parsing
+        # again. Omitted, each is loaded fresh exactly as before.
+        def merge(sources, record: nil, discovery: nil)
           return sources unless sources && local_environment?
 
-          record = PopulationApprovals.load
+          record ||= PopulationApprovals.load
           return sources if record.entries.empty?
 
-          discovery = PopulationDiscovery.new
-          sources.each_with_object({}) do |(name, source), merged|
-            merged[name] = extend_source(source, record.entries, discovery)
-          end
+          merge_entries(sources, record.entries, discovery || PopulationDiscovery.new)
         rescue StandardError
           # Approval is an optional convenience layered over configuration
           # Karst already had. If resolving it fails for any reason, the
@@ -87,6 +90,12 @@ module Karst
         end
 
         private
+
+        def merge_entries(sources, entries, discovery)
+          sources.each_with_object({}) do |(name, source), merged|
+            merged[name] = extend_source(source, entries, discovery)
+          end
+        end
 
         def extend_source(source, entries, discovery)
           klass = source.record_klass

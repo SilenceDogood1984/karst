@@ -19,12 +19,15 @@ module Karst
     class PrincipalSource
       attr_reader :name, :records, :populations
 
-      def initialize(name:, records:, populations: {})
+      # `evaluation` is internal: the shared memo cell #evaluated_once copies
+      # carry. nil (the default) evaluates `records` on every call.
+      def initialize(name:, records:, populations: {}, evaluation: nil)
         raise ArgumentError, "principal source #{name.inspect} must be callable" unless records.respond_to?(:call)
 
         @name = name.to_sym
         @records = records
         @populations = self.class.normalize_populations(@name, populations)
+        @evaluation = evaluation
       end
 
       # Evaluates the configured records callable. Never enumerates or
@@ -32,7 +35,10 @@ module Karst
       # Relation, exactly like Karst::Identity.principals already did for
       # the single-source case.
       def evaluate
-        records.call
+        return records.call unless @evaluation
+        return @evaluation[:records] if @evaluation.key?(:records)
+
+        @evaluation[:records] = records.call
       end
 
       # The Active Record class this source's records ultimately belong to,
@@ -53,6 +59,20 @@ module Karst
         nil
       end
 
+      # A copy of this source whose records callable runs at most once, for
+      # as long as the copy (and any #with_populations copy of it) lives: the
+      # first #evaluate result is reused by every later #evaluate and
+      # #record_klass. Configuration#principal_sources hands out these
+      # copies, one set per resolution, so a single operation holding one
+      # resolution (see Karst::Identity::Snapshot) never re-runs an
+      # application callable to sample, match approvals, and check Devise
+      # scopes, while the next resolution still evaluates afresh. `records`
+      # itself is unchanged, and a callable that raises is not memoized: each
+      # caller sees the failure, as before.
+      def evaluated_once
+        self.class.new(name: @name, records: @records, populations: @populations, evaluation: {})
+      end
+
       # A copy of this source with `extra` populations appended after its own
       # configured ones. Used by Karst::Access::ApprovedPopulations to fold
       # locally approved discovered scopes into the effective configuration,
@@ -66,7 +86,8 @@ module Karst
         merged = self.class.normalize_populations(@name, extra).reject { |name, _| @populations.key?(name) }
         return self if merged.empty?
 
-        self.class.new(name: @name, records: @records, populations: @populations.merge(merged))
+        self.class.new(name: @name, records: @records, populations: @populations.merge(merged),
+                       evaluation: @evaluation)
       end
 
       # Accepts a raw Hash of name => (callable, or {records:,

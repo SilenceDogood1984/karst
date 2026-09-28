@@ -5,6 +5,8 @@ require "time"
 require_relative "../../karst"
 require_relative "identity_serialization"
 require_relative "principal_reference"
+require_relative "outcome_summary"
+require_relative "../access/outcome_groups"
 
 module Karst
   module CLI
@@ -25,7 +27,16 @@ module Karst
       # gone rather than renamed in place: a consumer reading "principal" and
       # believing it described the request that actually ran is precisely the
       # false attribution this schema exists to make impossible.
-      SCHEMA_VERSION = 2
+      #
+      # 3 (was 2): `outcomes` groups are now semantic -- keyed by what the
+      # request observed (see Access::OutcomeGroups), never by per-probe
+      # timing -- so equivalent outcomes from several users form one group
+      # instead of one group per user. A group therefore no longer carries
+      # `elapsed_ms` (it had no single value once groups held more than one
+      # probe; `summary.elapsed_ms` and `verified_outcome.elapsed_ms` are
+      # unchanged), gains `verified_usable` (the configured policy's verdict,
+      # shared by every member), and groups are ordered largest first.
+      SCHEMA_VERSION = 3
 
       # A deliberate identity-free probe: no principal is established, and
       # the application is expected to resolve none. Requires no principal
@@ -101,13 +112,17 @@ module Karst
         "application_identities"
       end
 
+      # One Identity::Snapshot for the whole operation: readiness, --as
+      # resolution, and the search itself all read the same single
+      # resolution of the effective principal sources.
       def run_search
         return anonymous_search if anonymous?
 
-        validate_setup!
-        return as_search if @as
+        snapshot = Identity.snapshot
+        validate_setup!(snapshot.setup_state)
+        return as_search(snapshot) if @as
 
-        Access::Search.new(path: @path, http_method: @http_method, sources: Identity.principal_sources).call
+        Access::Search.new(path: @path, http_method: @http_method, sources: snapshot.principal_sources!).call
       end
 
       # One request against exactly the requested principal, never a sample
@@ -115,8 +130,8 @@ module Karst
       # record," not "start a search that happens to prefer it." Wrapped in
       # Access::Search::Result (with no attempts) purely so every downstream
       # adapter method below stays the same for every probe kind.
-      def as_search
-        principal = PrincipalReference.resolve(@as)
+      def as_search(snapshot)
+        principal = PrincipalReference.resolve(@as, sources: snapshot.principal_sources!)
         sweep = Access::Sweep.new(path: @path, http_method: @http_method, principals: [principal], limit: 1).call
         Access::Search::Result.new(initial: sweep, attempts: [].freeze)
       end
@@ -130,8 +145,7 @@ module Karst
         Access::Search::Result.new(initial: sweep, attempts: [].freeze)
       end
 
-      def validate_setup!
-        state = Identity.setup_state
+      def validate_setup!(state)
         return if state.status.to_s.start_with?("ready_")
 
         message = state.message || "no principal source is configured"
@@ -139,6 +153,7 @@ module Karst
       end
 
       def document(result)
+        @groups = {}.compare_by_identity
         winner = result.verified_outcome
         {
           schema_version: SCHEMA_VERSION,
@@ -171,13 +186,21 @@ module Karst
       end
 
       def sweep(result)
+        groups = groups_for(result)
         {
           candidate_pool_size: result.candidate_pool_size,
           users_tested: result.outcomes.size,
-          verified_usable: result.outcomes.any? { |item| Karst.config.usable_access_outcome.call(item) },
+          verified_usable: groups.any?(&:usable),
           database_isolation: result.database_isolation.to_s,
-          outcomes: grouped_outcomes(result.outcomes)
+          outcomes: grouped_outcomes(groups)
         }
+      end
+
+      # Semantic groups for one stage's sweep result, computed once per
+      # document so the usable policy runs once per outcome here.
+      def groups_for(sweep_result)
+        @groups ||= {}.compare_by_identity
+        @groups[sweep_result] ||= Access::OutcomeGroups.group(sweep_result.outcomes)
       end
 
       def population(attempt)
@@ -185,16 +208,19 @@ module Karst
         data[:reason] = attempt.error if attempt.error
         return data unless attempt.result
 
-        data.merge(users_tested: attempt.result.outcomes.size, outcomes: grouped_outcomes(attempt.result.outcomes))
+        data.merge(users_tested: attempt.result.outcomes.size, outcomes: grouped_outcomes(groups_for(attempt.result)))
       end
 
-      # Outcomes that observed the same thing are reported once, with every
-      # probe's own identity evidence listed under it -- so "three requests
-      # halted at authorize_admin" never flattens into one claim about who
-      # made them.
-      def grouped_outcomes(outcomes)
-        outcomes.group_by { |item| outcome(item) }.map do |evidence, items|
-          evidence.merge(count: items.size, identities: items.map { |item| identity_document(item.identity) })
+      # Outcomes that observed the same thing (see Access::OutcomeGroups) are
+      # reported once, with every probe's own identity evidence listed under
+      # it -- so "three requests halted at authorize_admin" never flattens
+      # into one claim about who made them. Per-probe timing belongs to the
+      # probe, not the outcome, so a group carries none.
+      def grouped_outcomes(groups)
+        groups.map do |group|
+          evidence = outcome(group.representative).tap { |fields| fields.delete(:elapsed_ms) }
+          evidence.merge(verified_usable: group.usable, count: group.count,
+                         identities: group.outcomes.map { |item| identity_document(item.identity) })
         end
       end
 
@@ -218,12 +244,11 @@ module Karst
       end
 
       def human(result)
+        @groups = {}.compare_by_identity
         lines = ["Karst verification", "", "#{result.http_method} #{result.path}",
                  "Probe identity: #{probe_identity_description}", "",
-                 probe_section_heading,
-                 "  #{result.initial.outcomes.size} #{anonymous? ? 'request' : 'users tested'}"]
-        lines << "  #{sample_usable_count(result)} verified usable" unless anonymous?
-        append_key_evidence(lines, result.initial.outcomes)
+                 "#{probe_section_heading}: #{stage_counts(result.initial)}"]
+        append_outcomes(lines, result.initial, indent: "  ")
         append_populations(lines, result)
         append_result(lines, result)
         lines.join("\n")
@@ -243,24 +268,48 @@ module Karst
         "Sample"
       end
 
-      def sample_usable_count(result)
-        result.initial.outcomes.count { |item| Karst.config.usable_access_outcome.call(item) }
+      # How many were probed, and -- for a principal probe -- how many of
+      # them the configured usable policy accepted. An anonymous probe is a
+      # request, not a user, and has no "verified usable user" to count.
+      def stage_counts(sweep_result)
+        size = sweep_result.outcomes.size
+        return "#{size} #{size == 1 ? 'request' : 'requests'}" if anonymous?
+
+        usable = groups_for(sweep_result).select(&:usable).sum(&:count)
+        "#{size} #{size == 1 ? 'user' : 'users'} tested, #{usable} verified usable"
       end
 
-      def append_key_evidence(lines, outcomes)
-        evidence = outcomes.first
-        return unless evidence
+      # The bounded outcome summary (see CLI::OutcomeSummary), then identity
+      # and write evidence for the whole stage -- never just its first probe.
+      def append_outcomes(lines, sweep_result, indent:)
+        outcomes = sweep_result.outcomes
+        return if outcomes.empty?
 
-        append_response_evidence(lines, evidence)
-        lines << "  #{identity_line(evidence.identity)}" if evidence.identity
-        lines << "  WARNING: #{evidence.write_count} writes observed" if evidence.writes_observed
+        lines.concat(OutcomeSummary.new(groups_for(sweep_result), indent: indent).lines)
+        append_identity_evidence(lines, outcomes, indent)
+        append_write_evidence(lines, outcomes, indent)
       end
 
-      def append_response_evidence(lines, evidence)
-        lines << "  status #{evidence.status}" if evidence.status
-        lines << "  redirect #{evidence.redirect}" if evidence.redirect
-        lines << "  halted at #{evidence.halted_callback}" if evidence.halted_callback
-        lines << "  exception #{evidence.exception_class}" if evidence.exception_class
+      # One probe: its full identity evidence line. Several: how many probes
+      # reached each identity confirmation state, so an unconfirmed identity
+      # is visible even when its outcome matches everyone else's.
+      def append_identity_evidence(lines, outcomes, indent)
+        if outcomes.size == 1
+          lines << "#{indent}#{identity_line(outcomes.first.identity)}" if outcomes.first.identity
+          return
+        end
+
+        tally = outcomes.map { |item| item.identity ? item.identity.confirmation.to_s : "not recorded" }.tally
+        states = tally.sort_by { |state, count| [-count, state] }.map { |state, count| "#{count} #{state}" }
+        lines << "#{indent}identity: #{states.join(', ')}"
+      end
+
+      def append_write_evidence(lines, outcomes, indent)
+        writing = outcomes.count(&:writes_observed)
+        return if writing.zero?
+
+        lines << "#{indent}WARNING: database writes observed in #{writing} of #{outcomes.size} " \
+                 "#{outcomes.size == 1 ? 'request' : 'requests'} (rollback attempted on the same connection)"
       end
 
       def append_populations(lines, result)
@@ -270,7 +319,7 @@ module Karst
         result.attempts.each do |attempt|
           count = attempt.result&.outcomes&.size || 0
           lines << "  #{attempt.name}: #{attempt.state} (#{count} users tested)"
-          append_key_evidence(lines, attempt.result.outcomes) if attempt.result
+          append_outcomes(lines, attempt.result, indent: "    ") if attempt.result
         end
       end
 

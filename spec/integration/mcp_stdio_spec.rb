@@ -138,7 +138,7 @@ RSpec.describe "Karst MCP server over real stdio" do
     document = JSON.parse(call_response.dig("result", "content", 0, "text"))
 
     expect(status).to be_success
-    expect(document).to include("schema_version" => 2, "verified_usable" => true)
+    expect(document).to include("schema_version" => 3, "verified_usable" => true)
     expect(document.dig("verified_outcome", "status")).to eq(200)
   end
 

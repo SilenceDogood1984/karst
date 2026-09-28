@@ -208,6 +208,14 @@ Deliberately machine-local, git-ignored development state, not project configura
 
 An approval only ever becomes executable for a model that is already a configured or Devise-inferred principal source (the class always comes from that source, never from the file), and only in development/test — production never reads the file. `config.principal_populations`/`config.principal_sources[...] :populations` keeps working unchanged and wins outright over an approval of the same name; Karst compares by name only, since it never inspects a configured callable's body. Approved populations reach `Access::Search` the same way configured ones do, so `/karst`, `bin/rails karst:verify`, and the MCP `verify_access` tool all pick them up automatically with no adapter-specific wiring.
 
+## When configuration is read
+
+Working out the effective principal sources is real work: reading the local approval and selection files, parsing model source with `Ripper`, and calling your `principals`/`principal_sources` callables. Karst does it **once per resolution**, and reuses that one result for everything else the same resolution answers — setup checks, sampling, population retries, `--as` lookup, **Test as** availability for every listed user, and (on `/karst`) discovering candidate populations to suggest. Within one resolution, each principal source callable is called once.
+
+Reading `bin/rails karst:verify`, an MCP `verify_access` call, and an ordinary `/karst` analysis each take exactly one resolution. **Approving a population is the one operation that takes two**: validating the submission needs the effective sources *before* the write (to confirm what was submitted is still real), and the render that follows needs them fresh *after* the write, so the approval just saved is reflected rather than the state from before it. Each of those two resolutions is still itself one file read and one parse, never repeated within itself.
+
+Nothing is cached beyond one resolution. The next operation reads everything again, so an approval revoked at `/karst/populations`, a scope deleted from a model, or a changed initializer takes effect on the next analysis without restarting the server. Callables that run per request by design — `assume_identity`, `clear_identity`, `observe_identity`, `principal_label` — and `usable_access_outcome`, which is applied to each outcome, are unaffected.
+
 
 ## Full configuration reference
 

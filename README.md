@@ -100,6 +100,22 @@ bin/rails karst:verify GET /admin/imports/123 --json
 
 Runs the same search as `/karst` from a shell. Exit code `0` means a usable user was found, `1` means the search completed without one, `2` means a setup error. The `--json` form is a stable, schema-versioned evidence document meant for scripts and tools.
 
+The terminal output answers the access question first, in a few lines however many users were tested:
+
+```text
+Sample: 50 users tested, 1 verified usable
+  42  403 Forbidden · halted at require_admin
+   6  302 Found → http://localhost:3000/suspended · halted at require_active
+        User #3, User #9, User #14, +3 more
+   1  exception NoMethodError
+        User #31
+   1  200 OK · verified usable
+        User #27
+  identity: 50 confirmed
+```
+
+Each line is one observed outcome and how many users observed it, largest first. Users who observed the same response — same status, redirect, halted callback, exception, dispatched action, and database writes — are one outcome, however long each request took. Users are named, a few at a time, for every outcome except a single largest one; `--json` lists every user under every outcome.
+
 Already know which existing record you want to test as — from the console, a seed, `db:fixtures:load`, or your app's own UI? Skip sampling and name it directly:
 
 ```bash

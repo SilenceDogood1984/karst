@@ -101,7 +101,9 @@ RSpec.describe Karst::Access::Sweep do
     expect(result.outcomes.map(&:halted_callback)).to eq([:require_subscription, nil])
   end
 
-  it "groups response behavior independently from database-write evidence" do
+  # Writes are an observed effect of the request, so a probe that wrote is
+  # never merged into a group that claims none -- see Access::OutcomeGroups.
+  it "keeps otherwise identical responses with different write evidence in separate groups" do
     descriptor = Karst::Identity::PrincipalDescriptor.new(model_name: "User", id: 1, display_label: "User #1")
     attributes = { principal: descriptor, status: 200, redirect: nil, exception_class: nil,
                    write_count: 0, elapsed_ms: 1.0, database_rollback_attempted: true }
@@ -111,7 +113,18 @@ RSpec.describe Karst::Access::Sweep do
                                        elapsed_ms: 2.0, aborted_reason: nil,
                                        database_isolation: :same_connection_rollback_attempted)
 
-    expect(result.groups.values).to eq([[clean, writing]])
+    expect(result.groups.values).to contain_exactly([clean], [writing])
+  end
+
+  it "groups the same response observed at different speeds as one outcome" do
+    attributes = { status: 403, redirect: nil, exception_class: nil, writes_observed: false, write_count: 0,
+                   database_rollback_attempted: true, halted_callback: :require_admin }
+    outcomes = [17.2, 21.8, 19.1].each_with_index.map do |elapsed, index|
+      Karst::Access::Outcome.new(**attributes, elapsed_ms: elapsed, principal: Principal.new(index))
+    end
+    result = Karst::Access::Result.new(path: "/documents", http_method: "GET", outcomes: outcomes)
+
+    expect(result.groups.values).to eq([outcomes])
   end
 
   it "carries an optional candidate_pool_size through to the result, defaulting to nil" do

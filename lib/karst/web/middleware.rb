@@ -96,11 +96,33 @@ module Karst
         reproduction, denied = reproduction_result(env, params, csrf)
         return denied if denied
 
-        result = analyze(env, params, approval: approval)
-        candidates = inline_population_candidates(result)
+        # Every local-state write this request may make (selection,
+        # approval) has happened by now, so one snapshot of the effective
+        # identity configuration serves the analysis, discovery, and the
+        # whole page render -- never one resolution per rendered user.
+        #
+        # `record` and `discovery` are this request's one approval-file read
+        # and one population-discovery pass, shared with whatever inside
+        # Identity.snapshot itself confirms already-approved populations
+        # (Access::ApprovedPopulations.merge) as well as with
+        # #inline_population_candidates below -- so a request that finds no
+        # usable outcome and goes on to look for candidate populations still
+        # reads the approval file, and parses model source, exactly once.
+        # `discovery`'s own principal_sources is a callable rather than a
+        # value because it is only ever actually needed by a *full* discovery
+        # pass (#inline_population_candidates), never by confirming one
+        # already-approved scope (which Identity.snapshot triggers first) --
+        # so by the time it is called, `identity` already holds this
+        # request's one resolution and nothing here re-resolves it.
+        record = Access::PopulationApprovals.load
+        identity = nil
+        discovery = Access::PopulationDiscovery.new(principal_sources: -> { identity.principal_sources })
+        identity = Identity.snapshot(record: record, discovery: discovery)
+        result = analyze(env, params, identity, approval: approval)
+        candidates = inline_population_candidates(result, record: record, discovery: discovery)
         Panel.render(params: params, access_result: result, route_lookup_limitation: lookup&.limitation,
-                     csrf_token: csrf_token(csrf),
-                     browser_identity_active: browser_identity_active?(browser_identity),
+                     csrf_token: csrf_token(csrf), identity_snapshot: identity,
+                     browser_identity_active: browser_identity_active?(browser_identity, identity),
                      unapproved_candidates: candidates, population_approval_error: approval&.error,
                      principal_source_selection_saved: !selection.nil? && selection.error.nil?,
                      principal_source_selection_error: selection&.error, reproduction: reproduction)
@@ -175,17 +197,33 @@ module Karst
         "#{request.scheme}://#{request.host_with_port}"
       end
 
+      # Validating and saving a submitted approval needs the effective
+      # principal sources *before* the write (to confirm the submitted
+      # candidates are currently real), so this necessarily resolves
+      # configuration once on its own -- separately from the fresh
+      # post-write resolution #call_owned takes afterward to render. `record`
+      # and `discovery` are still shared between the two config reads this
+      # one pre-write resolution would otherwise need (confirming
+      # already-approved populations, then discovering current candidates to
+      # validate the submission against), so this method itself reads the
+      # approval file and parses model source exactly once.
       def inline_population_approval_result(env, params, csrf)
         return [nil, nil] unless env["REQUEST_METHOD"] == "POST" && params["operation"] == "approve_populations"
         return [nil, forbidden] unless approved_origin?(env)
 
         csrf.verify!(params["csrf_token"])
-        discovery = Access::PopulationDiscovery.new.call
-        approval = Access::PopulationApproval.new(discovery: discovery, principal_sources: Identity.principal_sources,
-                                                  submitted: params["population"]).call
-        [approval, nil]
+        [validate_population_approval(params), nil]
       rescue Csrf::InvalidToken, Identity::Error
         [nil, forbidden]
+      end
+
+      def validate_population_approval(params)
+        record = Access::PopulationApprovals.load
+        sources = nil
+        discovery = Access::PopulationDiscovery.new(principal_sources: -> { sources })
+        sources = Identity.principal_sources(record: record, discovery: discovery)
+        Access::PopulationApproval.new(discovery: discovery.call, principal_sources: sources,
+                                       submitted: params["population"], record: record).call
       end
 
       # Only a model Devise itself currently maps can ever be written --
@@ -288,12 +326,12 @@ module Karst
       # "try this population" operation for a developer to press --
       # and no path by which a merely discovered, unapproved population
       # name can be executed.
-      def analyze(env, params, approval: nil)
+      def analyze(env, params, identity, approval: nil)
         return nil unless env["REQUEST_METHOD"] == "POST"
         return nil unless params["operation"] == "access_sweep" || approval
 
         Access::Search.new(path: params["path"], http_method: params["method"],
-                           sources: Identity.principal_sources).call
+                           sources: identity.principal_sources!).call
       rescue Access::Error, Identity::Error, ArgumentError => e
         e
       end
@@ -304,11 +342,10 @@ module Karst
       # actionable -- so an ordinary panel render never parses model source,
       # and the main page stays a contextual approval step rather than a
       # population-management dashboard. Discovery executes nothing.
-      def inline_population_candidates(result)
+      def inline_population_candidates(result, record:, discovery:)
         return [] unless result.is_a?(Access::Search::Result) && result.verified_outcome.nil?
 
-        record = Access::PopulationApprovals.load
-        Access::PopulationDiscovery.new.call.candidates.select do |candidate|
+        discovery.call.candidates.select do |candidate|
           candidate.principal_source && !record.approved?(candidate.model_name, candidate.method_name)
         end
       rescue StandardError
@@ -342,8 +379,8 @@ module Karst
         nil
       end
 
-      def browser_identity_active?(browser_identity)
-        Identity.browser_supported? && browser_identity.active?
+      def browser_identity_active?(browser_identity, identity)
+        identity.browser_supported? && browser_identity.active?
       rescue Identity::Error
         false
       end

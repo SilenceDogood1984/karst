@@ -5,6 +5,20 @@ All notable changes to Karst are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Outcome groups were split by timing.** The `karst:verify --json` / MCP `verify_access` evidence grouped outcomes by a key that included each probe's own `elapsed_ms`, so equivalent outcomes (25 users all halted at `require_admin` with `403`) came back as up to 25 separate groups. Outcomes are now grouped by what the request observed only — status, redirect, halted callback, exception, dispatched controller/action, writes, and the configured usable verdict — through one shared definition (`Karst::Access::OutcomeGroups`) that the CLI, MCP, and `/karst` panel all use.
+- The human `karst:verify` output described a whole sample using only its *first* probe's status and identity; it now summarizes every outcome.
+- Repeated configuration work during one operation. Setup checks, the search, and every **Test as** button on `/karst` each re-resolved the effective principal sources — re-reading the approval file, re-parsing model source, and re-running the `principals` callable — up to once per listed user on the inferred-Devise path. Each operation now resolves them once (`Karst::Identity::Snapshot`); a later operation still sees changed configuration.
+- A `/karst` request that found no usable outcome and went on to discover candidate populations to suggest still re-read the approval file and re-parsed model source independently of the resolution `Identity::Snapshot` had already just taken (`Web::Middleware#inline_population_candidates`) — now it reuses that same read and parse. Approving a population still resolves configuration twice (once to validate the submission before the write, once more for the fresh render after it), each exactly once, not several times over.
+
+### Changed
+
+- **Verification evidence schema is now version 3.** Grouped `outcomes` (under `sample` and each population) no longer carry `elapsed_ms` — a group of several probes has no single elapsed time; `verified_outcome.elapsed_ms` and `summary.elapsed_ms` are unchanged — and gain `verified_usable`. Groups are ordered largest first.
+- `karst:verify` prints a bounded outcome summary: one line per observed outcome with its user count, largest first, a few example users for each outcome other than a single largest one, identity confirmation counts, and write warnings. `--json` still carries every user.
+
 ## [0.3.0]
 
 ### Added

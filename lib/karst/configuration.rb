@@ -174,8 +174,22 @@ module Karst
     # what a "approved population" is. Resolved on every call rather than
     # memoized: an approval revoked, or a scope deleted, must stop being
     # executed on the next analysis without a server restart.
-    def principal_sources
-      Access::ApprovedPopulations.merge(configured_or_inferred_sources)
+    #
+    # That resolution is real work -- reading the approval (and selection)
+    # file, parsing model source, evaluating principal source callables -- so
+    # one high-level operation resolves it once and reuses the result (see
+    # Karst::Identity::Snapshot) rather than calling this repeatedly. Within
+    # one result, each source's records callable is evaluated at most once
+    # (see Access::PrincipalSource#evaluated_once).
+    #
+    # `record:`/`discovery:`, when given, are threaded straight to
+    # Access::ApprovedPopulations.merge -- a caller's already-loaded
+    # approval record and population discovery instance, reused instead of
+    # loaded and parsed again (see Karst::Identity::Snapshot).
+    def principal_sources(record: nil, discovery: nil)
+      sources = configured_or_inferred_sources
+      Access::ApprovedPopulations.merge(sources&.transform_values(&:evaluated_once), record: record,
+                                                                                     discovery: discovery)
     end
 
     def access_sweep_limit=(value)

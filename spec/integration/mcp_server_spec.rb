@@ -129,7 +129,7 @@ RSpec.describe "Karst MCP server, end to end against a real Rails application" d
     document, error = call_tool(path: "/mcp_documents/1")
 
     expect(error).to be(false)
-    expect(document).to include("verified_usable" => true, "schema_version" => 2)
+    expect(document).to include("verified_usable" => true, "schema_version" => 3)
     expect(document.dig("verified_outcome", "status")).to eq(200)
     expect(document.dig("verified_identity", "observed", "id")).to eq(ok.id)
     expect(document.dig("verified_identity", "confirmation")).to eq("confirmed")
@@ -191,7 +191,7 @@ RSpec.describe "Karst MCP server, end to end against a real Rails application" d
 
     expect(error).to be(true)
     expect(document).to eq(
-      "schema_version" => 2,
+      "schema_version" => 3,
       "error" => { "type" => "input_error", "message" => "target must be a local application path" }
     )
   end
@@ -303,11 +303,11 @@ RSpec.describe "Karst MCP server, end to end against a real Rails application" d
     end
 
     it "produces identical CLI evidence for the same approval" do
-      # One principal per stage: grouped outcomes are keyed by their own
-      # timings, so a multi-user sample groups differently between two real
-      # runs for reasons that have nothing to do with approval.
+      # Several users per stage on purpose: outcome groups are semantic, not
+      # keyed by per-probe timing, so two real runs of a multi-user sample
+      # must produce identical grouped evidence.
       KarstMcpPrincipal.delete_all
-      KarstMcpPrincipal.create!(behavior: "forbidden")
+      3.times { KarstMcpPrincipal.create!(behavior: "forbidden") }
       KarstMcpPrincipal.create!(behavior: "ok")
       approve("KarstMcpPrincipal", "workers")
 
@@ -317,6 +317,7 @@ RSpec.describe "Karst MCP server, end to end against a real Rails application" d
       expect_valid_provenance_timestamps(document, cli_document)
       expect(strip_execution_details(cli_document)).to eq(strip_execution_details(document))
       expect(cli_document["populations"]).to contain_exactly(include("name" => "workers", "state" => "usable"))
+      expect(cli_document.dig("sample", "outcomes").map { |group| group["count"] }).to eq([3])
     end
 
     it "prints the approved population in the CLI's human output" do
