@@ -178,7 +178,7 @@ MCP support is optional. Add its runtime dependency to your application's
 Gemfile and install it before starting the server:
 
 ```ruby
-gem "mcp", "~> 1.5.0"
+gem "mcp", ">= 1.5.0", "< 1.7"
 ```
 
 ```bash
@@ -215,7 +215,7 @@ Jobs, email, outbound HTTP, files, Redis/external stores, other database
 connections, and other non-transactional effects remain possible. See
 [request reproduction](docs/request-reproduction.md#from-a-coding-agent).
 
-`bin/rails karst:mcp` requires the `mcp` gem to satisfy `~> 1.5.0` specifically — if your application already depends on `mcp` at a different version (directly, or through another gem), you'll see "Karst MCP requires the optional dependency" even though `mcp` is installed. Pin it to `~> 1.5.0` as shown above to resolve it.
+`bin/rails karst:mcp` requires the `mcp` gem to satisfy `>= 1.5.0, < 1.7` — the 1.5 and 1.6 series, which Karst is tested against. If your application already depends on `mcp` at a version outside that range (directly, or through another gem), `karst:mcp` names the version it found and the range it needs; constrain `mcp` in your Gemfile as shown above and run `bundle update mcp` to resolve it.
 
 ## Configuration
 

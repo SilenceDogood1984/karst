@@ -43,3 +43,11 @@ BUNDLE_GEMFILE=gemfiles/rails_7_2.gemfile EXPECTED_RAILS_VERSION=7.2 \
 ```
 
 Run every compatibility target with `bin/test-rails`. To add a Rails version, add a version-specific Gemfile, add it to `bin/test-rails`, and add the matching Rails/Ruby entry to the `rails-integration` matrix in `.github/workflows/ci.yml`. Choose a Ruby version on which that Rails release installs and runs, and keep linting out of the compatibility matrix.
+
+The optional MCP dependency has its own, smaller matrix. `Karst::Mcp::Compatibility::REQUIREMENTS` is the one range both the gemspec and `bin/rails karst:mcp` enforce, and the `mcp-compatibility` CI job runs the MCP specs and the shared-process integration suite against its oldest admitted release (`gemfiles/mcp_1_5_0.gemfile`) and the newest release of its latest admitted series (`gemfiles/mcp_1_6.gemfile`). To admit a new MCP series, test it the same way first, then widen `REQUIREMENTS` and move the newest-series Gemfile and matrix entry to it. To run one MCP target locally:
+
+```sh
+BUNDLE_GEMFILE=gemfiles/mcp_1_6.gemfile bundle install
+BUNDLE_GEMFILE=gemfiles/mcp_1_6.gemfile EXPECTED_RAILS_VERSION=8.0 EXPECTED_MCP_REQUIREMENT="~> 1.6.0" \
+  bundle exec rspec spec/mcp spec/integration --exclude-pattern "spec/integration/*golden_path*"
+```

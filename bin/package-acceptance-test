@@ -27,7 +27,8 @@ set -euo pipefail
 #   5. exercises the headline documented entry points: application boot,
 #      `/karst`, `bin/rails karst:verify`, `bin/rails karst:reproduce`,
 #      `bin/rails generate karst:install`, and the MCP command's documented
-#      behavior both without and with its optional dependency.
+#      behavior without its optional dependency, at an unsupported version of
+#      it, and with the documented compatible version.
 #
 # It intentionally does not repeat the Rails-version compatibility matrix
 # (gemfiles/rails_*.gemfile / .github/workflows/ci.yml's rails-integration
@@ -172,9 +173,31 @@ echo "$MCP_ABSENT_OUTPUT"
   exit 1
 }
 
-log "MCP with the documented compatible dependency: server boots, tools listed"
-echo 'gem "mcp", "~> 1.5.0"' >> Gemfile
+log "MCP at an unsupported version: names the installed version, not a missing gem"
+MCP_REQUIREMENT="$(ruby -e 'require_relative "'"$REPO_ROOT"'/lib/karst/mcp/compatibility"; puts Karst::Mcp::Compatibility.gemfile_requirement')"
+cp Gemfile Gemfile.before-mcp
+echo 'gem "mcp", "1.4.0"' >> Gemfile
 bundle install >/dev/null
+set +e
+MCP_UNSUPPORTED_OUTPUT="$(bin/rails karst:mcp </dev/null 2>&1)"
+MCP_UNSUPPORTED_STATUS=$?
+set -e
+echo "$MCP_UNSUPPORTED_OUTPUT"
+[[ "$MCP_UNSUPPORTED_STATUS" != 0 ]] || { echo "FAIL: karst:mcp should refuse an unsupported mcp version" >&2; exit 1; }
+[[ "$MCP_UNSUPPORTED_OUTPUT" == *"found mcp 1.4.0"*"requires mcp ${MCP_REQUIREMENT}"* ]] || {
+  echo "FAIL: karst:mcp did not name the installed mcp version and the required range" >&2
+  exit 1
+}
+[[ "$MCP_UNSUPPORTED_OUTPUT" != *"optional dependency"* ]] || {
+  echo "FAIL: karst:mcp told an application that has mcp installed to add it" >&2
+  exit 1
+}
+mv Gemfile.before-mcp Gemfile
+
+log "MCP with the documented compatible dependency: server boots, tools listed"
+echo "gem \"mcp\", ${MCP_REQUIREMENT}" >> Gemfile
+bundle install >/dev/null
+echo "Resolved $(bundle exec ruby -e 'puts Gem.loaded_specs.fetch("mcp").full_name')"
 MCP_LIST_OUTPUT="$(
   {
     echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"package-acceptance-test","version":"0"}}}'

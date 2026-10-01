@@ -96,6 +96,43 @@ jobs:
       - name: Run Rails-8-generated-authentication golden-path smoke test
         run: bundle exec rspec spec/integration/rails8_auth_golden_path_integration_spec.rb
 
+  # The unit job above runs against Gemfile.lock's MCP release, and the
+  # Rails matrix resolves the newest one Karst admits; this job pins each
+  # end of Karst::Mcp::Compatibility::REQUIREMENTS explicitly so neither the
+  # oldest admitted release nor the newest admitted series goes untested.
+  mcp-compatibility:
+    name: MCP ${{ matrix.mcp }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - mcp: "1.5.0"
+            gemfile: mcp_1_5_0.gemfile
+            requirement: "= 1.5.0"
+          - mcp: "1.6.x"
+            gemfile: mcp_1_6.gemfile
+            requirement: "~> 1.6.0"
+    env:
+      BUNDLE_GEMFILE: ${{ github.workspace }}/gemfiles/${{ matrix.gemfile }}
+      EXPECTED_MCP_REQUIREMENT: ${{ matrix.requirement }}
+      EXPECTED_RAILS_VERSION: "8.0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+          cache-version: mcp-${{ matrix.mcp }}
+      # The whole shared-process integration suite, not only the mcp_*
+      # files: spec/integration/mcp_server_spec.rb adds its routes to the
+      # shared KarstTestApplication and relies on another file having
+      # already drawn that route set, so it does not pass in isolation.
+      - name: Run MCP unit specs and the Rails integration suite
+        run: |
+          bundle exec rspec spec/mcp spec/integration --exclude-pattern \
+            "spec/integration/{devise_golden_path_integration_spec.rb,multi_devise_golden_path_integration_spec.rb,custom_auth_golden_path_integration_spec.rb,rails8_auth_golden_path_integration_spec.rb}"
+
   package-acceptance:
     name: Packaged gem acceptance
     runs-on: ubuntu-latest
