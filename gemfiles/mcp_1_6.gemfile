@@ -1,0 +1,15 @@
+# frozen_string_literal: true
+
+source "https://rubygems.org"
+
+gemspec path: ".."
+
+# CI's mcp-compatibility job runs the MCP specs against the newest release
+# in the latest MCP series Karst admits (see Karst::Mcp::Compatibility::REQUIREMENTS).
+gem "mcp", "~> 1.6.0"
+
+gem "devise"
+gem "rails", "~> 8.0.0"
+gem "rspec", "~> 3.13"
+gem "sqlite3", "~> 2.1"
+gem "warden"

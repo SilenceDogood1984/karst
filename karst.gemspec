@@ -23,6 +23,6 @@ Gem::Specification.new do |spec|
   # All repository Gemfiles use `gemspec`, so this keeps MCP available to
   # adapter specs across the Rails matrix without making it a runtime dependency.
   # rubocop:disable Gemspec/DevelopmentDependencies
-  spec.add_development_dependency "mcp", Karst::Mcp::Compatibility::REQUIREMENT
+  spec.add_development_dependency "mcp", *Karst::Mcp::Compatibility::REQUIREMENTS
   # rubocop:enable Gemspec/DevelopmentDependencies
 end

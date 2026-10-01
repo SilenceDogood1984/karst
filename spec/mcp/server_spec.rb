@@ -1,10 +1,21 @@
 # frozen_string_literal: true
 
 require "spec_helper"
+require "karst/mcp/compatibility"
 require "karst/mcp/server"
 
 # rubocop:disable Metrics/BlockLength
 RSpec.describe Karst::Mcp::Server do
+  it "runs against an MCP release inside Karst's supported range" do
+    installed = Gem::Version.new(MCP::VERSION)
+
+    expect(Gem::Requirement.new(*Karst::Mcp::Compatibility::REQUIREMENTS)).to be_satisfied_by(installed)
+    # Set by CI's mcp-compatibility job, so a lane can never silently test a
+    # different MCP release than the one it claims to.
+    expected = ENV.fetch("EXPECTED_MCP_REQUIREMENT", nil)
+    expect(Gem::Requirement.new(expected)).to be_satisfied_by(installed) if expected
+  end
+
   describe ".build" do
     it "exposes exactly two tools: verify_access and reproduce_request" do
       server = described_class.build

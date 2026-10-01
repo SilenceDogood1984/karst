@@ -5,23 +5,12 @@ All notable changes to Karst are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.0]
 
-### Fixed
-
-- **Request reproduction could echo a secret through Referer, Origin, or a redirect.** `Reproduction::Sanitizer` treated `Referer` and `Origin` as safe, request-shape headers and echoed them verbatim, but both are URLs whose query string (and, for an OAuth-style redirect, fragment) can carry a real credential — `Referer: https://example.test/reset?token=...`, `Referer: .../callback#access_token=...`. They are now parsed as URLs and stripped to scheme/host/path (query, fragment, and userinfo discarded) rather than treated as safe or matched against the credential-name net; a value that does not parse as a URL at all is masked outright. `Access::Probe`'s own redirect sanitization had the same gap in the other direction: it stripped a redirect's query string but not its fragment (`/callback#access_token=...` came back whole), and its own parse-failure fallback split only on `?`, not `#`. Both are now stripped, in both the happy path and the fallback.
-- **A reproduced application's own `filter_parameters` raising silently fell back to the global `Rails.application`'s, not to "no application filters."** `Reproduction::Exercise` already documented that it must never let `Sanitizer` reach for `Rails.application` in place of the application Karst actually issued the request against, but its own error handling returned `nil` on failure, which `Sanitizer` treats as "no filters were given, read the global" — exactly the fallback the documented contract rules out. It now returns an empty Array, so a broken or unavailable `filter_parameters` means this application declared none, never a stranger's rules applied to its parameters.
-- **Outcome groups were split by timing.** The `karst:verify --json` / MCP `verify_access` evidence grouped outcomes by a key that included each probe's own `elapsed_ms`, so equivalent outcomes (25 users all halted at `require_admin` with `403`) came back as up to 25 separate groups. Outcomes are now grouped by what the request observed only — status, redirect, halted callback, exception, dispatched controller/action, writes, and the configured usable verdict — through one shared definition (`Karst::Access::OutcomeGroups`) that the CLI, MCP, and `/karst` panel all use.
-- The human `karst:verify` output described a whole sample using only its *first* probe's status and identity; it now summarizes every outcome.
-- Repeated configuration work during one operation. Setup checks, the search, and every **Test as** button on `/karst` each re-resolved the effective principal sources — re-reading the approval file, re-parsing model source, and re-running the `principals` callable — up to once per listed user on the inferred-Devise path. Each operation now resolves them once (`Karst::Identity::Snapshot`); a later operation still sees changed configuration.
-- A `/karst` request that found no usable outcome and went on to discover candidate populations to suggest still re-read the approval file and re-parsed model source independently of the resolution `Identity::Snapshot` had already just taken (`Web::Middleware#inline_population_candidates`) — now it reuses that same read and parse. Approving a population still resolves configuration twice (once to validate the submission before the write, once more for the fresh render after it), each exactly once, not several times over.
-
-### Changed
-
-- **Verification evidence schema is now version 3.** Grouped `outcomes` (under `sample` and each population) no longer carry `elapsed_ms` — a group of several probes has no single elapsed time; `verified_outcome.elapsed_ms` and `summary.elapsed_ms` are unchanged — and gain `verified_usable`. Groups are ordered largest first.
-- `karst:verify` prints a bounded outcome summary: one line per observed outcome with its user count, largest first, a few example users for each outcome other than a single largest one, identity confirmation counts, and write warnings. `--json` still carries every user.
-
-## [0.3.0]
+0.4.0 is the first release since 0.2.0. A 0.3.0 version was prepared on
+`main` (version constant and changelog section) but was never tagged or
+published to RubyGems; there is no 0.3.0 release. Everything prepared for it
+ships here, together with the changes made on `main` since.
 
 ### Added
 
@@ -58,6 +47,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Fixed
 
+- **`bin/rails karst:mcp` reported a missing `mcp` gem when the installed one was merely outside Karst's supported range.** An application whose bundle resolved `mcp` to a version Karst did not admit -- for example 1.6.1, selected through another gem's `mcp ~> 1.5` -- was told to add the dependency it already had. The command now names the version it found and the range it requires, and reports the dependency as missing only when it is.
+- **Request reproduction could echo a secret through Referer, Origin, or a redirect.** `Reproduction::Sanitizer` treated `Referer` and `Origin` as safe, request-shape headers and echoed them verbatim, but both are URLs whose query string (and, for an OAuth-style redirect, fragment) can carry a real credential — `Referer: https://example.test/reset?token=...`, `Referer: .../callback#access_token=...`. They are now parsed as URLs and stripped to scheme/host/path (query, fragment, and userinfo discarded) rather than treated as safe or matched against the credential-name net; a value that does not parse as a URL at all is masked outright. `Access::Probe`'s own redirect sanitization had the same gap in the other direction: it stripped a redirect's query string but not its fragment (`/callback#access_token=...` came back whole), and its own parse-failure fallback split only on `?`, not `#`. Both are now stripped, in both the happy path and the fallback.
+- **A reproduced application's own `filter_parameters` raising silently fell back to the global `Rails.application`'s, not to "no application filters."** `Reproduction::Exercise` already documented that it must never let `Sanitizer` reach for `Rails.application` in place of the application Karst actually issued the request against, but its own error handling returned `nil` on failure, which `Sanitizer` treats as "no filters were given, read the global" — exactly the fallback the documented contract rules out. It now returns an empty Array, so a broken or unavailable `filter_parameters` means this application declared none, never a stranger's rules applied to its parameters.
+- **Outcome groups were split by timing.** The `karst:verify --json` / MCP `verify_access` evidence grouped outcomes by a key that included each probe's own `elapsed_ms`, so equivalent outcomes (25 users all halted at `require_admin` with `403`) came back as up to 25 separate groups. Outcomes are now grouped by what the request observed only — status, redirect, halted callback, exception, dispatched controller/action, writes, and the configured usable verdict — through one shared definition (`Karst::Access::OutcomeGroups`) that the CLI, MCP, and `/karst` panel all use.
+- The human `karst:verify` output described a whole sample using only its *first* probe's status and identity; it now summarizes every outcome.
+- Repeated configuration work during one operation. Setup checks, the search, and every **Test as** button on `/karst` each re-resolved the effective principal sources — re-reading the approval file, re-parsing model source, and re-running the `principals` callable — up to once per listed user on the inferred-Devise path. Each operation now resolves them once (`Karst::Identity::Snapshot`); a later operation still sees changed configuration.
+- A `/karst` request that found no usable outcome and went on to discover candidate populations to suggest still re-read the approval file and re-parsed model source independently of the resolution `Identity::Snapshot` had already just taken (`Web::Middleware#inline_population_candidates`) — now it reuses that same read and parse. Approving a population still resolves configuration twice (once to validate the submission before the write, once more for the fresh render after it), each exactly once, not several times over.
 - **Stale cross-request response evidence in reproduction.** If a request run
   on the same session immediately before the target (identity establishment,
   most often) completed, and the target then raised before producing a
@@ -73,14 +69,20 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Changed
 
-- Optional MCP support now targets the tested MCP 1.5.x series, replacing the
-  stale MCP 0.9.x constraint that conflicted with current integrations and
-  failed schema validation with JSON 3.x.
-- **Evidence schema is now version 2.** The ambiguous `principal` / `verified_principal` keys are gone rather than renamed in place: a consumer reading "principal" and believing it described the request that actually ran is exactly the false attribution this schema exists to make impossible. Outcomes carry `identities` (each with `requested`, `observed`, `confirmation`), and the top level carries `verified_identity`.
-- **Reproduction evidence schema is now version 2.** Its `identity` document reports `requested`/`observed`/`confirmation` (a `Karst::Identity::Evidence`) rather than echoing back the identity Karst assumed as if it were what ran; a mismatch, absence, or unobservable outcome now stays visible instead of being reported as "sent as User X."
-- **Reproduction evidence schema is now version 3.** `execution` gained `controller_completed`, `exception_phase`, and `rendered` (additive), but `response.status`/`response_content_type`/`redirect` also stopped trusting `session.request`/`session.response` once a target request raised before producing one -- see Fixed, above. A consumer that read those fields after `execution.exception_class` was already set was reading a value from an earlier request; it now reads `nil`, named in `unobserved`.
+- Optional MCP support now targets the tested MCP 1.5 and 1.6 series
+  (`gem "mcp", ">= 1.5.0", "< 1.7"`), replacing 0.2.0's stale MCP 0.9.x
+  constraint that conflicted with current integrations and failed schema
+  validation with JSON 3.x. CI exercises both the oldest admitted release
+  (1.5.0) and the newest 1.6.x.
+- **Verification evidence schema is now version 3** (0.2.0 emitted version 1; version 2 existed only on unreleased main).
+  - The ambiguous `principal` / `verified_principal` keys are gone rather than renamed in place: a consumer reading "principal" and believing it described the request that actually ran is exactly the false attribution this schema exists to make impossible. Outcomes carry `identities` (each with `requested`, `observed`, `confirmation`), and the top level carries `verified_identity`.
+  - Grouped `outcomes` (under `sample` and each population) no longer carry `elapsed_ms` — a group of several probes has no single elapsed time; `verified_outcome.elapsed_ms` and `summary.elapsed_ms` are unchanged — and gain `verified_usable`. Groups are ordered largest first.
+- **Reproduction evidence schema is version 3.** Request reproduction is new in this release, so version 3 is the first one published; versions 1 and 2 existed only on unreleased main. Relative to those:
+  - Its `identity` document reports `requested`/`observed`/`confirmation` (a `Karst::Identity::Evidence`) rather than echoing back the identity Karst assumed as if it were what ran; a mismatch, absence, or unobservable outcome now stays visible instead of being reported as "sent as User X."
+  - `execution` gained `controller_completed`, `exception_phase`, and `rendered` (additive), but `response.status`/`response_content_type`/`redirect` also stopped trusting `session.request`/`session.response` once a target request raised before producing one -- see Fixed, above. A consumer that read those fields after `execution.exception_class` was already set was reading a value from an earlier request; it now reads `nil`, named in `unobserved`.
 - A probe whose identity setup fails now still runs and is still observed, and reports the failure as `identity.establishment` rather than as an application exception — "asked for User #123, application saw nobody, halted at `authorize_admin`" is the evidence that matters most there.
 - Per-probe write and halted-callback observation now ignores notifications raised on other threads, so a concurrent request in a development server cannot be counted as a probe's own evidence.
+- `karst:verify` prints a bounded outcome summary: one line per observed outcome with its user count, largest first, a few example users for each outcome other than a single largest one, identity confirmation counts, and write warnings. `--json` still carries every user.
 
 ## [0.2.0]
 
@@ -127,5 +129,6 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Reframed the primary interface around finding an existing user who can reach a selected route.
 - Candidate populations became an automatic second search stage after the ordinary sample found no usable user.
 
-[0.2.0]: https://github.com/chdsbd/karst/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/chdsbd/karst/releases/tag/v0.1.0
+[0.4.0]: https://github.com/SilenceDogood1984/karst/releases/tag/v0.4.0
+[0.2.0]: https://rubygems.org/gems/karst/versions/0.2.0
+[0.1.0]: https://rubygems.org/gems/karst/versions/0.1.0
