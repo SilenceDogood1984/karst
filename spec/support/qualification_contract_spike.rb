@@ -34,6 +34,8 @@ class QualificationContractSpike
 
   def identity
     evidence = @observation.identity
+    return nil unless evidence
+
     {
       requested: principal(evidence.requested), resolved: principal(evidence.observed),
       confirmation: evidence.confirmation.to_s, confirmed: evidence.confirmed?,
@@ -49,7 +51,12 @@ class QualificationContractSpike
   end
 
   def identity_unknowns
-    return [] unless @observation.identity.confirmation == :unobservable
+    evidence = @observation.identity
+    unless evidence
+      return [{ question: "Which principal did the application resolve?",
+                reason: "No identity evidence was provided; neither requested nor resolved identity is known" }]
+    end
+    return [] unless evidence.confirmation == :unobservable
 
     [{ question: "Which principal did the application resolve?",
        reason: "Runtime identity was unobservable; requested identity is intent only" }]
@@ -77,6 +84,10 @@ end
 # Documentation-level representability, not a Body Double adapter or execution
 # plan. Capabilities must come from a separately inspected construction catalog.
 class QualificationConstructionReport
+  # Capability matching only, assuming the predicate's evidence is valid.
+  # A truthy evidence_ref is not proof: this spike neither resolves references
+  # nor validates their contents. Positive labels are conditional on external
+  # evidence validation and never authorize automatic state construction.
   def self.classify(predicate, exact_attributes: [], named_states: [])
     return "not representable" unless predicate[:basis] == "observed" && predicate[:evidence_ref]
 

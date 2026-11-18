@@ -51,6 +51,21 @@ RSpec.describe "qualification contract spike (not a public API)" do
     expect(JSON.generate(result)).not_to include("private-observer-secret")
   end
 
+  it "preserves missing identity evidence as unknown rather than confirmed anonymity" do
+    observation = observe("/parity/public")
+    incomplete = observation.to_h.merge(identity: nil)
+    result = QualificationContractSpike.build(Karst::Reproduction::Observation.new(**incomplete))
+
+    expect(result[:identity]).to be_nil
+    expect(result[:unknowns]).to include(
+      question: "Which principal did the application resolve?",
+      reason: "No identity evidence was provided; neither requested nor resolved identity is known"
+    )
+    expect(result[:behavior]).to eq(QualificationContractSpike.build(observation)[:behavior])
+    expect(result[:predicates]).to eq([])
+    expect(JSON.parse(JSON.generate(result))["identity"]).to be_nil
+  end
+
   it "confirms the authenticated principal without promoting it to a state requirement" do
     result = contract("/parity/member", principal: member)
     expect(result[:identity]).to include(resolved: { model: "KarstParityPrincipal", id: member.id },
@@ -132,7 +147,7 @@ RSpec.describe QualificationConstructionReport do
       basis: "observed", evidence_ref: "application-decision/1" }
   end
 
-  it "requires an inspected exact-attribute capability even for observed equality" do
+  it "matches inspected exact-attribute capabilities assuming the supplied evidence is valid" do
     expect(described_class.classify(predicate)).to eq("not representable")
     expect(described_class.classify(predicate, exact_attributes: [["User", ["role"]]]))
       .to eq("directly representable")

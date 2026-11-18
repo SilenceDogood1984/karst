@@ -123,7 +123,10 @@ Successful, identity-confirmed 200 responses are tested without inventing a
 permission predicate. A null response after an exception means unobserved,
 not a 200 or denial. A missing runtime identity seam adds an identity unknown;
 `resolved: null` must always be read with `confirmation`, since anonymous and
-unobservable are different states.
+unobservable are different states. If the entire identity evidence object is
+missing, `identity` itself is null and an explicit unknown explains that both
+requested and resolved identity are unknown. This does not imply an anonymous
+request and does not discard the available behavioral evidence.
 
 If direct qualification observations ever exist, a predicate would need these
 fields (this is a reserved design, **not emitted evidence today**):
@@ -207,8 +210,14 @@ This report does not claim compatibility with an uninspected Pro API.
 
 `QualificationConstructionReport` is a test-only report class. It accepts
 separately supplied capability lists representing an inspected catalog and
-classifies each predicate. It neither looks up models nor reads code nor calls
-a construction engine. The hypothetical examples below test its categories;
+classifies each predicate **assuming its evidence has been validated
+externally**. Its positive labels mean only that a proposed predicate matches
+a supplied construction capability under that assumption. A truthy or
+fabricated `evidence_ref` does not establish that the predicate was observed.
+The classifier neither resolves references nor validates their contents, and
+its labels do not authorize automatic construction. It neither looks up models
+nor reads code nor calls a construction engine. The hypothetical examples below
+test its categories;
 they are not observations emitted by Karst:
 
 | Predicate/evidence | Classification | Requirement |
@@ -304,5 +313,11 @@ missing-version-variable assertions and three real multi-Devise subprocesses
 without Devise in that bundle). The complete Rails 8.1 bundle and required
 environment corrected that run; no product code was changed to make it pass.
 The complete cross-version Rails/Ruby and MCP CI matrices were not run.
+
+Review follow-up: added a synthetic `identity: nil` regression and clarified
+the classifier's evidence-validity assumption at its definition. Re-ran
+`bin/test` (670 examples, zero failures, seed 33202; RuboCop clean) and the
+qualification integration file under Rails 8.1.4 (16 examples, zero failures,
+seed 50305). The earlier local totals above describe the initial spike run.
 
 QUALIFICATION CONTRACT PARTIAL — USE KARST AS VERIFICATION EVIDENCE, NOT PRIMARY STATE INFERENCE
